@@ -1,0 +1,36 @@
+{#
+  Aladin panel — rendered by /htmx/aladin. The server emits the empty target
+  div and the RA/Dec; client JS (static/js/aladin.js) probes HiPS coverage
+  (DESI → PanSTARRS → SkyMapper → DSS fallback) and boots Aladin Lite on it.
+
+  Aladin Lite v3 is loaded from CDS CDN the first time an aladin panel is
+  rendered — it's a megabyte of JS and we don't want it on every page view.
+#}
+<div id="aladin-panel" class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4">
+  <div class="tw-flex tw-items-center tw-justify-between tw-mb-2">
+    <div class="tw-text-text-secondary tw-text-xs tw-uppercase">Sky view</div>
+    <div id="aladin-legend-{{ oid }}" class="tw-text-xs tw-text-text-muted tw-font-mono"></div>
+  </div>
+
+  {% if ra is not none and dec is not none %}
+    <div
+      class="aladin-host tw-relative tw-w-full tw-bg-bg-secondary tw-rounded tw-overflow-hidden"
+      style="aspect-ratio: 1 / 1;"
+      data-ra="{{ ra }}"
+      data-dec="{{ dec }}"
+      data-oid="{{ oid }}"
+      data-legend-id="aladin-legend-{{ oid }}"
+    >
+      <div class="aladin-loading tw-absolute tw-inset-0 tw-flex tw-items-center tw-justify-center tw-text-xs tw-text-text-muted">
+        loading sky view…
+      </div>
+    </div>
+    <div class="tw-text-xs tw-text-text-muted tw-mt-2 tw-font-mono">
+      RA {{ "%.5f"|format(ra) }}° · Dec {{ "%.5f"|format(dec) }}°
+    </div>
+  {% else %}
+    <div class="tw-text-xs tw-text-text-muted tw-py-6 tw-text-center">
+      No coordinates for this object.
+    </div>
+  {% endif %}
+</div>

@@ -177,6 +177,23 @@ async def stamps(
     )
 
 
+@router.get("/htmx/aladin", response_class=HTMLResponse)
+async def aladin(request: Request, oid: str, survey_id: str) -> HTMLResponse:
+    _validate_survey(survey_id)
+    try:
+        info = await object_info_service.get_object_info(survey=survey_id, oid=oid)
+    except Exception as e:
+        log.exception("aladin failed")
+        return HTMLResponse(
+            f'<div class="tw-text-xs tw-text-red-400 tw-p-4">Upstream error: {e}</div>'
+        )
+    return templates.TemplateResponse(
+        request,
+        "aladin/aladinPreview.html.jinja",
+        {"oid": oid, "survey_id": survey_id, "ra": info.get("ra"), "dec": info.get("dec")},
+    )
+
+
 @router.get("/htmx/object_information", response_class=HTMLResponse)
 async def object_information(request: Request, oid: str, survey_id: str) -> HTMLResponse:
     _validate_survey(survey_id)

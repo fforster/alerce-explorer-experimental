@@ -49,8 +49,15 @@
         Loading stamps…
       </div>
     </div>
-    <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
-      Aladin — coming in slice 6.
+    <div
+      id="aladin-slot"
+      hx-get="{{ API_URL }}/htmx/aladin?oid={{ oid }}&survey_id={{ survey_id }}"
+      hx-trigger="load"
+      hx-swap="innerHTML"
+    >
+      <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
+        Loading sky view…
+      </div>
     </div>
   </div>
 

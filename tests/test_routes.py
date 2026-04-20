@@ -106,10 +106,10 @@ def test_detail_renders_container(client):
     assert r.status_code == 200
     assert "Back to results" in r.text
     assert "/htmx/object_information?oid=ZTF21abc&survey_id=ztf" in r.text
-    # Stamps slot wired in Slice 5; Aladin placeholder remains.
     assert 'id="stamps-slot"' in r.text
     assert "/htmx/stamps?oid=ZTF21abc&survey_id=ztf" in r.text
-    assert "slice 6" in r.text
+    assert 'id="aladin-slot"' in r.text
+    assert "/htmx/aladin?oid=ZTF21abc&survey_id=ztf" in r.text
 
 
 def test_detail_rejects_unknown_survey(client):
@@ -282,6 +282,55 @@ def test_stamps_upstream_error(client, monkeypatch):
         fake_stamps,
     )
     r = client.get("/htmx/stamps?oid=x&survey_id=ztf")
+    assert r.status_code == 200
+    assert "Upstream error" in r.text
+
+
+def test_aladin_renders_host_with_coordinates(client, monkeypatch):
+    async def fake_info(*, survey, oid):
+        return {"oid": oid, "survey": survey, "ra": 180.125, "dec": -30.25}
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_info_service.get_object_info",
+        fake_info,
+    )
+    r = client.get("/htmx/aladin?oid=ZTF21abc&survey_id=ztf")
+    assert r.status_code == 200
+    assert 'id="aladin-panel"' in r.text
+    assert "aladin-host" in r.text
+    assert 'data-ra="180.125"' in r.text
+    assert 'data-dec="-30.25"' in r.text
+    assert 'data-oid="ZTF21abc"' in r.text
+
+
+def test_aladin_without_coordinates_shows_message(client, monkeypatch):
+    async def fake_info(*, survey, oid):
+        return {"oid": oid, "survey": survey, "ra": None, "dec": None}
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_info_service.get_object_info",
+        fake_info,
+    )
+    r = client.get("/htmx/aladin?oid=x&survey_id=lsst")
+    assert r.status_code == 200
+    assert "No coordinates" in r.text
+    assert "aladin-host" not in r.text
+
+
+def test_aladin_rejects_unknown_survey(client):
+    r = client.get("/htmx/aladin?oid=x&survey_id=panstarrs")
+    assert r.status_code == 400
+
+
+def test_aladin_upstream_error(client, monkeypatch):
+    async def fake_info(*, survey, oid):
+        raise RuntimeError("object api down")
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_info_service.get_object_info",
+        fake_info,
+    )
+    r = client.get("/htmx/aladin?oid=x&survey_id=ztf")
     assert r.status_code == 200
     assert "Upstream error" in r.text
 
