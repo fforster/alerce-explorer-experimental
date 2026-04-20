@@ -1,26 +1,33 @@
 // Client-side helpers used by hx-vals='js:{...helper()}' attributes.
-// Keep these thin — they exist only to collect DOM state into a query payload.
+// Keep these thin — they exist only to collect DOM state into a query payload
+// that htmx serializes onto its outgoing request.
+
+function _val(id) {
+  const el = document.getElementById(id);
+  if (!el) return "";
+  return (el.value ?? "").toString().trim();
+}
 
 // Collect current filter-form state.
 function send_form_Data() {
-  const f = document.getElementById("form-search");
-  if (!f) return {};
-  const survey = f.querySelector("#survey")?.dataset?.survey ?? "lsst";
-  const classifier = f.querySelector("#classifier")?.dataset?.classifier ?? "";
-  const className = f.querySelector("#class")?.dataset?.value ?? "";
-  const probability = f.querySelector("#prob_range")?.value ?? "";
-  const oidsRaw = f.querySelector("#objectIds")?.value ?? "";
-  const minDet = f.querySelector("#min_detections")?.value ?? "";
-  const maxDet = f.querySelector("#max_detections")?.value ?? "";
-  return {
-    survey,
-    classifier: classifier || undefined,
-    class_name: className || undefined,
-    probability: probability || undefined,
-    oid: oidsRaw || undefined,
-    n_det_min: minDet || undefined,
-    n_det_max: maxDet || undefined,
-  };
+  const form = document.getElementById("form-search");
+  const survey = form?.dataset?.survey ?? "lsst";
+
+  const classifier = _val("classifier");
+  const className = _val("class_name");
+  const probability = _val("prob_range");
+  const oidsRaw = _val("objectIds");
+  const minDet = _val("min_detections");
+  const maxDet = _val("max_detections");
+
+  const payload = { survey };
+  if (classifier) payload.classifier = classifier;
+  if (className) payload.class_name = className;
+  if (probability && parseFloat(probability) > 0) payload.probability = probability;
+  if (oidsRaw) payload.oid = oidsRaw;
+  if (minDet) payload.n_det_min = minDet;
+  if (maxDet) payload.n_det_max = maxDet;
+  return payload;
 }
 
 function send_pagination_data(page) {
@@ -34,14 +41,14 @@ function send_order_data(order_by, order_mode) {
   };
 }
 
-// Used by the dependent-class select: encodes the classes list
-// attached to the currently selected classifier.
+// Read the classes[] attached to the currently-selected classifier option.
 function send_classes_data() {
-  const classifierEl = document.getElementById("classifier");
-  const raw = classifierEl?.dataset?.classes ?? "[]";
+  const sel = document.getElementById("classifier");
+  if (!sel) return { classifier_classes: [] };
+  const opt = sel.options[sel.selectedIndex];
   let classes = [];
   try {
-    classes = JSON.parse(raw);
+    classes = JSON.parse(opt?.dataset?.classes ?? "[]");
   } catch {
     classes = [];
   }

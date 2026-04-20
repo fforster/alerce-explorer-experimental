@@ -1,5 +1,4 @@
+<option value="">(any)</option>
 {% for c in classes %}
-<span class="tw-block tw-text-sm tw-px-2 tw-py-1 hover:tw-bg-bg-tertiary tw-cursor-pointer">{{ c }}</span>
-{% else %}
-<span class="tw-text-xs tw-text-text-muted">No classes available.</span>
+<option value="{{ c }}">{{ c }}</option>
 {% endfor %}

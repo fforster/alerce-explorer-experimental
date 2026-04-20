@@ -1,28 +1,81 @@
 <div id="objects_table" class="tw-bg-bg-card tw-border tw-border-border tw-rounded">
+
+  <div id="results-loading" class="htmx-indicator tw-h-1 tw-bg-accent tw-animate-pulse"></div>
+
   {% if objects_list['items']|length > 0 %}
-  <table class="tw-w-full tw-text-sm">
-    <thead class="tw-text-left tw-text-text-secondary tw-text-xs tw-uppercase">
-      <tr class="tw-border-b tw-border-border">
-        <th class="tw-px-3 tw-py-2">Object ID</th>
-        <th class="tw-px-3 tw-py-2">N detections</th>
-        <th class="tw-px-3 tw-py-2">Class</th>
-        <th class="tw-px-3 tw-py-2">Probability</th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for obj in objects_list['items'] %}
-      <tr class="tw-border-b tw-border-border/50 hover:tw-bg-bg-tertiary">
-        <td class="tw-px-3 tw-py-2 mono">{{ obj['oid'] }}</td>
-        <td class="tw-px-3 tw-py-2">{{ obj.get('n_det', '-') }}</td>
-        <td class="tw-px-3 tw-py-2">{{ obj.get('class_name', '-') }}</td>
-        <td class="tw-px-3 tw-py-2 mono">{{ obj.get('probability', '-') }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
+    <div class="tw-overflow-x-auto">
+      <table class="tw-w-full tw-text-sm">
+        <thead class="tw-text-left tw-text-text-secondary tw-text-xs tw-uppercase">
+          <tr class="tw-border-b tw-border-border">
+            <th class="tw-px-3 tw-py-2">Object ID</th>
+            <th class="tw-px-3 tw-py-2">N det</th>
+            <th class="tw-px-3 tw-py-2">Classifier</th>
+            <th class="tw-px-3 tw-py-2">Class</th>
+            <th class="tw-px-3 tw-py-2">Prob</th>
+            <th class="tw-px-3 tw-py-2">RA</th>
+            <th class="tw-px-3 tw-py-2">Dec</th>
+            <th class="tw-px-3 tw-py-2">First MJD</th>
+            <th class="tw-px-3 tw-py-2">Last MJD</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for obj in objects_list['items'] %}
+          <tr class="tw-border-b tw-border-border/50 hover:tw-bg-bg-tertiary">
+            <td class="tw-px-3 tw-py-2 mono">{{ obj.get('oid', '-') }}</td>
+            <td class="tw-px-3 tw-py-2 mono">{{ obj.get('n_det', '-') }}</td>
+            <td class="tw-px-3 tw-py-2">{{ obj.get('classifier_name', '-') }}</td>
+            <td class="tw-px-3 tw-py-2">{{ obj.get('class_name', '-') }}</td>
+            <td class="tw-px-3 tw-py-2 mono">
+              {% if obj.get('probability') is not none %}{{ "%.3f"|format(obj['probability']) }}{% else %}-{% endif %}
+            </td>
+            <td class="tw-px-3 tw-py-2 mono">
+              {% if obj.get('meanra') is not none %}{{ "%.5f"|format(obj['meanra']) }}{% else %}-{% endif %}
+            </td>
+            <td class="tw-px-3 tw-py-2 mono">
+              {% if obj.get('meandec') is not none %}{{ "%.5f"|format(obj['meandec']) }}{% else %}-{% endif %}
+            </td>
+            <td class="tw-px-3 tw-py-2 mono">
+              {% if obj.get('firstmjd') is not none %}{{ "%.3f"|format(obj['firstmjd']) }}{% else %}-{% endif %}
+            </td>
+            <td class="tw-px-3 tw-py-2 mono">
+              {% if obj.get('lastmjd') is not none %}{{ "%.3f"|format(obj['lastmjd']) }}{% else %}-{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="tw-flex tw-items-center tw-justify-end tw-gap-3 tw-px-3 tw-py-2 tw-text-sm tw-text-text-secondary tw-border-t tw-border-border">
+      {% if objects_list['has_prev'] %}
+      <button
+        type="button"
+        class="tw-px-2 tw-py-1 hover:tw-text-text-primary"
+        hx-get="{{ API_URL }}/htmx/list_objects"
+        hx-target="#results-slot"
+        hx-swap="innerHTML"
+        hx-indicator="#results-loading"
+        hx-vals='js:{...send_form_Data(), ...send_pagination_data({{ objects_list["prev"] }})}'
+      >← Prev</button>
+      {% endif %}
+
+      <span class="mono">Page {{ objects_list['current_page'] }}</span>
+
+      {% if objects_list['has_next'] %}
+      <button
+        type="button"
+        class="tw-px-2 tw-py-1 hover:tw-text-text-primary"
+        hx-get="{{ API_URL }}/htmx/list_objects"
+        hx-target="#results-slot"
+        hx-swap="innerHTML"
+        hx-indicator="#results-loading"
+        hx-vals='js:{...send_form_Data(), ...send_pagination_data({{ objects_list["next"] }})}'
+      >Next →</button>
+      {% endif %}
+    </div>
   {% else %}
-  <div class="tw-p-6 tw-text-sm tw-text-text-muted tw-text-center">
-    {{ objects_list.get('info_message', 'Results will appear here.') }}
-  </div>
+    <div class="tw-p-6 tw-text-sm tw-text-text-muted tw-text-center">
+      {{ objects_list.get('info_message', 'Results will appear here.') }}
+    </div>
   {% endif %}
 </div>

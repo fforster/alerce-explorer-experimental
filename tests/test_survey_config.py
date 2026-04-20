@@ -33,7 +33,8 @@ def test_lsst_extra_params_passthrough_and_drops_none():
         "n_det": 10,
         "probability": None,
     })
-    assert out == {"class_name": "AGN", "n_det": 10}
+    # LSST list_objects endpoint expects `survey` as a query param.
+    assert out == {"class_name": "AGN", "n_det": 10, "survey": "lsst"}
 
 
 def test_band_sets_differ():

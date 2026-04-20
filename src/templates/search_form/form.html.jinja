@@ -1,48 +1,84 @@
 {% from "input.html.jinja" import input as customInput %}
 <div
   id="form-search"
+  data-survey="{{ survey }}"
   hx-ext="response-targets"
   class="tw-p-4 tw-flex tw-flex-col tw-gap-4"
 >
   <div class="tw-text-base tw-font-medium">Search Filters</div>
 
-  <div id="survey_container">
+  <div>
     <p class="tw-text-sm tw-text-text-secondary tw-mb-2">Survey</p>
-    <div id="survey" data-survey="lsst" class="tw-flex tw-gap-2">
-      <span id="lsst_btn" class="tw-px-3 tw-py-1 tw-text-sm tw-bg-accent tw-text-bg-primary tw-rounded tw-cursor-pointer">LSST</span>
-      <span id="ztf_btn" class="tw-px-3 tw-py-1 tw-text-sm tw-border tw-border-border tw-rounded tw-cursor-pointer">ZTF</span>
+    <div id="survey-toggle" class="tw-flex tw-gap-2">
+      <button
+        type="button"
+        data-survey-value="lsst"
+        class="tw-px-3 tw-py-1 tw-text-sm tw-rounded tw-cursor-pointer
+          {% if survey == 'lsst' %}tw-bg-accent tw-text-bg-primary{% else %}tw-border tw-border-border tw-text-text-secondary{% endif %}"
+        hx-get="{{ API_URL }}/htmx/search_objects/?survey=lsst"
+        hx-target="#search-form-slot"
+        hx-swap="innerHTML"
+      >LSST</button>
+      <button
+        type="button"
+        data-survey-value="ztf"
+        class="tw-px-3 tw-py-1 tw-text-sm tw-rounded tw-cursor-pointer
+          {% if survey == 'ztf' %}tw-bg-accent tw-text-bg-primary{% else %}tw-border tw-border-border tw-text-text-secondary{% endif %}"
+        hx-get="{{ API_URL }}/htmx/search_objects/?survey=ztf"
+        hx-target="#search-form-slot"
+        hx-swap="innerHTML"
+      >ZTF</button>
     </div>
   </div>
 
   <div>
-    {{ customInput(id="objectIds", type="text", placeholder="Object ID") }}
+    <label class="tw-text-sm tw-text-text-secondary tw-block tw-mb-1" for="objectIds">Object ID</label>
+    {{ customInput(id="objectIds", type="text", placeholder="comma-separated OIDs") }}
   </div>
 
-  <div id="classifier_wrapper">
-    <p class="tw-text-sm tw-text-text-secondary tw-mb-1">Classifier</p>
-    <span
+  <div>
+    <label class="tw-text-sm tw-text-text-secondary tw-block tw-mb-1" for="classifier">Classifier</label>
+    <select
       id="classifier"
-      class="tw-block tw-text-sm tw-text-text-muted"
-      data-classifier=""
-      data-classes="[]"
+      class="tw-w-full tw-bg-bg-tertiary tw-border tw-border-border tw-rounded tw-py-1 tw-px-2 tw-text-sm"
       hx-get="{{ API_URL }}/htmx/classes_select"
       hx-trigger="change"
-      hx-target="#classes_options"
+      hx-target="#class_name"
       hx-swap="innerHTML"
       hx-vals='js:{...send_classes_data()}'
-    >Slice 2: classifiers will be fetched from the API.</span>
-    <div id="classes_options" class="tw-mt-2 tw-text-xs tw-text-text-muted"></div>
+    >
+      <option value="" data-classes="[]">(any)</option>
+      {% for c in classifiers %}
+        <option value="{{ c.classifier_name }}" data-classes='{{ c.classes|tojson }}'>
+          {{ c.formatted_name }}
+        </option>
+      {% endfor %}
+    </select>
   </div>
 
   <div>
-    <label class="tw-text-sm tw-text-text-secondary">
+    <label class="tw-text-sm tw-text-text-secondary tw-block tw-mb-1" for="class_name">Class</label>
+    <select
+      id="class_name"
+      class="tw-w-full tw-bg-bg-tertiary tw-border tw-border-border tw-rounded tw-py-1 tw-px-2 tw-text-sm"
+    >
+      <option value="">(any)</option>
+    </select>
+  </div>
+
+  <div>
+    <label class="tw-text-sm tw-text-text-secondary tw-block">
       Probability ≥ <span id="prob_number" class="mono">0.00</span>
     </label>
-    <input id="prob_range" type="range" step="0.01" min="0" max="1" value="0" class="tw-w-full"/>
+    <input
+      id="prob_range" type="range" step="0.01" min="0" max="1" value="0"
+      class="tw-w-full"
+      oninput="document.getElementById('prob_number').textContent = parseFloat(this.value).toFixed(2)"
+    />
   </div>
 
   <div>
-    <p class="tw-text-sm tw-text-text-secondary">Number of detections</p>
+    <p class="tw-text-sm tw-text-text-secondary tw-mb-1">Number of detections</p>
     <div class="tw-flex tw-gap-2">
       {{ customInput(id="min_detections", type="number", placeholder="Min", width="tw-w-1/2") }}
       {{ customInput(id="max_detections", type="number", placeholder="Max", width="tw-w-1/2") }}
@@ -56,6 +92,13 @@
     hx-trigger="click"
     hx-target="#results-slot"
     hx-swap="innerHTML"
+    hx-indicator="#results-loading"
     hx-vals='js:{...send_form_Data()}'
   >Search</button>
+
+  {% if classifiers|length == 0 %}
+  <div class="tw-text-xs tw-text-text-muted tw-mt-2">
+    Classifier list is empty — upstream API may be unreachable.
+  </div>
+  {% endif %}
 </div>
