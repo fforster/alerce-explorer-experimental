@@ -118,16 +118,95 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
 - IRSA dust map via `dust-proxy.francisco-forster.workers.dev` (Cloudflare Worker).
 - CDS: `hips2fits` (HiPS cutouts), Sesame name resolver, Aladin Lite CDN.
 
-## Recommended stack for this tutorial
+## Tutorial stack (in use)
 
-To stay close to the production htmx pattern while keeping the tutorial small, aim for:
+- **Python 3.11+**, **FastAPI**, **Jinja2** (`auto_reload=True` in dev), **htmx 1.9.12 self-hosted** at `src/static/htmx/htmx.min.js`, **Tailwind 3.4+** via the `tailwindcss` CLI (prefix `tw-`), **Poetry** for Python deps, **npm** only for the Tailwind CLI.
+- Single FastAPI app (not microservices) at `src/app.py`; `routes/htmx.py` returns `HTMLResponse`, `routes/rest.py` returns JSON.
+- All ALeRCE data is fetched **server-side** via `httpx` in `src/services/alerce_client.py` and proxied through htmx fragments — the browser never calls the ALeRCE API directly. Set `follow_redirects=True` on the httpx client (ZTF endpoints 308 bare paths → trailing-slash form) and keep the timeout at 30s (LSST `list_objects` is slow).
+- Client JS helpers in `src/static/js/helpers.js` (`send_form_Data`, `send_pagination_data`, `send_classes_data`) are exposed on `window` and attached via `hx-vals='js:{...helper()}'` — filter state lives in the DOM, not the server.
+- Use the new `Jinja2Templates.TemplateResponse(request, name, context)` signature, not the deprecated `(name, {"request": request, ...})` form.
 
-- **Python 3.11**, **FastAPI**, **Jinja2** (`auto_reload=True` in dev), **htmx 1.9.12 self-hosted**, **Tailwind 3.4+** via `tailwindcss` CLI, Poetry for deps.
-- Single FastAPI app first (not microservices) with `routes/htmx.py` returning `HTMLResponse` and `routes/rest.py` (or `json/`) returning JSON where we need to call the ALeRCE API client-side.
-- `templates/` organized by feature sub-area, plus a shared `input.html.jinja` macro.
-- `static/` for compiled Tailwind CSS and any client JS helpers (`send_form_Data`, chart rendering, FITS parser, Aladin bootstrap).
-- Client JS helpers attach data via `hx-vals='js:{...helper()}'` rather than storing filter state on the server.
+## Commands
 
-## Repository status
+```bash
+# Install deps
+poetry install              # Python
+npm install                 # Tailwind CLI only
 
-No source files, build configuration, or tests exist yet. Once scaffolding is in place (backend framework, template layout, static assets), re-run `/init` so this file can be extended with real build/lint/test commands and the final architecture overview.
+# Run tests (39 unit + 23 route tests through Slice 3)
+python3 -m pytest           # full suite
+python3 -m pytest tests/test_object_info.py -v   # single file
+python3 -m pytest -k "detail"                     # by keyword
+
+# Dev server (hot-reload templates via auto_reload=True)
+poetry run uvicorn src.app:app --reload --port 8000
+
+# Tailwind (rebuild main.css from tailwind.css)
+npm run watch:css           # dev
+npm run build:css           # minified production build
+```
+
+Tests run offline — upstream ALeRCE calls are monkeypatched in `tests/test_routes.py` via `src.routes.htmx.<service>.<fn>` attribute paths.
+
+## Repository layout
+
+```
+src/
+  app.py                     # FastAPI(), CORS, static mount, router includes
+  routes/
+    htmx.py                  # HTMLResponse endpoints (search form, list, detail, object info, classes select)
+    rest.py                  # JSON endpoints (e.g. /api/health)
+  services/
+    alerce_client.py         # thin httpx wrapper (follow_redirects, 30s timeout, safe_json_loads)
+    safe_json.py             # regex-wraps ≥16-digit ints so LSST OIDs survive JSON parsing
+    survey_config.py         # SURVEY_CONFIG dict + SC(survey) dispatcher — single source of truth
+                             # for api_base/paths/bands/extinction/extra_params per survey
+    classifiers.py           # tidy_classifiers: dedupe by name, merge class lists, priority-sort
+    object_list.py           # build_search_params, shape_response (ZTF field remap to LSST schema)
+    object_info.py           # shape_object_info (ZTF ndet/ncovhist; LSST n_det/n_non_det/n_forced)
+    coordinates.py           # ra_to_hms / dec_to_dms (prototype-compatible formatting)
+    other_archives.py        # external archive URL builders (ALeRCE, NED, SIMBAD, TNS, …)
+    normalize.py             # ZTF mag↔nJy conversion (AB ZP 31.4) — used by light curve (future slice)
+  templates/
+    base.html.jinja                           # DOCTYPE shell + CSS/JS imports
+    index.html.jinja                          # app shell (header, sidebar slot, main slot)
+    input.html.jinja                          # shared input() macro
+    search_form/                              # filter form + dependent class select
+    main_table_objects/objects_table.html.jinja   # results table (rows are hx-get to /htmx/detail)
+    basic_information/basicInformationPreview.html.jinja   # populated object info panel
+    object_detail/container.html.jinja        # detail view (back button + basic-info slot + placeholders)
+  static/
+    htmx/htmx.min.js         # self-hosted htmx 1.9.12
+    css/tailwind.css         # @tailwind directives (source)
+    css/main.css             # compiled Tailwind output (npm run build:css)
+    js/helpers.js            # send_form_Data, send_pagination_data, send_classes_data
+
+tests/                       # pytest; each service file has a matching test file
+```
+
+### ALeRCE API endpoints in use
+
+- **LSST** — `https://api-lsst.alerce.online/` root (`classifier_api/classifiers`, `object_api/list_objects`, `object_api/object?survey_id=lsst&oid={oid}`). Note the flat prefix — not `api.alerce.online/lsst/v1/`.
+- **ZTF** — `https://api.alerce.online/ztf/v1/` with `classifiers/`, `objects/`, `objects/{oid}`.
+- Configured in `SURVEY_CONFIG`; never hard-code. ZTF's `extra_params` must drop `None` values (the API rejects them); LSST's must pin `survey=lsst`.
+
+### Field remap quick reference
+
+`src/services/object_list.py::_normalize_ztf_row` and `src/services/object_info.py::shape_object_info` map ZTF responses onto the LSST-style schema used by templates:
+
+| Template field | LSST raw | ZTF raw |
+|---|---|---|
+| `n_det` | `n_det` | `ndet` |
+| `n_non_det` | `n_non_det` | derived: `ncovhist - ndethist` |
+| `n_forced` | `n_forced` | — (not present) |
+| `class_name` | `class_name` | `class` |
+| `classifier_name` | `classifier_name` | `classifier` |
+| `classifier_version` | `classifier_version` | `step_id_corr` |
+| `corrected`, `stellar` | — | `corrected`, `stellar` |
+
+## Slice progress
+
+- **Slice 1** — FastAPI + htmx + Jinja + Tailwind scaffold, self-hosted htmx, app shell.
+- **Slice 2** — live search form with dependent classifier/class dropdowns, results table with pagination, calls real ALeRCE API.
+- **Slice 3** — object detail view: row click → `/htmx/detail` container with back button, basic-information panel (coords/HMS/DMS, MJDs, detection counts, ZTF `corrected`/`stellar`, external archives dropdown), placeholders for slices 4–6.
+- **Deferred (slices 4–10)** — light curve (Chart.js + ZTF v1/v2 merge + corrections), stamps (LSST FITS pipeline + ZTF PNG), Aladin, crossmatch, periodogram (in-browser GLS), airmass, name resolver.
