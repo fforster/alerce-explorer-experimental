@@ -1,0 +1,64 @@
+{#
+  Stamp viewer panel — rendered by /htmx/stamps.
+
+  Contract: ctx has {detections, selected, stamp_types, stamp_urls}.
+  - `detections` is the picker list (identifier, mjd, band) sorted MJD DESC.
+  - `selected` is the currently chosen entry; `stamp_urls` has one URL per
+    stamp type for it.
+  - The browser fetches gzip-FITS from each URL, parses it, and draws on a
+    canvas. Survey differences (URL shape, type names) live server-side.
+
+  Changing the detection re-hits /htmx/stamps with `identifier=...`, so htmx
+  swaps the whole panel — old canvases are discarded cleanly.
+#}
+<div id="stamps-panel" class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4">
+  <div class="tw-flex tw-items-center tw-justify-between tw-mb-3 tw-gap-3">
+    <div class="tw-text-text-secondary tw-text-xs tw-uppercase">Stamps</div>
+    {% if ctx.detections %}
+      <select
+        class="tw-bg-bg-secondary tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text-primary"
+        hx-get="{{ API_URL }}/htmx/stamps"
+        hx-trigger="change"
+        hx-target="#stamps-panel"
+        hx-swap="outerHTML"
+        hx-vals='{"oid": {{ oid|tojson }}, "survey_id": {{ survey_id|tojson }}}'
+        name="identifier"
+      >
+        {% for d in ctx.detections %}
+          <option
+            value="{{ d.identifier }}"
+            {% if ctx.selected and d.identifier == ctx.selected.identifier %}selected{% endif %}
+          >
+            MJD {{ "%.3f"|format(d.mjd) }}{% if d.band %} · {{ d.band }}{% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    {% endif %}
+  </div>
+
+  {% if ctx.selected %}
+    <div class="tw-grid tw-grid-cols-3 tw-gap-3">
+      {% for t in ctx.stamp_types %}
+        <div class="tw-flex tw-flex-col tw-items-center tw-gap-1">
+          <div class="tw-relative tw-w-full tw-aspect-square tw-bg-bg-secondary tw-rounded tw-overflow-hidden">
+            <canvas
+              class="stamp-canvas tw-w-full tw-h-full tw-block"
+              data-stamp-url="{{ ctx.stamp_urls[t] }}"
+              data-stamp-type="{{ t }}"
+              width="180" height="180"
+            ></canvas>
+            <div class="stamp-loading tw-absolute tw-inset-0 tw-flex tw-items-center tw-justify-center tw-text-xs tw-text-text-muted">
+              loading…
+            </div>
+            <div class="stamp-compass tw-absolute tw-top-1 tw-right-1 tw-text-xs tw-text-text-secondary tw-font-mono"></div>
+          </div>
+          <div class="tw-text-xs tw-text-text-muted tw-capitalize">{{ t }}</div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="tw-text-xs tw-text-text-muted tw-py-6 tw-text-center">
+      No detections with stamps.
+    </div>
+  {% endif %}
+</div>

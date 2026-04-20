@@ -18,6 +18,13 @@ class SurveyConfig:
     objects_path: str
     object_path_template: str  # uses {oid}
     lightcurve_url_template: str  # full URL; uses {oid}
+    # Stamp URL template + per-type name mapping. `{identifier}` is the ZTF
+    # candid or LSST measurement_id. `{stamp_type}` is the survey-specific
+    # type name (see stamp_type_names). Returns gzip-FITS.
+    stamp_url_template: str
+    # Maps the logical stamp-type ("science", "template", "difference") to the
+    # name the survey's stamp API expects.
+    stamp_type_names: dict[str, str]
     bands: tuple[str, ...]
     default_classifier: str
     has_forced_phot: bool
@@ -36,6 +43,12 @@ class SurveyConfig:
 
     def lightcurve_url(self, oid: str) -> str:
         return self.lightcurve_url_template.format(oid=oid)
+
+    def stamp_url(self, *, oid: str, identifier: str, stamp_type: str) -> str:
+        survey_type = self.stamp_type_names[stamp_type]
+        return self.stamp_url_template.format(
+            oid=oid, identifier=identifier, stamp_type=survey_type
+        )
 
 
 def _ztf_extra_params(params: dict[str, object]) -> dict[str, object]:
@@ -76,6 +89,16 @@ SURVEY_CONFIG: dict[str, SurveyConfig] = {
             "https://api-lsst.alerce.online/lightcurve_api/lightcurve"
             "?survey_id=lsst&oid={oid}"
         ),
+        stamp_url_template=(
+            "https://api-lsst.alerce.online/stamps_api/stamp"
+            "?survey_id=lsst&oid={oid}&measurement_id={identifier}"
+            "&stamp_type={stamp_type}&file_format=fits&is_compressed=false"
+        ),
+        stamp_type_names={
+            "science": "cutoutScience",
+            "template": "cutoutTemplate",
+            "difference": "cutoutDifference",
+        },
         bands=("u", "g", "r", "i", "z", "y"),
         default_classifier="lc_classifier_top",
         has_forced_phot=False,
@@ -93,6 +116,15 @@ SURVEY_CONFIG: dict[str, SurveyConfig] = {
         objects_path="objects",
         object_path_template="objects/{oid}",
         lightcurve_url_template="https://api.alerce.online/ztf/v1/objects/{oid}/lightcurve",
+        stamp_url_template=(
+            "https://avro.alerce.online/get_stamp"
+            "?oid={oid}&candid={identifier}&type={stamp_type}&format=fits"
+        ),
+        stamp_type_names={
+            "science": "science",
+            "template": "template",
+            "difference": "difference",
+        },
         bands=("g", "r", "i"),
         default_classifier="lc_classifier",
         has_forced_phot=True,

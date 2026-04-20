@@ -106,8 +106,9 @@ def test_detail_renders_container(client):
     assert r.status_code == 200
     assert "Back to results" in r.text
     assert "/htmx/object_information?oid=ZTF21abc&survey_id=ztf" in r.text
-    # Remaining placeholders (stamps, Aladin) for later slices
-    assert "slice 5" in r.text
+    # Stamps slot wired in Slice 5; Aladin placeholder remains.
+    assert 'id="stamps-slot"' in r.text
+    assert "/htmx/stamps?oid=ZTF21abc&survey_id=ztf" in r.text
     assert "slice 6" in r.text
 
 
@@ -213,6 +214,74 @@ def test_object_information_upstream_error_renders_message(client, monkeypatch):
         fake_info,
     )
     r = client.get("/htmx/object_information?oid=x&survey_id=ztf")
+    assert r.status_code == 200
+    assert "Upstream error" in r.text
+
+
+def test_stamps_renders_picker_and_canvases(client, monkeypatch):
+    async def fake_stamps(*, survey, oid, identifier=None):
+        sel = {"identifier": "111", "mjd": 60000.5, "band": "r"}
+        return {
+            "oid": oid, "survey": survey,
+            "detections": [sel, {"identifier": "222", "mjd": 59999.5, "band": "g"}],
+            "selected": sel,
+            "stamp_types": ["science", "template", "difference"],
+            "stamp_urls": {
+                "science": "https://x/science",
+                "template": "https://x/template",
+                "difference": "https://x/difference",
+            },
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.stamps_service.get_stamps_context",
+        fake_stamps,
+    )
+    r = client.get("/htmx/stamps?oid=ZTF21abc&survey_id=ztf")
+    assert r.status_code == 200
+    assert 'id="stamps-panel"' in r.text
+    assert "stamp-canvas" in r.text
+    assert "https://x/science" in r.text
+    assert "https://x/template" in r.text
+    assert "https://x/difference" in r.text
+    # Picker options reference both identifiers.
+    assert 'value="111"' in r.text
+    assert 'value="222"' in r.text
+
+
+def test_stamps_empty_shows_message(client, monkeypatch):
+    async def fake_stamps(*, survey, oid, identifier=None):
+        return {
+            "oid": oid, "survey": survey,
+            "detections": [], "selected": None,
+            "stamp_types": ["science", "template", "difference"],
+            "stamp_urls": {},
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.stamps_service.get_stamps_context",
+        fake_stamps,
+    )
+    r = client.get("/htmx/stamps?oid=x&survey_id=lsst")
+    assert r.status_code == 200
+    assert "No detections with stamps" in r.text
+    assert "stamp-canvas" not in r.text
+
+
+def test_stamps_rejects_unknown_survey(client):
+    r = client.get("/htmx/stamps?oid=x&survey_id=panstarrs")
+    assert r.status_code == 400
+
+
+def test_stamps_upstream_error(client, monkeypatch):
+    async def fake_stamps(*, survey, oid, identifier=None):
+        raise RuntimeError("stamps api down")
+
+    monkeypatch.setattr(
+        "src.routes.htmx.stamps_service.get_stamps_context",
+        fake_stamps,
+    )
+    r = client.get("/htmx/stamps?oid=x&survey_id=ztf")
     assert r.status_code == 200
     assert "Upstream error" in r.text
 

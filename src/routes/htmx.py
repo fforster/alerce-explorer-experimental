@@ -20,6 +20,7 @@ from ..services import classifiers as classifiers_service
 from ..services import lightcurve as lightcurve_service
 from ..services import object_info as object_info_service
 from ..services import object_list as object_list_service
+from ..services import stamps as stamps_service
 from ..services.survey_config import known_surveys
 
 log = logging.getLogger(__name__)
@@ -149,6 +150,30 @@ async def lightcurve(request: Request, oid: str, survey_id: str) -> HTMLResponse
         request,
         "lightcurve/lightcurvePreview.html.jinja",
         {"lc": data, "oid": oid, "survey_id": survey_id},
+    )
+
+
+@router.get("/htmx/stamps", response_class=HTMLResponse)
+async def stamps(
+    request: Request,
+    oid: str,
+    survey_id: str,
+    identifier: str | None = None,
+) -> HTMLResponse:
+    _validate_survey(survey_id)
+    try:
+        ctx = await stamps_service.get_stamps_context(
+            survey=survey_id, oid=oid, identifier=identifier
+        )
+    except Exception as e:
+        log.exception("stamps failed")
+        return HTMLResponse(
+            f'<div class="tw-text-xs tw-text-red-400 tw-p-4">Upstream error: {e}</div>'
+        )
+    return templates.TemplateResponse(
+        request,
+        "stamps/stampsPreview.html.jinja",
+        {"ctx": ctx, "oid": oid, "survey_id": survey_id},
     )
 
 
