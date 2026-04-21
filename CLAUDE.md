@@ -133,7 +133,7 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
 poetry install              # Python
 npm install                 # Tailwind CLI only
 
-# Run tests (39 unit + 23 route tests through Slice 3)
+# Run tests (126 total — services + route fragments; upstream calls monkeypatched)
 python3 -m pytest           # full suite
 python3 -m pytest tests/test_object_info.py -v   # single file
 python3 -m pytest -k "detail"                     # by keyword
@@ -160,13 +160,15 @@ src/
     alerce_client.py         # thin httpx wrapper (follow_redirects, 30s timeout, safe_json_loads)
     safe_json.py             # regex-wraps ≥16-digit ints so LSST OIDs survive JSON parsing
     survey_config.py         # SURVEY_CONFIG dict + SC(survey) dispatcher — single source of truth
-                             # for api_base/paths/bands/extinction/extra_params per survey
+                             # for api_base/paths/bands/extinction_r/extra_params per survey
     classifiers.py           # tidy_classifiers: dedupe by name, merge class lists, priority-sort
     object_list.py           # build_search_params, shape_response (ZTF field remap to LSST schema)
     object_info.py           # shape_object_info (ZTF ndet/ncovhist; LSST n_det/n_non_det/n_forced)
     coordinates.py           # ra_to_hms / dec_to_dms (prototype-compatible formatting)
     other_archives.py        # external archive URL builders (ALeRCE, NED, SIMBAD, TNS, …)
-    normalize.py             # ZTF mag↔nJy conversion (AB ZP 31.4) — used by light curve (future slice)
+    normalize.py             # ZTF mag↔nJy conversion (AB ZP 31.4) — feeds the light curve
+    probability.py           # classifier → probability list fetch + shaping for the radar panel
+    coord_residuals.py       # (Δra, Δdec) per detection relative to the object's mean position
   templates/
     base.html.jinja                           # DOCTYPE shell + CSS/JS imports
     index.html.jinja                          # app shell (header, sidebar slot, main slot)
@@ -174,12 +176,28 @@ src/
     search_form/                              # filter form + dependent class select
     main_table_objects/objects_table.html.jinja   # results table (rows are hx-get to /htmx/detail)
     basic_information/basicInformationPreview.html.jinja   # populated object info panel
-    object_detail/container.html.jinja        # detail view (back button + basic-info slot + placeholders)
+    object_detail/container.html.jinja        # detail view (back + info + LC/stamps/aladin/radar/residuals)
+    lightcurve/lightcurvePreview.html.jinja   # Chart.js light curve + cycle-button toggles + z/E(B-V) inputs
+    stamps/stampsPreview.html.jinja           # science/template/difference triplet (FITS for LSST, PNG for ZTF)
+    aladin/aladinPreview.html.jinja           # Aladin Lite sky viewer + spec-z overlay chips
+    radar/radarPreview.html.jinja             # classifier probability radar (Chart.js radar)
+    coord_residuals/coordResidualsPreview.html.jinja  # (Δra, Δdec) scatter with zoom/pan
   static/
     htmx/htmx.min.js         # self-hosted htmx 1.9.12
+    chart-js/chart.umd.js    # vendored Chart.js 4.x
+    chart-js/chartjs-plugin-zoom.min.js, hammer.min.js  # zoom/pan gestures
     css/tailwind.css         # @tailwind directives (source)
     css/main.css             # compiled Tailwind output (npm run build:css)
     js/helpers.js            # send_form_Data, send_pagination_data, send_classes_data
+    js/selection.js          # window._selectedIdentifier + Chart plugin; syncs LC↔stamps↔residuals
+    js/lightcurve.js         # Chart.js LC + cycle-button toggles (flux/mag, diff/sci, app/abs, obs/der)
+    js/stamps.js             # FITS parsing + asinh stretch + WCS rotation for LSST stamps
+    js/aladin.js             # Aladin Lite v3 bootstrap + spec-z overlays + click→z handler
+    js/radar.js              # Chart.js radar panel
+    js/coord_residuals.js    # Chart.js scatter for (Δra, Δdec)
+    js/cosmology.js          # Planck-2018 distance modulus (numeric integration)
+    js/dust.js               # IRSA dust-proxy client + galactic latitude warning
+    js/specz.js              # 10-catalog VizieR spec-z loader (VOTable parsing)
 
 tests/                       # pytest; each service file has a matching test file
 ```
@@ -207,6 +225,10 @@ tests/                       # pytest; each service file has a matching test fil
 ## Slice progress
 
 - **Slice 1** — FastAPI + htmx + Jinja + Tailwind scaffold, self-hosted htmx, app shell.
-- **Slice 2** — live search form with dependent classifier/class dropdowns, results table with pagination, calls real ALeRCE API.
-- **Slice 3** — object detail view: row click → `/htmx/detail` container with back button, basic-information panel (coords/HMS/DMS, MJDs, detection counts, ZTF `corrected`/`stellar`, external archives dropdown), placeholders for slices 4–6.
-- **Deferred (slices 4–10)** — light curve (Chart.js + ZTF v1/v2 merge + corrections), stamps (LSST FITS pipeline + ZTF PNG), Aladin, crossmatch, periodogram (in-browser GLS), airmass, name resolver.
+- **Slice 2** — live search form with dependent classifier/class dropdowns, results table with pagination (sorted by probability DESC), calls real ALeRCE API.
+- **Slice 3** — object detail view: row click → `/htmx/detail` container with back button, basic-information panel (coords/HMS/DMS, MJDs, detection counts, ZTF `corrected`/`stellar`, external archives dropdown).
+- **Slice 4** — light curve (Chart.js): ZTF v1/v2 merge, forced-photometry overlay, per-band coloring, tooltip with errors, zoom/pan (`chartjs-plugin-zoom`). Cycle-button toggles collapse each projection axis into a single compact button: **Flux/Mag** (AB ZP 31.4), **Diff/Sci** (science flux only when available), **App/Abs** (Planck-2018 distance modulus via `cosmology.js`, requires z > 0), **Obs/Der** (Fitzpatrick 1999 per-band Milky-Way extinction via `dust.js`, E(B-V) auto-fetched from the IRSA proxy). Animations disabled so toggles snap.
+- **Slice 5** — stamps (science/template/difference): in-browser FITS pipeline for LSST (asinh stretch, WCS rotation, N-up via CD matrix), PNG for ZTF. Cross-panel selection: clicking a point in the LC highlights the matching stamp and vice versa (`selection.js`).
+- **Slice 6** — Aladin Lite sky viewer with HiPS survey chooser and 10-catalog VizieR spec-z overlay (`specz.js`: DESI DR1, SDSS DR16, SDSS DR16 QSO, 6dFGS, GAMA DR4, 2MRS, WiggleZ, zCOSMOS, VIPERS PDR2, OzDES DR1). Clicking a host-galaxy source fills the redshift input in the LC panel.
+- **Post-Slice 6** — radar panel (classifier probabilities), coord-residuals panel ((Δra, Δdec) scatter), cross-panel selection synced through `window._selectedIdentifier` + Chart plugin.
+- **Deferred** — crossmatch, periodogram (in-browser GLS), airmass, name resolver.

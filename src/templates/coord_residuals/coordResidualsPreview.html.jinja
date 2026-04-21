@@ -5,7 +5,7 @@
   Scatter is color-coded by MJD; the colorbar gradient below the canvas
   shows the mapping so moving-object tracks (time-ordered drift) stand out.
 #}
-<div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4">
+<div class="tw-h-full tw-flex tw-flex-col tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4">
   <div class="tw-flex tw-items-center tw-justify-between tw-mb-2 tw-gap-3">
     <div
       class="tw-text-text-secondary tw-text-xs tw-uppercase"
@@ -30,7 +30,7 @@
   </div>
 
   {% if ctx.points %}
-    <div class="tw-relative tw-h-56">
+    <div class="tw-relative tw-flex-1 tw-min-h-[14.4rem]">
       <canvas
         id="coord-canvas-{{ oid }}"
         class="coord-residuals-canvas"

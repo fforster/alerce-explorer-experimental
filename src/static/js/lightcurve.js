@@ -29,6 +29,53 @@
   // Canvas element → Chart instance, so we can destroy before re-initializing.
   const charts = new WeakMap();
 
+  // Error bars drawn as a post-render overlay. projectPoint emits yLo/yHi
+  // in the active Y-axis units; in mag mode these come from the symmetric
+  // flux error and are therefore asymmetric, with yHi = +∞ when the faint
+  // side would need log of a non-positive number. In that case we drop
+  // the end cap and let the bar reach the chart edge (visually: "arrow").
+  const errorBarPlugin = {
+    id: "lcErrorBars",
+    afterDatasetsDraw(chart) {
+      const { ctx, scales: { y }, chartArea } = chart;
+      const reversed = y.options.reverse === true;
+      chart.data.datasets.forEach((ds, di) => {
+        if (!chart.isDatasetVisible(di)) return;
+        const meta = chart.getDatasetMeta(di);
+        const color = ds.borderColor || ds.backgroundColor || "#888";
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ds.data.forEach((p, i) => {
+          if (!p || p.yLo == null || p.yHi == null) return;
+          const el = meta.data[i];
+          if (!el) return;
+          const xPx = el.x;
+          const loOpen = !isFinite(p.yLo);
+          const hiOpen = !isFinite(p.yHi);
+          // Open ends map to the plot edge in the direction of the infinity
+          // (mag axis is reversed, so +∞ sits at the bottom edge).
+          const pxLo = loOpen ? (reversed ? chartArea.top : chartArea.bottom)
+                              : y.getPixelForValue(p.yLo);
+          const pxHi = hiOpen ? (reversed ? chartArea.bottom : chartArea.top)
+                              : y.getPixelForValue(p.yHi);
+          const top = Math.min(pxLo, pxHi);
+          const bot = Math.max(pxLo, pxHi);
+          const topOpen = (top === pxLo && loOpen) || (top === pxHi && hiOpen);
+          const botOpen = (bot === pxLo && loOpen) || (bot === pxHi && hiOpen);
+          const cap = 3;
+          ctx.beginPath();
+          ctx.moveTo(xPx, Math.max(chartArea.top, top));
+          ctx.lineTo(xPx, Math.min(chartArea.bottom, bot));
+          if (!topOpen) { ctx.moveTo(xPx - cap, top); ctx.lineTo(xPx + cap, top); }
+          if (!botOpen) { ctx.moveTo(xPx - cap, bot); ctx.lineTo(xPx + cap, bot); }
+          ctx.stroke();
+        });
+        ctx.restore();
+      });
+    },
+  };
+
   // Projection corrections composed in a fixed order:
   //   1. Milky-Way extinction per band (A_λ = R_λ · E(B-V)), applied BEFORE
   //      the distance modulus so absolute values are also dust-free.
@@ -36,18 +83,35 @@
   //   2. Distance modulus (Abs mode with z > 0). null means apparent.
   // In mag-space both are additive shifts (M = m − A − μ); in flux-space
   // they compose multiplicatively (10^(0.4·A) then 10^(0.4·μ)).
+  //
+  // Error bars are returned as (yLo, yHi) so the caller can draw them
+  // without knowing the projection. In flux-space this is just y ± e
+  // (symmetric). In mag-space it is asymmetric: upper/lower bounds are
+  // computed from the symmetric flux error (flux ± eFlux) and then
+  // converted — the faint side may go to +∞ when (flux − eFlux) ≤ 0,
+  // which the renderer draws as an arrow reaching the chart edge.
   function projectPoint(p, axisMode, sourceMode, distMod, extMag) {
     const flux = sourceMode === "sci" ? p.sci_flux : p.flux;
     const eFlux = sourceMode === "sci" ? p.e_sci_flux : p.e_flux;
     if (flux == null) return null;
     const A = extMag || 0;
+    const mu = distMod || 0;
     if (axisMode === "mag") {
       if (flux <= 0) return null;
-      let mag = AB_ZP_NJY - 2.5 * Math.log10(flux);
-      const eMag = eFlux != null ? eFlux / flux / LN10_OVER_2P5 : null;
-      if (A !== 0) mag = mag - A;
-      if (distMod != null) mag = mag - distMod;
-      return { x: p.mjd, y: mag, e: eMag, identifier: p.identifier, has_stamp: p.has_stamp };
+      const mag = AB_ZP_NJY - 2.5 * Math.log10(flux) - A - mu;
+      // Representative ± for the tooltip (small-error approximation).
+      const e = eFlux != null && eFlux > 0 ? eFlux / flux / LN10_OVER_2P5 : null;
+      let yLo = null, yHi = null;
+      if (eFlux != null && eFlux > 0) {
+        // Bright side: flux + e → smaller mag (finite as long as flux>0).
+        yLo = AB_ZP_NJY - 2.5 * Math.log10(flux + eFlux) - A - mu;
+        // Faint side: flux − e → larger mag, +∞ when non-positive.
+        const fluxLo = flux - eFlux;
+        yHi = fluxLo > 0
+          ? AB_ZP_NJY - 2.5 * Math.log10(fluxLo) - A - mu
+          : Infinity;
+      }
+      return { x: p.mjd, y: mag, e, yLo, yHi, identifier: p.identifier, has_stamp: p.has_stamp };
     }
     let y = flux;
     let e = eFlux;
@@ -61,7 +125,9 @@
       y *= scaleD;
       if (e != null) e *= scaleD;
     }
-    return { x: p.mjd, y, e, identifier: p.identifier, has_stamp: p.has_stamp };
+    const yLo = e != null ? y - e : null;
+    const yHi = e != null ? y + e : null;
+    return { x: p.mjd, y, e, yLo, yHi, identifier: p.identifier, has_stamp: p.has_stamp };
   }
 
   function buildDatasets(bands, fpBands, axisMode, sourceMode, distMod, extByBand) {
@@ -177,6 +243,7 @@
     const chart = new Chart(canvas.getContext("2d"), {
       type: "scatter",
       data: { datasets: buildDatasets(bands, fpBands, initialAxisMode, initialSourceMode, null, null) },
+      plugins: [errorBarPlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -210,12 +277,14 @@
           x: {
             type: "linear",
             title: { display: true, text: "MJD", color: "#8b949e" },
-            grid: { color: "rgba(139,148,158,0.15)" },
+            grid: { drawOnChartArea: false, drawTicks: true, tickColor: "#8b949e" },
+            border: { display: true, color: "#8b949e" },
             ticks: { color: "#8b949e" },
           },
           y: {
             title: { display: true, text: "Flux (nJy, diff)", color: "#8b949e" },
-            grid: { color: "rgba(139,148,158,0.15)" },
+            grid: { drawOnChartArea: false, drawTicks: true, tickColor: "#8b949e" },
+            border: { display: true, color: "#8b949e" },
             ticks: { color: "#8b949e" },
           },
         },
@@ -302,6 +371,9 @@
       if (spec.guard && !spec.guard(chart, next)) return;
       chart[spec.chartProp] = next;
       setCycleValue(btn, spec, next);
+      // New projection → new Y-axis range; the prior zoom window would
+      // usually land on empty space, so reset to auto-fit first.
+      if (chart.resetZoom) chart.resetZoom("none");
       applyModes(chart);
     });
   }
