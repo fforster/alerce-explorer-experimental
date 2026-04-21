@@ -33,7 +33,7 @@
 
   <div>
     <label class="tw-text-sm tw-text-text-secondary tw-block tw-mb-1" for="objectIds">Object ID</label>
-    {{ customInput(id="objectIds", type="text", placeholder="comma-separated OIDs") }}
+    {{ customInput(id="objectIds", type="text", placeholder="comma-separated OIDs", value=selected_oids or "") }}
   </div>
 
   <div>
@@ -64,15 +64,29 @@
       class="tw-w-full tw-bg-bg-tertiary tw-border tw-border-border tw-rounded tw-py-1 tw-px-2 tw-text-sm"
     >
       <option value="">(any)</option>
+      {#
+        On a deep-link with both classifier and class_name in the URL, the
+        dependent select is normally empty until the classifier `change` event
+        fires and triggers /htmx/classes_select — which never happens on load,
+        so the selection would be lost. Pre-render the chosen classifier's
+        class list server-side to avoid that gap.
+      #}
+      {% if selected_classifier %}
+        {% for c in classifiers if c.classifier_name == selected_classifier %}
+          {% for cls in c.classes %}
+            <option value="{{ cls }}" {% if cls == selected_class_name %}selected{% endif %}>{{ cls }}</option>
+          {% endfor %}
+        {% endfor %}
+      {% endif %}
     </select>
   </div>
 
   <div>
     <label class="tw-text-sm tw-text-text-secondary tw-block">
-      Probability ≥ <span id="prob_number" class="mono">0.00</span>
+      Probability ≥ <span id="prob_number" class="mono">{{ "%.2f"|format(selected_probability or 0) }}</span>
     </label>
     <input
-      id="prob_range" type="range" step="0.01" min="0" max="1" value="0"
+      id="prob_range" type="range" step="0.01" min="0" max="1" value="{{ selected_probability or 0 }}"
       class="tw-w-full"
       oninput="document.getElementById('prob_number').textContent = parseFloat(this.value).toFixed(2)"
     />
@@ -81,8 +95,8 @@
   <div>
     <p class="tw-text-sm tw-text-text-secondary tw-mb-1">Number of detections</p>
     <div class="tw-flex tw-gap-2">
-      {{ customInput(id="min_detections", type="number", placeholder="Min", width="tw-w-1/2") }}
-      {{ customInput(id="max_detections", type="number", placeholder="Max", width="tw-w-1/2") }}
+      {{ customInput(id="min_detections", type="number", placeholder="Min", width="tw-w-1/2", value=selected_n_det_min if selected_n_det_min is not none else "") }}
+      {{ customInput(id="max_detections", type="number", placeholder="Max", width="tw-w-1/2", value=selected_n_det_max if selected_n_det_max is not none else "") }}
     </div>
   </div>
 

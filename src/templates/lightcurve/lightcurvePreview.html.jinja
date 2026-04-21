@@ -84,6 +84,44 @@
             class="lc-ebv-input tw-w-20 tw-px-1.5 tw-py-0.5 tw-bg-bg-secondary tw-border tw-border-border tw-rounded tw-text-text-primary tw-font-mono"
           />
         </label>
+        {#
+          ZTF DR overlay: archival ZTF science photometry at this sky
+          position. Shown for every survey — LSST objects can still have a
+          positional ZTF DR crossmatch — as long as ra/dec are known. Only
+          meaningful in Sci mode (DR points carry no difference flux); the
+          JS fetches /api/ztf_dr on first click and toggles visibility on
+          subsequent clicks.
+        #}
+        {% if ra is not none and dec is not none %}
+          <div class="tw-inline-flex tw-items-center tw-gap-1">
+            <button
+              type="button"
+              class="lc-dr-toggle tw-px-2 tw-py-0.5 tw-text-xs tw-border tw-border-border tw-rounded tw-bg-bg-secondary tw-text-text-muted hover:tw-text-text-primary"
+              data-target="lc-canvas-{{ oid }}"
+              data-ra="{{ ra }}"
+              data-dec="{{ dec }}"
+              data-lc-dr="off"
+              title="Click to fetch/toggle ZTF Data Release archival photometry (cone search, 1.5 arcsec). DR points are science photometry, so they show only in Sci mode."
+            >ZTF DR</button>
+            {#
+              Vertical alpha slider — hidden by default, revealed once DR is
+              toggled on so the user can blend DR up/down dynamically without
+              re-fetching. `writing-mode` + `direction: rtl` + `orient` cover
+              Chromium, Firefox, and Safari vertical-range implementations;
+              the inline height is explicit because flex layout can't derive
+              it from a rotated child.
+            #}
+            <input
+              type="range"
+              orient="vertical"
+              class="lc-dr-alpha tw-hidden"
+              data-target="lc-canvas-{{ oid }}"
+              min="0" max="1" step="0.01" value="0.10"
+              style="writing-mode: vertical-rl; direction: rtl; width: 0.75rem; height: 2rem;"
+              title="Drag to adjust ZTF DR point transparency."
+            />
+          </div>
+        {% endif %}
         <button
           type="button"
           class="chart-zoom-reset-btn tw-px-2 tw-py-0.5 tw-text-xs tw-border tw-border-border tw-rounded tw-bg-bg-card tw-text-text-muted hover:tw-text-text-primary"

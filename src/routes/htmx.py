@@ -51,11 +51,25 @@ def _share_url(
     oid: str | None = None,
     classifier: str | None = None,
     identifier: str | None = None,
+    class_name: str | None = None,
+    probability: float | None = None,
+    n_det_min: int | None = None,
+    n_det_max: int | None = None,
+    oids: str | None = None,
+    page: int | None = None,
 ) -> str:
     """Build the shareable `/?...` URL from the pieces that make up the view.
 
     Kept in one place so the HX-Push-Url header and the server-rendered initial
-    markup can't drift. Empty/None pieces are dropped.
+    markup can't drift. Empty/None pieces are dropped so the URL stays legible.
+
+    Param naming:
+      - `oid` is a single-object selector (detail view).
+      - `oids` is the free-text OID-list search filter. Distinct names so the
+        two can coexist in one URL (e.g. "I searched by an OID list and drilled
+        into one result").
+      - `page` only appears when > 1.
+      - `probability` only appears when > 0.
     """
     params: list[tuple[str, str]] = []
     if survey:
@@ -64,6 +78,18 @@ def _share_url(
         params.append(("oid", oid))
     if classifier:
         params.append(("classifier", classifier))
+    if class_name:
+        params.append(("class_name", class_name))
+    if probability is not None and probability > 0:
+        params.append(("probability", str(probability)))
+    if n_det_min is not None:
+        params.append(("n_det_min", str(n_det_min)))
+    if n_det_max is not None:
+        params.append(("n_det_max", str(n_det_max)))
+    if oids:
+        params.append(("oids", oids))
+    if page is not None and page > 1:
+        params.append(("page", str(page)))
     if identifier:
         params.append(("identifier", identifier))
     return "/" if not params else f"/?{urlencode(params)}"
@@ -76,11 +102,19 @@ async def index(
     oid: str | None = None,
     classifier: str | None = None,
     identifier: str | None = None,
+    class_name: str | None = None,
+    probability: float | None = None,
+    n_det_min: int | None = None,
+    n_det_max: int | None = None,
+    oids: str | None = None,
+    page: int | None = None,
 ) -> HTMLResponse:
     # Query params hydrate the initial view: `?oid=…` jumps straight to the
-    # detail, `?classifier=…` pre-selects the filter dropdown (and pre-runs
-    # the listing), `?identifier=…` pre-selects a specific detection in the
-    # stamps/highlight panels. Fresh `/` keeps the empty-hint default.
+    # detail, filter params (`classifier`, `class_name`, `probability`,
+    # `n_det_min/max`, `oids`, `page`) pre-populate the search form and — when
+    # no `oid=` is set — pre-run the listing with that filter set. `identifier`
+    # pre-selects a specific detection in the stamps/highlight panels. Fresh
+    # `/` keeps the empty-hint default.
     if survey:
         _validate_survey(survey)
     return templates.TemplateResponse(
@@ -91,6 +125,12 @@ async def index(
             "initial_oid": oid,
             "initial_classifier": classifier,
             "initial_identifier": identifier,
+            "initial_class_name": class_name,
+            "initial_probability": probability,
+            "initial_n_det_min": n_det_min,
+            "initial_n_det_max": n_det_max,
+            "initial_oids": oids,
+            "initial_page": page,
         },
     )
 
@@ -100,6 +140,11 @@ async def search_form(
     request: Request,
     survey: str = "lsst",
     classifier: str | None = None,
+    class_name: str | None = None,
+    probability: float | None = None,
+    n_det_min: int | None = None,
+    n_det_max: int | None = None,
+    oids: str | None = None,
 ) -> HTMLResponse:
     _validate_survey(survey)
     try:
@@ -110,7 +155,16 @@ async def search_form(
     return templates.TemplateResponse(
         request,
         "search_form/form.html.jinja",
-        {"survey": survey, "classifiers": tidy, "selected_classifier": classifier},
+        {
+            "survey": survey,
+            "classifiers": tidy,
+            "selected_classifier": classifier,
+            "selected_class_name": class_name,
+            "selected_probability": probability,
+            "selected_n_det_min": n_det_min,
+            "selected_n_det_max": n_det_max,
+            "selected_oids": oids,
+        },
     )
 
 
@@ -135,7 +189,7 @@ async def list_objects(
     probability: float | None = None,
     n_det_min: int | None = None,
     n_det_max: int | None = None,
-    oid: str | None = None,
+    oids: str | None = None,
     page: int = 1,
     page_size: int = object_list_service.DEFAULT_PAGE_SIZE,
 ) -> HTMLResponse:
@@ -160,7 +214,7 @@ async def list_objects(
             probability=probability,
             n_det_min=n_det_min,
             n_det_max=n_det_max,
-            oid=oid,
+            oid=oids,  # service still uses `oid=` internally for the OID-list filter
             page=max(page, 1),
             page_size=page_size,
         )
@@ -175,11 +229,33 @@ async def list_objects(
     resp = templates.TemplateResponse(
         request,
         "main_table_objects/objects_table.html.jinja",
-        {"objects_list": data, "survey": survey, "classifier": classifier},
+        {
+            "objects_list": data,
+            "survey": survey,
+            "classifier": classifier,
+            "class_name": class_name,
+            "probability": probability,
+            "n_det_min": n_det_min,
+            "n_det_max": n_det_max,
+            "oids": oids,
+            # `page` is the *current* page for echoing in row-click URLs; the
+            # table template reads `objects_list.current_page` for pagination,
+            # so there's no collision.
+            "page": page,
+        },
     )
     # HX-Push-Url updates the browser address bar to a shareable `/?…` form
     # without reloading; htmx only honors it for requests it made itself.
-    resp.headers["HX-Push-Url"] = _share_url(survey=survey, classifier=classifier)
+    resp.headers["HX-Push-Url"] = _share_url(
+        survey=survey,
+        classifier=classifier,
+        class_name=class_name,
+        probability=probability,
+        n_det_min=n_det_min,
+        n_det_max=n_det_max,
+        oids=oids,
+        page=page,
+    )
     return resp
 
 
@@ -190,8 +266,17 @@ async def detail(
     survey_id: str,
     classifier: str | None = None,
     identifier: str | None = None,
+    class_name: str | None = None,
+    probability: float | None = None,
+    n_det_min: int | None = None,
+    n_det_max: int | None = None,
+    oids: str | None = None,
+    page: int | None = None,
 ) -> HTMLResponse:
     _validate_survey(survey_id)
+    # Filter params are passthrough: the detail route doesn't use them, but
+    # it echoes them back into HX-Push-Url so "share" and "back" preserve the
+    # search context that led here.
     resp = templates.TemplateResponse(
         request,
         "object_detail/container.html.jinja",
@@ -203,7 +288,16 @@ async def detail(
         },
     )
     resp.headers["HX-Push-Url"] = _share_url(
-        survey=survey_id, oid=oid, classifier=classifier, identifier=identifier
+        survey=survey_id,
+        oid=oid,
+        classifier=classifier,
+        identifier=identifier,
+        class_name=class_name,
+        probability=probability,
+        n_det_min=n_det_min,
+        n_det_max=n_det_max,
+        oids=oids,
+        page=page,
     )
     return resp
 

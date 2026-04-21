@@ -56,6 +56,32 @@ def test_normalize_ztf_rejects_bad_ecorr_sentinel():
     assert out["e_mag_corr"] is None
 
 
+def test_normalize_ztf_rejects_mag_100_sentinel():
+    # ZTF forced photometry uses mag == 100 as "no usable measurement"; the
+    # normalizer must zero the flux fields rather than emit ~1e-27 nJy.
+    out = normalize_det(
+        {"fid": 1, "magpsf": 100.0, "sigmapsf": 0.1}, survey="ztf"
+    )
+    assert out["mag"] is None
+    assert out["psf_flux"] is None
+    assert out["e_psf_flux"] is None
+
+
+def test_normalize_ztf_rejects_mag_corr_100_sentinel():
+    # Same sentinel applied on the science-flux (corr) side.
+    out = normalize_det(
+        {"fid": 1, "magpsf": 19.5, "sigmapsf": 0.05,
+         "magpsf_corr": 100.0, "sigmapsf_corr": 0.05},
+        survey="ztf",
+    )
+    # Diff side survives.
+    assert out["psf_flux"] is not None
+    # Science side zeroed out.
+    assert out["mag_corr"] is None
+    assert out["science_flux"] is None
+    assert out["e_science_flux"] is None
+
+
 def test_normalize_ztf_isdiffpos_forms():
     for raw, expected in [(1, 1), (-1, -1), ("1", 1), ("-1", -1),
                           ("t", 1), ("f", -1), (True, 1), (False, -1)]:

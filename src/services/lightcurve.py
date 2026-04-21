@@ -98,6 +98,57 @@ def _extract_fp(fp_resp: Any, survey: str) -> list[dict[str, Any]]:
     return []
 
 
+def _merge_ztf_v2_corr(
+    v1_dets: list[dict[str, Any]], fp_resp: Any
+) -> list[dict[str, Any]]:
+    """Overlay v2 mag_corr/e_mag_corr onto v1 detections, joined by candid.
+
+    ZTF's v1 lightcurve almost always emits sigmapsf_corr = 100.0 (the
+    "unreliable" sentinel), which normalize_ztf rejects — resulting in empty
+    sci-mode error bars. The v2 endpoint (already fetched for FP) carries the
+    reference-subtracted, flux-calibrated correction we actually want, so we
+    join by candid (string compare for LSST safety even though ZTF candids
+    fit in 64 bits) and patch v1's magpsf_corr/sigmapsf_corr before
+    normalization. Silently no-ops when the v2 response is missing or not
+    the expected shape — the panel still renders, just without sci errors.
+    """
+    if not isinstance(fp_resp, dict):
+        return v1_dets
+    v2_dets = fp_resp.get("detections") or []
+    if not isinstance(v2_dets, list):
+        return v1_dets
+    v2_by_candid: dict[str, dict[str, Any]] = {}
+    for d in v2_dets:
+        if not isinstance(d, dict):
+            continue
+        cid = d.get("candid")
+        if cid is not None:
+            v2_by_candid[str(cid)] = d
+    if not v2_by_candid:
+        return v1_dets
+    for d in v1_dets:
+        cid = d.get("candid")
+        if cid is None:
+            continue
+        v2 = v2_by_candid.get(str(cid))
+        if v2 is None:
+            continue
+        # Only override when v2 actually supplies a value, so we don't wipe
+        # a (rare) reliable v1 field with a None from v2.
+        if v2.get("mag_corr") is not None:
+            d["magpsf_corr"] = v2["mag_corr"]
+        # Prefer e_mag_corr_ext (reference-flux-inclusive error): in practice
+        # `e_mag_corr` itself is often also the 100.0 sentinel on ALeRCE
+        # ZTF v2, while `e_mag_corr_ext` carries the usable value. Fall back
+        # to e_mag_corr when _ext isn't present.
+        e_corr = v2.get("e_mag_corr_ext")
+        if e_corr is None:
+            e_corr = v2.get("e_mag_corr")
+        if e_corr is not None:
+            d["sigmapsf_corr"] = e_corr
+    return v1_dets
+
+
 async def _fetch_fp(url: str | None) -> Any:
     if url is None:
         return None
@@ -118,5 +169,9 @@ async def get_lightcurve(*, survey: str, oid: str) -> dict[str, Any]:
     )
     if not isinstance(raw, dict):
         raise ValueError(f"Unexpected lightcurve response shape: {type(raw).__name__}")
+    # ZTF only: pull mag_corr/e_mag_corr from v2 into v1 so sci-mode error
+    # bars aren't defeated by v1's sigmapsf_corr=100 sentinel.
+    if survey == "ztf" and isinstance(raw.get("detections"), list):
+        raw["detections"] = _merge_ztf_v2_corr(raw["detections"], fp_resp)
     fp_raw = _extract_fp(fp_resp, survey)
     return shape_lightcurve(raw, survey=survey, fp_raw=fp_raw)

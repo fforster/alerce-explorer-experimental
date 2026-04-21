@@ -24,7 +24,10 @@ function send_form_Data() {
   if (classifier) payload.classifier = classifier;
   if (className) payload.class_name = className;
   if (probability && parseFloat(probability) > 0) payload.probability = probability;
-  if (oidsRaw) payload.oid = oidsRaw;
+  // `oids` (plural) is the free-text OID-list search. Distinct from the detail
+  // view's `oid=` (single-object), which shares the URL namespace but means
+  // something different — rename here so a search + detail URL can coexist.
+  if (oidsRaw) payload.oids = oidsRaw;
   if (minDet) payload.n_det_min = minDet;
   if (maxDet) payload.n_det_max = maxDet;
   return payload;

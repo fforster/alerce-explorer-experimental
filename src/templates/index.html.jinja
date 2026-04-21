@@ -4,6 +4,14 @@
 <div class="tw-flex tw-flex-col tw-h-full">
 
   <header class="tw-h-12 tw-bg-bg-secondary tw-border-b tw-border-border tw-flex tw-items-center tw-px-4 tw-gap-3">
+    <button
+      type="button"
+      id="search-panel-toggle"
+      class="tw-px-2 tw-py-0.5 tw-text-xs tw-border tw-border-border tw-rounded tw-bg-bg-card tw-text-text-muted hover:tw-text-text-primary"
+      title="Hide/show the search panel"
+      aria-controls="search-panel"
+      aria-expanded="true"
+    >&laquo;</button>
     <div class="tw-text-accent tw-font-bold tw-text-sm">
       ALeRCE <span class="tw-text-text-secondary tw-font-normal tw-text-xs">tutorial · htmx</span>
     </div>
@@ -12,10 +20,27 @@
 
   <div class="tw-flex tw-flex-1 tw-min-h-0">
 
-    <aside class="tw-w-80 tw-flex-shrink-0 tw-bg-bg-secondary tw-border-r tw-border-border tw-overflow-y-auto">
+    {#
+      Every filter param flows through `filter_qs` so the initial search-form,
+      listing, and detail `hx-get`s all pre-load with the same state that's in
+      the URL. Empty/default values are dropped to match `_share_url`'s output
+      exactly (no asymmetric /?… ↔ hydration drift). Defined once with `set`
+      so extending the filter list means editing one place, not three.
+    #}
+    {%- set filter_qs %}
+      {%- if initial_classifier %}&classifier={{ initial_classifier|urlencode }}{% endif %}
+      {%- if initial_class_name %}&class_name={{ initial_class_name|urlencode }}{% endif %}
+      {%- if initial_probability and initial_probability > 0 %}&probability={{ initial_probability }}{% endif %}
+      {%- if initial_n_det_min is not none %}&n_det_min={{ initial_n_det_min }}{% endif %}
+      {%- if initial_n_det_max is not none %}&n_det_max={{ initial_n_det_max }}{% endif %}
+      {%- if initial_oids %}&oids={{ initial_oids|urlencode }}{% endif %}
+      {%- if initial_page and initial_page > 1 %}&page={{ initial_page }}{% endif %}
+    {%- endset %}
+
+    <aside id="search-panel" class="tw-w-80 tw-flex-shrink-0 tw-bg-bg-secondary tw-border-r tw-border-border tw-overflow-y-auto">
       <div
         id="search-form-slot"
-        hx-get="{{ API_URL }}/htmx/search_objects/?survey={{ initial_survey }}{% if initial_classifier %}&classifier={{ initial_classifier|urlencode }}{% endif %}"
+        hx-get="{{ API_URL }}/htmx/search_objects/?survey={{ initial_survey }}{{ filter_qs|trim }}"
         hx-trigger="load"
         hx-swap="innerHTML"
       ></div>
@@ -23,21 +48,22 @@
 
     <main class="tw-flex-1 tw-overflow-auto tw-p-4">
       {#
-        Deep-link hydration: `?oid=…` jumps straight to the object detail;
-        `?classifier=…` (without oid) pre-runs the listing for that filter;
-        fresh `/` keeps the empty-hint default.
+        Deep-link hydration: `?oid=…` jumps straight to the object detail
+        (filter params tag along as passthrough so the detail view can echo
+        them into HX-Push-Url); any filter param (without oid) pre-runs the
+        listing; fresh `/` keeps the empty-hint default.
       #}
       {% if initial_oid %}
         <div
           id="results-slot"
-          hx-get="{{ API_URL }}/htmx/detail?oid={{ initial_oid|urlencode }}&survey_id={{ initial_survey }}{% if initial_classifier %}&classifier={{ initial_classifier|urlencode }}{% endif %}{% if initial_identifier %}&identifier={{ initial_identifier|urlencode }}{% endif %}"
+          hx-get="{{ API_URL }}/htmx/detail?oid={{ initial_oid|urlencode }}&survey_id={{ initial_survey }}{{ filter_qs|trim }}{% if initial_identifier %}&identifier={{ initial_identifier|urlencode }}{% endif %}"
           hx-trigger="load"
           hx-swap="innerHTML"
         ></div>
-      {% elif initial_classifier %}
+      {% elif initial_classifier or initial_class_name or initial_probability or initial_n_det_min is not none or initial_n_det_max is not none or initial_oids or initial_page %}
         <div
           id="results-slot"
-          hx-get="{{ API_URL }}/htmx/list_objects?survey={{ initial_survey }}&classifier={{ initial_classifier|urlencode }}"
+          hx-get="{{ API_URL }}/htmx/list_objects?survey={{ initial_survey }}{{ filter_qs|trim }}"
           hx-trigger="load"
           hx-swap="innerHTML"
         ></div>
@@ -53,4 +79,17 @@
 
   </div>
 </div>
+<script>
+  (function () {
+    const btn = document.getElementById("search-panel-toggle");
+    const panel = document.getElementById("search-panel");
+    if (!btn || !panel) return;
+    btn.addEventListener("click", () => {
+      const hidden = panel.classList.toggle("tw-hidden");
+      btn.setAttribute("aria-expanded", hidden ? "false" : "true");
+      btn.textContent = hidden ? "\u00bb" : "\u00ab";
+      btn.title = hidden ? "Show the search panel" : "Hide the search panel";
+    });
+  })();
+</script>
 {% endblock %}

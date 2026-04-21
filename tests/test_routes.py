@@ -155,10 +155,48 @@ def test_list_objects_empty_still_emits_data_nav(client):
 def test_list_objects_pushes_share_url(client, stub_services):
     r = client.get("/htmx/list_objects?survey=lsst&classifier=lc_classifier_top&page=1")
     assert r.status_code == 200
-    # HX-Push-Url updates the browser URL to a shareable form.
+    # HX-Push-Url updates the browser URL to a shareable form. page=1 is the
+    # default so it's dropped to keep URLs clean.
     assert r.headers.get("HX-Push-Url") == "/?survey=lsst&classifier=lc_classifier_top"
     # Row URL carries the classifier through to the detail request.
     assert "classifier=lc_classifier_top" in r.text
+
+
+def test_list_objects_pushes_full_filter_url(client, stub_services):
+    """Every filter the form can set round-trips through HX-Push-Url so the
+    drill-in/back cycle (or a share link) reconstructs the exact listing."""
+    r = client.get(
+        "/htmx/list_objects?survey=ztf&classifier=lc_classifier_top"
+        "&class_name=SN&probability=0.5&n_det_min=5&n_det_max=50&oids=ZTF1,ZTF2&page=3"
+    )
+    assert r.status_code == 200
+    assert r.headers.get("HX-Push-Url") == (
+        "/?survey=ztf&classifier=lc_classifier_top&class_name=SN&probability=0.5"
+        "&n_det_min=5&n_det_max=50&oids=ZTF1%2CZTF2&page=3"
+    )
+
+
+def test_list_objects_accepts_oids_and_forwards_as_oid(client, monkeypatch):
+    """The URL uses `oids=` (plural) to not collide with detail's `oid=`, but
+    the service layer still takes `oid=`. The route bridges the two names."""
+    captured = {}
+
+    async def fake_objects(**kwargs):
+        captured.update(kwargs)
+        return {
+            "items": [], "current_page": 1,
+            "has_prev": False, "prev": False,
+            "has_next": False, "next": False,
+            "info_message": None,
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_list_service.get_objects_list",
+        fake_objects,
+    )
+    r = client.get("/htmx/list_objects?survey=lsst&oids=OID1,OID2")
+    assert r.status_code == 200
+    assert captured.get("oid") == "OID1,OID2"
 
 
 def test_list_objects_without_survey_does_not_push_url(client):
@@ -173,6 +211,20 @@ def test_detail_pushes_share_url_with_classifier(client):
     assert r.status_code == 200
     assert r.headers.get("HX-Push-Url") == (
         "/?survey=lsst&oid=LSST-1&classifier=lc_classifier_top"
+    )
+
+
+def test_detail_pushes_full_filter_url(client):
+    """Detail passes through every filter param so that clicking a row in a
+    filtered listing produces a URL that reconstructs the listing on back."""
+    r = client.get(
+        "/htmx/detail?oid=LSST-1&survey_id=lsst&classifier=lc_classifier_top"
+        "&class_name=SN&probability=0.5&n_det_min=5&n_det_max=50&oids=A,B&page=2"
+    )
+    assert r.status_code == 200
+    assert r.headers.get("HX-Push-Url") == (
+        "/?survey=lsst&oid=LSST-1&classifier=lc_classifier_top&class_name=SN"
+        "&probability=0.5&n_det_min=5&n_det_max=50&oids=A%2CB&page=2"
     )
 
 
@@ -201,6 +253,80 @@ def test_search_form_preselects_classifier(client, stub_services):
     # `selected` attribute marks the matching <option>.
     assert 'value="lc_classifier_top"' in r.text
     assert "selected" in r.text
+
+
+def test_search_form_prefills_all_filters(client, stub_services):
+    """Deep-link into the form with the full filter set and the inputs
+    should carry those values — including the dependent class_name select,
+    which is populated server-side rather than waiting on a `change` event."""
+    r = client.get(
+        "/htmx/search_objects/?survey=lsst&classifier=lc_classifier_top"
+        "&class_name=SN&probability=0.42&n_det_min=5&n_det_max=50&oids=OID1,OID2"
+    )
+    assert r.status_code == 200
+    # Free-text OID list is pre-populated.
+    assert 'value="OID1,OID2"' in r.text
+    # Probability slider shows the value (and the numeric readout span).
+    assert 'value="0.42"' in r.text
+    assert ">0.42<" in r.text
+    # Min/max detection inputs carry the integers.
+    assert 'value="5"' in r.text
+    assert 'value="50"' in r.text
+    # Dependent class options are rendered server-side with SN selected.
+    assert '<option value="SN" selected>SN</option>' in r.text
+
+
+def test_index_hydrates_list_from_any_filter(client):
+    """A URL with filters but no classifier still pre-runs the listing — any
+    filter param is enough to treat this as a filtered view."""
+    r = client.get("/?survey=lsst&class_name=SN&probability=0.5")
+    assert r.status_code == 200
+    assert "/htmx/list_objects?survey=lsst" in r.text
+    assert "class_name=SN" in r.text
+    assert "probability=0.5" in r.text
+    assert "/htmx/detail" not in r.text
+
+
+def test_index_full_filter_hydration(client):
+    """Every URL-level filter should ride through to the initial hx-get
+    that hydrates the search form and the listing."""
+    r = client.get(
+        "/?survey=ztf&classifier=lc_classifier_top&class_name=SN&probability=0.3"
+        "&n_det_min=5&n_det_max=50&oids=ZTF1&page=2"
+    )
+    assert r.status_code == 200
+    # Search form hx-get carries the filter passthrough.
+    assert "/htmx/search_objects/?survey=ztf" in r.text
+    # Listing hx-get carries the same, including page.
+    assert "/htmx/list_objects?survey=ztf" in r.text
+    assert "classifier=lc_classifier_top" in r.text
+    assert "class_name=SN" in r.text
+    assert "probability=0.3" in r.text
+    assert "n_det_min=5" in r.text
+    assert "n_det_max=50" in r.text
+    assert "oids=ZTF1" in r.text
+    assert "page=2" in r.text
+
+
+def test_row_hx_get_carries_full_filter_set(client, stub_services):
+    """Each row's hx-get (the drill-in click) must echo the filters so the
+    detail's HX-Push-Url can push a URL that includes the search context."""
+    r = client.get(
+        "/htmx/list_objects?survey=lsst&classifier=lc_classifier_top"
+        "&class_name=SN&probability=0.5&n_det_min=5&n_det_max=50&oids=A,B&page=3"
+    )
+    assert r.status_code == 200
+    assert "/htmx/detail?oid=LSST-1&survey_id=lsst" in r.text
+    for frag in [
+        "classifier=lc_classifier_top",
+        "class_name=SN",
+        "probability=0.5",
+        "n_det_min=5",
+        "n_det_max=50",
+        "oids=A%2CB",
+        "page=3",
+    ]:
+        assert frag in r.text
 
 
 def test_detail_renders_container(client):
@@ -463,6 +589,105 @@ def test_detail_container_wires_lightcurve_slot(client):
     assert r.status_code == 200
     assert "/htmx/lightcurve?oid=ZTF21abc&survey_id=ztf" in r.text
     assert 'id="lightcurve-slot"' in r.text
+
+
+def _stub_lc_and_info(monkeypatch, *, has_science_flux=True, ra=150.0, dec=30.0):
+    async def fake_lc(*, survey, oid):
+        return {
+            "survey": survey,
+            "bands": [{"name": "g", "points": [{
+                "mjd": 60000.0, "flux": 1000.0, "e_flux": 10.0,
+                "sci_flux": 1200.0, "e_sci_flux": 12.0,
+                "identifier": "1", "has_stamp": True,
+            }]}],
+            "forced_phot_bands": [],
+            "n_det": 1, "n_fp": 0, "has_science_flux": has_science_flux,
+        }
+
+    async def fake_info(*, survey, oid):
+        return {"ra": ra, "dec": dec}
+
+    monkeypatch.setattr("src.routes.htmx.lightcurve_service.get_lightcurve", fake_lc)
+    monkeypatch.setattr("src.routes.htmx.object_info_service.get_object_info", fake_info)
+
+
+def test_lightcurve_ztf_shows_dr_button_with_coords(client, monkeypatch):
+    _stub_lc_and_info(monkeypatch, ra=212.8182939, dec=-3.5206587)
+    r = client.get("/htmx/lightcurve?oid=ZTF21abc&survey_id=ztf")
+    assert r.status_code == 200
+    assert 'class="lc-dr-toggle' in r.text
+    assert 'data-target="lc-canvas-ZTF21abc"' in r.text
+    assert 'data-lc-dr="off"' in r.text
+    assert 'data-ra="212.8182939"' in r.text
+    assert 'data-dec="-3.5206587"' in r.text
+    # Alpha slider ships alongside the button, starts hidden, and targets
+    # the same canvas so the JS binder can pair them.
+    assert 'class="lc-dr-alpha tw-hidden"' in r.text
+    assert 'type="range"' in r.text
+    assert 'orient="vertical"' in r.text
+
+
+def test_lightcurve_lsst_also_shows_dr_button(client, monkeypatch):
+    """DR is a positional cone-search (ra/dec + radius), so LSST objects can
+    still have a ZTF DR archival crossmatch worth showing."""
+    _stub_lc_and_info(monkeypatch, has_science_flux=False, ra=10.0, dec=-20.0)
+    r = client.get("/htmx/lightcurve?oid=x&survey_id=lsst")
+    assert r.status_code == 200
+    assert 'class="lc-dr-toggle' in r.text
+    assert 'data-ra="10.0"' in r.text
+    assert 'data-dec="-20.0"' in r.text
+
+
+def test_lightcurve_without_coords_hides_dr_button(client, monkeypatch):
+    """DR needs ra/dec to cone-search; skip the button if the object_info call
+    didn't yield usable coordinates."""
+    _stub_lc_and_info(monkeypatch, ra=None, dec=None)
+    r = client.get("/htmx/lightcurve?oid=ZTF21abc&survey_id=ztf")
+    assert r.status_code == 200
+    assert "lc-dr-toggle" not in r.text
+
+
+def test_api_ztf_dr_proxies_service(client, monkeypatch):
+    captured = {}
+
+    async def fake_dr(*, ra, dec, radius):
+        captured.update(ra=ra, dec=dec, radius=radius)
+        return {
+            "bands": [{"name": "g", "points": [{
+                "mjd": 59000.0, "flux": None, "e_flux": None,
+                "sci_flux": 1234.0, "e_sci_flux": 56.0,
+                "identifier": None, "has_stamp": False,
+            }]}],
+            "n_pts": 1,
+        }
+
+    monkeypatch.setattr("src.routes.rest.ztf_dr_service.get_ztf_dr", fake_dr)
+    r = client.get("/api/ztf_dr?ra=212.8182939&dec=-3.5206587&radius=1.5")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["n_pts"] == 1
+    assert body["bands"][0]["name"] == "g"
+    # Diff flux must be null so the Diff/Sci toggle filters DR out in Diff mode.
+    assert body["bands"][0]["points"][0]["flux"] is None
+    assert captured == {"ra": 212.8182939, "dec": -3.5206587, "radius": 1.5}
+
+
+def test_api_ztf_dr_upstream_error_is_502(client, monkeypatch):
+    async def fake_dr(*, ra, dec, radius):
+        raise RuntimeError("alerce down")
+
+    monkeypatch.setattr("src.routes.rest.ztf_dr_service.get_ztf_dr", fake_dr)
+    r = client.get("/api/ztf_dr?ra=1.0&dec=1.0")
+    assert r.status_code == 502
+
+
+def test_api_ztf_dr_validates_inputs(client):
+    # dec out of range
+    r = client.get("/api/ztf_dr?ra=10.0&dec=100.0")
+    assert r.status_code == 422
+    # negative radius
+    r = client.get("/api/ztf_dr?ra=10.0&dec=-5.0&radius=-1")
+    assert r.status_code == 422
 
 
 def test_object_information_upstream_error_renders_message(client, monkeypatch):

@@ -19,6 +19,12 @@ ZTF_FID_TO_BAND: dict[int, str] = {1: "g", 2: "r", 3: "i"}
 # e_mag_corr sentinel meaning "unreliable" — any value >= this is rejected.
 ZTF_ECORR_BAD_THRESHOLD = 1.0
 
+# ZTF uses mag == 100 as "no usable measurement" in forced photometry (the
+# forced-flux integration failed or was consistent with zero). Converting
+# naively gives ~1e-27 nJy, which would splatter a carpet of useless points
+# along the X-axis in flux mode, so reject the exact sentinel at normalization.
+ZTF_MAG_SENTINEL = 100.0
+
 
 def ztf_mag_to_njy(mag: float) -> float:
     return 10.0 ** ((AB_ZP_NJY - mag) / 2.5)
@@ -50,6 +56,12 @@ def normalize_ztf(d: dict[str, Any]) -> dict[str, Any]:
     band = ZTF_FID_TO_BAND.get(fid) if fid is not None else None
     mag = d.get("magpsf", d.get("mag"))
     mag_err = d.get("sigmapsf", d.get("e_mag"))
+    if mag is not None and mag >= ZTF_MAG_SENTINEL:
+        # mag=100 sentinel ⇒ drop everything flux-derived. Keep the MJD/band
+        # bucketing upstream: _bucket_by_band filters out points with a null
+        # psf_flux, so a null here cleanly removes the row from the plot.
+        mag = None
+        mag_err = None
 
     psf_flux = ztf_mag_to_njy(mag) if mag is not None else None
     e_psf_flux = (
@@ -62,6 +74,8 @@ def normalize_ztf(d: dict[str, Any]) -> dict[str, Any]:
     if e_mag_corr is not None and e_mag_corr >= ZTF_ECORR_BAD_THRESHOLD:
         e_mag_corr = None
     mag_corr = d.get("magpsf_corr", d.get("mag_corr"))
+    if mag_corr is not None and mag_corr >= ZTF_MAG_SENTINEL:
+        mag_corr = None
     science_flux = ztf_mag_to_njy(mag_corr) if mag_corr is not None else None
     e_science_flux = (
         ztf_magerr_to_njyerr(mag_corr, e_mag_corr)

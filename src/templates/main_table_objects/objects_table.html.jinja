@@ -2,6 +2,21 @@
    view's prev/next arrow buttons (and keyboard arrows) can move through the
    result set — and hop to the next/prev page when they run out of siblings.
    Rendered on every list_objects swap so it stays in sync with the filters. #}
+{#
+  `filter_qs` carries the current filter state into the row-click URLs so the
+  detail view can echo it back into HX-Push-Url — preserving the search
+  context across a drill-in/back round trip. Mirrors the emit rules of
+  `_share_url` in routes/htmx.py (empty/default values are dropped).
+#}
+{%- set filter_qs %}
+  {%- if classifier %}&classifier={{ classifier|urlencode }}{% endif %}
+  {%- if class_name %}&class_name={{ class_name|urlencode }}{% endif %}
+  {%- if probability and probability > 0 %}&probability={{ probability }}{% endif %}
+  {%- if n_det_min is not none %}&n_det_min={{ n_det_min }}{% endif %}
+  {%- if n_det_max is not none %}&n_det_max={{ n_det_max }}{% endif %}
+  {%- if oids %}&oids={{ oids|urlencode }}{% endif %}
+  {%- if page and page > 1 %}&page={{ page }}{% endif %}
+{%- endset %}
 <div
   id="objects_table"
   class="tw-bg-bg-card tw-border tw-border-border tw-rounded"
@@ -39,7 +54,7 @@
         {% for obj in objects_list['items'] %}
           <tr
             class="tw-border-b tw-border-border/50 hover:tw-bg-bg-tertiary tw-cursor-pointer"
-            hx-get="{{ API_URL }}/htmx/detail?oid={{ obj.get('oid', '')|urlencode }}&survey_id={{ survey }}{% if classifier %}&classifier={{ classifier|urlencode }}{% endif %}"
+            hx-get="{{ API_URL }}/htmx/detail?oid={{ obj.get('oid', '')|urlencode }}&survey_id={{ survey }}{{ filter_qs|trim }}"
             hx-target="#results-slot"
             hx-swap="innerHTML"
             hx-indicator="#results-loading"

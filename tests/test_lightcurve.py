@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from src.services.lightcurve import shape_lightcurve
+from src.services.lightcurve import _merge_ztf_v2_corr, shape_lightcurve
 
 
 def _ztf_det(mjd, fid, magpsf, sigmapsf=0.05, candid="100"):
@@ -166,3 +166,98 @@ def test_fp_none_is_same_as_no_fp():
     b = shape_lightcurve(raw, survey="lsst", fp_raw=[])
     assert a == b
     assert a["n_fp"] == 0
+
+
+def test_merge_ztf_v2_corr_overrides_sentinel_sigmapsf():
+    """v1's 100.0 sigmapsf_corr sentinel blocks sci-mode error bars; the v2
+    lightcurve carries the real correction and should win the join."""
+    v1 = [{
+        "mjd": 60000.0, "fid": 1,
+        "magpsf": 20.0, "sigmapsf": 0.05,
+        "magpsf_corr": 19.8, "sigmapsf_corr": 100.0,  # sentinel → would reject
+        "candid": "abc123", "isdiffpos": 1,
+    }]
+    fp_resp = {
+        "detections": [
+            {"candid": "abc123", "mag_corr": 19.7, "e_mag_corr": 0.04},
+        ],
+        "forced_photometry": [],
+    }
+    merged = _merge_ztf_v2_corr(list(v1), fp_resp)
+    assert merged[0]["sigmapsf_corr"] == 0.04
+    assert merged[0]["magpsf_corr"] == 19.7
+
+
+def test_merge_ztf_v2_corr_prefers_e_mag_corr_ext():
+    """On ALeRCE ZTF v2, `e_mag_corr` itself is often the 100.0 sentinel and
+    `e_mag_corr_ext` carries the real error — checked against live data for
+    ZTF18aaylgug. Take _ext when both are present."""
+    v1 = [{
+        "mjd": 60000.0, "fid": 2, "magpsf": 19.99, "sigmapsf": 0.15,
+        "magpsf_corr": 17.55, "sigmapsf_corr": 100.0,
+        "candid": "527220614415010003", "isdiffpos": -1,
+    }]
+    fp_resp = {"detections": [{
+        "candid": "527220614415010003",
+        "mag_corr": 17.55,
+        "e_mag_corr": 100.0,           # sentinel again
+        "e_mag_corr_ext": 0.016424736,  # the value we want
+    }]}
+    merged = _merge_ztf_v2_corr(list(v1), fp_resp)
+    assert merged[0]["sigmapsf_corr"] == 0.016424736
+
+
+def test_merge_ztf_v2_corr_joins_by_candid_string():
+    """Candid comparison uses string conversion so int/str shapes both work
+    (belt-and-braces for the LSST-OID-safety pattern, though ZTF candids
+    fit in 64 bits)."""
+    v1 = [{"mjd": 1.0, "fid": 1, "magpsf": 20.0,
+           "magpsf_corr": 20.0, "sigmapsf_corr": 100.0, "candid": 12345}]
+    fp_resp = {"detections": [
+        {"candid": "12345", "mag_corr": 19.9, "e_mag_corr": 0.03},
+    ]}
+    merged = _merge_ztf_v2_corr(list(v1), fp_resp)
+    assert merged[0]["sigmapsf_corr"] == 0.03
+
+
+def test_merge_ztf_v2_corr_noops_on_missing_v2_match():
+    """Detections with no v2 counterpart keep their v1 fields untouched
+    (including the sentinel — downstream normalization still rejects it)."""
+    v1 = [{"mjd": 1.0, "fid": 1, "magpsf": 20.0,
+           "magpsf_corr": 20.0, "sigmapsf_corr": 100.0, "candid": "only-in-v1"}]
+    fp_resp = {"detections": [
+        {"candid": "something-else", "mag_corr": 19.9, "e_mag_corr": 0.03},
+    ]}
+    merged = _merge_ztf_v2_corr(list(v1), fp_resp)
+    assert merged[0]["sigmapsf_corr"] == 100.0
+
+
+def test_merge_ztf_v2_corr_noops_on_bad_fp_shape():
+    v1 = [{"mjd": 1.0, "fid": 1, "magpsf": 20.0, "candid": "x"}]
+    assert _merge_ztf_v2_corr(v1, None) is v1
+    assert _merge_ztf_v2_corr(v1, []) is v1
+    assert _merge_ztf_v2_corr(v1, {"detections": "not a list"}) is v1
+
+
+def test_shape_lightcurve_picks_up_merged_e_sci_flux_end_to_end():
+    """Full flow: bad v1 sigmapsf_corr + good v2 e_mag_corr → e_sci_flux
+    makes it through the pipeline so the client-side error-bar plugin has
+    something to draw in sci mode."""
+    from src.services.lightcurve import get_lightcurve  # noqa: F401
+
+    # Exercise the merge via shape_lightcurve directly (get_lightcurve is
+    # network-bound). The route-level merge is covered separately.
+    v1 = [{
+        "mjd": 60000.0, "fid": 1,
+        "magpsf": 20.0, "sigmapsf": 0.05,
+        "magpsf_corr": 19.8, "sigmapsf_corr": 100.0,
+        "candid": "cand-1", "isdiffpos": 1,
+    }]
+    fp_resp = {
+        "detections": [{"candid": "cand-1", "mag_corr": 19.8, "e_mag_corr": 0.04}],
+        "forced_photometry": [],
+    }
+    merged_v1 = _merge_ztf_v2_corr(list(v1), fp_resp)
+    out = shape_lightcurve({"detections": merged_v1}, survey="ztf")
+    p = out["bands"][0]["points"][0]
+    assert p["e_sci_flux"] is not None and p["e_sci_flux"] > 0
