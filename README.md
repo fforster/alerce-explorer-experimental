@@ -27,7 +27,33 @@ version chosen for the modal default is the same one used to fold the
 light curve, so the displayed `Multiband_period` and the folding period
 never disagree.
 
-Crossmatch, periodogram, airmass, and name resolver are still deferred.
+The light curve panel now toggles into a **Periodogram** in place of the
+position-residuals scatter. The periodogram is a multi-band, multi-harmonic
+least-squares periodogram (Schwarzenberg-Czerny 1996; same family as P4J's
+MHAOV on the production pipeline): at each frequency it jointly fits an
+NH=4 Fourier model per band — own constant + own a_k/b_k for k=1…4 — by
+weighted least squares (in-place Cholesky on a 9×9 SPD normal-equations
+matrix) and sums χ² reductions across bands. This breaks yearly window-
+function aliases that defeat a "sum of single-sinusoid GLS at f, 2f, …"
+heuristic. Defaults to **Sci mag** input, draws a dashed reference line
+at the currently-selected period plus a dotted line at the feature table's
+`Multiband_period`, and snaps clicks within 24 px of a peak. Selecting a
+period folds the *main* LC chart in place via `window.lcSetFoldPeriod` —
+no separate folded-LC canvas.
+
+The light curve htmx render is now **detections-only on the synchronous
+path** (~2-3 s vs. ~15 s before, when the slow TNS bridge dominated).
+Forced photometry, features (Fold + parametric overlays), and object
+coordinates (ZTF DR overlay + Milky-Way E(B-V) auto-fetch) ride three
+deferred fragments — `/htmx/lc_fp`, `/htmx/lc_features`, `/htmx/lc_info`
+— that update the chart in place via `window.lcSetBundle`,
+`lcSetFeatures`, `lcSetCoords`. The TNS lookup similarly runs through a
+deferred `/htmx/tns_lookup` fragment fired by the basic-info panel; on a
+match it fills the basic-info TNS row and OOB-populates the LC redshift
+input via a tiny inline script. A small loading status strip in the LC
+panel shows what's still in flight.
+
+Crossmatch, airmass, and name resolver are still deferred.
 
 ## Install
 
@@ -82,10 +108,18 @@ src/
     classifiers.py        Dedupe + merge classifier/class options
     features.py           Feature-table fetch + pick_default_version (strict N.N.N picker,
                           shared with LC fold-period extractor)
-    lightcurve.py         LC shaping + Multiband_period extractor (uses pick_default_version)
+    lightcurve.py         get_lightcurve (detections only) + get_lc_fp_bundle (FP +
+                          v2 mag_corr re-merge) + get_lc_features_bundle
+                          (Multiband_period + parametric_fits, deferred)
+    tns.py                ALeRCE TNS htmx-bridge proxy (now driven by /htmx/tns_lookup)
   templates/              Jinja2 partials, grouped by feature sub-area
                           (basic_information/, features/, object_detail/, lightcurve/,
-                           stamps/, aladin/, radar/, coord_residuals/, search_form/, ...)
+                           stamps/, aladin/, radar/, coord_residuals/, periodogram/,
+                           tns/, search_form/, ...)
+                          Deferred LC fragments: lightcurve/lcFpFragment.html.jinja,
+                          lightcurve/lcFeaturesFragment.html.jinja,
+                          lightcurve/lcInfoFragment.html.jinja,
+                          tns/tnsLookupFragment.html.jinja
   static/
     css/tailwind.css      Tailwind entry; compiles to main.css
     htmx/htmx.min.js      Self-hosted htmx 1.9.12
@@ -100,5 +134,7 @@ src/
     js/cosmology.js       Planck-2018 distance modulus
     js/dust.js            IRSA dust-proxy client for E(B-V)
     js/specz.js           VizieR spec-z loader (10 catalogs)
+    js/periodogram.js     Multi-band multi-harmonic LS periodogram (chunked compute,
+                          Cholesky solve per frequency per band; folds the main LC)
 tests/                    pytest suite (service layer)
 ```
