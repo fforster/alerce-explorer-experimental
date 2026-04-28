@@ -62,6 +62,18 @@ Key endpoint families already implemented in production (reuse these names):
 | `GET /htmx/object_information` | Basic information panel for one object (oid + survey_id) |
 | `GET /htmx/features` | Feature table modal (version/band/filter picker + CSV download); survey-gated on `SurveyConfig.features_url_template` |
 | `GET /htmx/tns/` | TNS lookup by RA/Dec |
+| `GET /htmx/lightcurve` | LC panel — detections only on the synchronous path |
+| `GET /htmx/lc_fp` | Deferred FP fragment (FP + ZTF v2 mag_corr re-merge → `lcSetBundle`) |
+| `GET /htmx/lc_features` | Deferred features fragment (`Multiband_period` + parametric fits → `lcSetFeatures`) |
+| `GET /htmx/lc_info` | Deferred ra/dec fragment (drives ZTF DR + IRSA E(B-V); → `lcSetCoords`) |
+| `GET /htmx/lc_xsurvey` | Deferred cross-survey overlay (object_info → other-survey conesearch (3″) → matched LC + FP; → `lcSetCrossSurvey`) |
+| `GET /htmx/tns_lookup` | Deferred TNS panel + OOB redshift inject into the LC redshift input |
+| `GET /htmx/stamps` | Stamp picker + per-survey URL templates (`__OID__` + `__IDENT__` placeholders) so cross-survey clicks dispatch correctly |
+| `GET /htmx/coord_residuals` | Position-residuals **shell** — scatter is built client-side from the live LC; endpoint just renders the canvas + `data-lc-target` |
+| `GET /htmx/crossmatch` | catsHTM crossmatch panel body (prefetched on detail-view load) |
+| `GET /htmx/airmass` | Airmass curve panel (shares grid cell with periodogram + residuals) |
+| `GET /htmx/probability` | Classifier-probability radar |
+| `GET /htmx/ztf_dr` | ZTF DR archival cone-search (1.5″) for the LC's ZTF DR overlay |
 
 ### Jinja template conventions
 
@@ -112,6 +124,16 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
 9. **Periodogram** — Generalized Lomb-Scargle with inverse-variance weighting, frequency grid `df = 1/(oversample·T)`, time-centered to reduce trig-argument magnitude, multi-harmonic score (sum of power at 1f–6f, NH=6) to suppress aliases, parabolic peak refinement.
 10. **HiPS probing** — uses FITS cutouts (not JPEG) so compression artifacts don't fake coverage.
 11. **Feature-extractor version selection** — the ZTF features endpoint bundles *every* version ever run on an object (~5 versions, ~180 rows each), no "current" flag. `src/services/features.py::pick_default_version` picks strictly-matched `N.N.N` versions (three pure-integer dot-separated segments), sorted `(first, second, third)` DESC — so `27.5.6` beats `27.5.0` beats legacy labels like `lc_classifier_1.2.1-P` or partial `25.0.1a8` whose third segment isn't a pure integer. **This helper is shared between the features-table modal default and the light-curve fold-period extractor** (`src/services/lightcurve.py::_extract_multiband_period`); the two must agree, otherwise the displayed `Multiband_period` and the period used for folding drift apart (original ZTF20acuwouz bug).
+12. **Cross-survey overlay (LSST ↔ ZTF)** — every detail view cone-searches the *other* survey at this object's RA/Dec (`XSURVEY_RADIUS_ARCSEC = 3.0`) via `services/lightcurve.py::get_lc_xsurvey_bundle`, and the matched counterpart's LC + FP overlays the same chart. Per-survey identity is plumbed end-to-end:
+    - `services/normalize.py` passes through `ra` and `dec` per detection (the position-residuals scatter and the CSV need them).
+    - LC datasets stamp `$survey` + `$kind` ("det"/"fp"/"dr"/"overlay") on every dataset; pointStyle is `pointStyleFor(survey)` (LSST=circle, ZTF=square; ZTF FP is rotated 180° for apex-down).
+    - Legend `generateLabels` groups by `(survey, kind)` and emits headers (`LSST det:`, `ZTF FP:`, …); header click toggles the whole bucket. Disabled datasets dim to `#484f58` (suppress Chart.js's strikethrough by always setting `hidden:false` and overriding `fontColor` / marker fills).
+    - `applyModes` snapshots `(survey, kind, label) → hidden` *before* tearing down `chart.data.datasets` and re-applies it after, so band visibility survives every Flux/Mag, Diff/Sci, App/Abs, Obs/Der, Fold toggle. New entries (just-arrived FP / xsurvey / armed overlay) start visible.
+    - Cross-survey OID lives on `chart.$lcXOid` (set by `lcSetCrossSurvey`) and is also surfaced as a clickable link in the basic-info panel (`#basic-info-xsurvey`, gated on `data-oid` to avoid stale-fragment smearing during a swap).
+    - **Stamps dispatch**: server emits `data-url-template-{type}-{survey}` with `__OID__` + `__IDENT__` placeholders for both surveys. `setSelectedIdentifier(ident, survey, oid)` and `updateStampsForIdentifier(ident, survey, oid)` thread the click's survey + correct OID (primary OID for in-survey clicks, `chart.$lcXOid` otherwise) so cross-survey clicks reach the matching survey's stamp service. The picker dropdown only knows primary detections — cross-survey clicks update the stamps without touching the picker.
+    - **Position residuals derive from the live LC** (`coord_residuals.js` walks `$lcRaw` + `$lcXRaw`, filters by LC dataset visibility, re-renders on `lc:dataChanged` / `lc:visibilityChanged` custom events fired from `applyModes` and the legend `onClick`). The endpoint is now a shell renderer; `shape_coord_residuals` stays for programmatic use.
+    - **Periodogram inputs** are gated the same way: `getDetDataByBand` reads from both `$lcRaw` and `$lcXRaw`, skips bands hidden via the LC legend, and the status line lists the bands actually consumed (`LSST: g r · ZTF: g`).
+    - **CSV export** carries `survey`, `oid`, `candid` columns plus cross-survey rows; `oid` and `candid` are double-quoted so 64-bit LSST ids stay string-typed in pandas/Excel.
 
 ## External services the port depends on
 
@@ -136,7 +158,7 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
 poetry install              # Python
 npm install                 # Tailwind CLI only
 
-# Run tests (~190 total — services + route fragments; upstream calls monkeypatched)
+# Run tests (~256 total — services + route fragments; upstream calls monkeypatched)
 python3 -m pytest           # full suite
 python3 -m pytest tests/test_object_info.py -v   # single file
 python3 -m pytest -k "detail"                     # by keyword
@@ -167,15 +189,27 @@ src/
     classifiers.py           # tidy_classifiers: dedupe by name, merge class lists, priority-sort
     object_list.py           # build_search_params, shape_response (ZTF field remap to LSST schema)
     object_info.py           # shape_object_info (ZTF ndet/ncovhist; LSST n_det/n_non_det/n_forced)
-    coordinates.py           # ra_to_hms / dec_to_dms (prototype-compatible formatting)
+    coordinates.py           # ra_to_hms / dec_to_dms / equatorial_to_galactic / equatorial_to_ecliptic
     other_archives.py        # external archive URL builders (ALeRCE, NED, SIMBAD, TNS, …)
-    normalize.py             # ZTF mag↔nJy conversion (AB ZP 31.4) — feeds the light curve
+    normalize.py             # ZTF mag↔nJy conversion (AB ZP 31.4) — feeds the light curve;
+                             # passes through ra/dec so the position-residuals scatter can derive
+                             # client-side from the LC
     probability.py           # classifier → probability list fetch + shaping for the radar panel
-    coord_residuals.py       # (Δra, Δdec) per detection relative to the object's mean position
+    coord_residuals.py       # shape_coord_residuals — programmatic API only; the UI panel derives
+                             # client-side from the live LC chart (incl. cross-survey)
+    crossmatch.py            # catsHTM crossmatch fetch + per-catalog row shaping
+    stamps.py                # stamp picker context + per-survey stamp_url_templates_by_survey
+                             # (with __OID__ + __IDENT__ placeholders so cross-survey clicks
+                             # dispatch to the right survey's stamp service)
+    ztf_dr.py                # ZTF DR archival cone-search (1.5″) for the LC's ZTF DR overlay
+    tns.py                   # ALeRCE TNS htmx-bridge proxy (driven by /htmx/tns_lookup)
     features.py              # feature-table fetch + shape_features (per-version grouping, band labels);
-                             # pick_default_version (strict N.N.N) shared with LC fold-period extractor
-    lightcurve.py            # LC shaping + _extract_multiband_period (uses pick_default_version so the
-                             # fold period matches the Multiband_period shown in the features modal)
+                             # pick_default_version (strict N.N.N) shared with LC fold-period extractor;
+                             # extract_parametric_fits (SPM / FLEET / TDE) for LC overlays
+    lightcurve.py            # LC shaping + _extract_multiband_period + get_lc_fp_bundle (FP +
+                             # ZTF v2 mag_corr re-merge) + get_lc_features_bundle (period + parametric
+                             # fits) + get_lc_xsurvey_bundle (object_info → other-survey conesearch
+                             # XSURVEY_RADIUS_ARCSEC=3.0 → matched LC + FP)
   templates/
     base.html.jinja                           # DOCTYPE shell + CSS/JS imports
     index.html.jinja                          # app shell (header, sidebar slot, main slot)
@@ -193,11 +227,26 @@ src/
     object_detail/container.html.jinja        # detail view (back + info + LC/stamps/aladin/radar/residuals);
                              # exposes #features-modal as an empty overlay slot — the Show features
                              # button hx-get populates it, close button clears it.
-    lightcurve/lightcurvePreview.html.jinja   # Chart.js light curve + cycle-button toggles + z/E(B-V) inputs
-    stamps/stampsPreview.html.jinja           # science/template/difference triplet (FITS for LSST, PNG for ZTF)
+    lightcurve/lightcurvePreview.html.jinja   # Chart.js light curve + cycle-button toggles + z/E(B-V) inputs;
+                             # 4-loader status strip (FP, features, coords, xsurvey) that self-collapses
+                             # once every loader has finished via lcMaybeHideLoadingStrip.
+    lightcurve/lcFpFragment.html.jinja        # script-only deferred FP fragment → lcSetBundle
+    lightcurve/lcFeaturesFragment.html.jinja  # script-only deferred features fragment → lcSetFeatures
+    lightcurve/lcInfoFragment.html.jinja      # script-only deferred ra/dec fragment → lcSetCoords
+    lightcurve/lcXSurveyFragment.html.jinja   # script-only deferred cross-survey fragment → lcSetCrossSurvey
+    stamps/stampsPreview.html.jinja           # science/template/difference triplet (FITS for LSST, PNG for ZTF);
+                             # emits both legacy data-url-template-{type} (primary, __IDENT__ swap) and
+                             # data-url-template-{type}-{survey} (per-survey, __OID__ + __IDENT__ swap)
+                             # so cross-survey clicks dispatch to the matching survey's stamp service.
+                             # Picker dropdown labels each option as "MJD … · LSST g".
     aladin/aladinPreview.html.jinja           # Aladin Lite sky viewer + spec-z overlay chips
     radar/radarPreview.html.jinja             # classifier probability radar (Chart.js radar)
-    coord_residuals/coordResidualsPreview.html.jinja  # (Δra, Δdec) scatter with zoom/pan
+    coord_residuals/coordResidualsPreview.html.jinja  # static shell — scatter built client-side from the
+                             # live LC chart's $lcRaw + $lcXRaw (no upstream fetch)
+    crossmatch/crossmatchPanel.html.jinja     # catsHTM crossmatch panel body (prefetched on detail-view load)
+    airmass/airmassPanel.html.jinja           # airmass curve panel (toggleAirmassPanel from basic-info)
+    periodogram/periodogramPreview.html.jinja # multi-band MH-LS periodogram panel; inputs gated on the LC
+                             # legend's band/survey visibility
   static/
     htmx/htmx.min.js         # self-hosted htmx 1.9.12
     chart-js/chart.umd.js    # vendored Chart.js 4.x
@@ -209,15 +258,31 @@ src/
                              # route's HX-Push-Url acts as the source of truth, instead of the
                              # search form whose dependent class-name select can be empty on first
                              # render); #results-slot HTML cache for instant back-navigation.
-    js/selection.js          # window._selectedIdentifier + Chart plugin; syncs LC↔stamps↔residuals
-    js/lightcurve.js         # Chart.js LC + cycle-button toggles (flux/mag, diff/sci, app/abs, obs/der)
-    js/stamps.js             # FITS parsing + asinh stretch + WCS rotation for LSST stamps
+    js/selection.js          # window._selectedIdentifier + Chart plugin; syncs LC↔stamps↔residuals.
+                             # setSelectedIdentifier(ident, survey, oid) routes the stamps swap by
+                             # survey so cross-survey clicks hit the matching survey's stamp service.
+    js/lightcurve.js         # Chart.js LC + cycle-button toggles (flux/mag, diff/sci, app/abs, obs/der);
+                             # per-survey markers (LSST=circle, ZTF=square; ZTF FP rotated 180° for
+                             # apex-down); legend grouped by (survey, kind) with header click-to-toggle;
+                             # band-visibility memory across toggles via (survey, kind, label) snapshot;
+                             # lc:dataChanged + lc:visibilityChanged custom events for downstream panels;
+                             # CSV export with survey/oid/candid columns + cross-survey rows.
+    js/stamps.js             # FITS parsing + asinh stretch + WCS rotation for LSST stamps;
+                             # updateStampsForIdentifier(ident, survey, oid) fills both __OID__ and
+                             # __IDENT__ in per-survey URL templates.
     js/aladin.js             # Aladin Lite v3 bootstrap + spec-z overlays + click→z handler
+    js/airmass.js            # airmass curve (Chart.js); shares grid cell with periodogram + residuals
     js/radar.js              # Chart.js radar panel
-    js/coord_residuals.js    # Chart.js scatter for (Δra, Δdec)
+    js/coord_residuals.js    # position-residuals scatter — derives client-side from the live LC chart
+                             # ($lcRaw + $lcXRaw), filters by LC dataset visibility, re-renders on
+                             # lc:dataChanged / lc:visibilityChanged
+    js/coords.js             # shared client-side coord parsing helpers
+    js/object_nav.js         # page-of-OIDs prev/next/back nav in the global header
     js/cosmology.js          # Planck-2018 distance modulus (numeric integration)
     js/dust.js               # IRSA dust-proxy client + galactic latitude warning
     js/specz.js              # 10-catalog VizieR spec-z loader (VOTable parsing)
+    js/periodogram.js        # multi-band MH-LS periodogram (chunked Cholesky-per-frequency-per-band);
+                             # inputs come from the LC chart, filtered by the legend's visibility.
 
 tests/                       # pytest; each service file has a matching test file
 ```
@@ -255,4 +320,9 @@ tests/                       # pytest; each service file has a matching test fil
 - **Basic Information panel rework** — 2-column data grid, inline compact HMS/Deg toggle + copy-icon with green ✓ / red ✗ feedback on the RA/Dec rows, Show features + Other archives consolidated into a shared bottom action row. Coord-system toggle (Eq ↔ Gal ↔ Ecl) sits above the HMS/Deg button: Galactic (IAU rotation matrix, ICRS anchor) and J2000 Ecliptic (ε = 23.4392911°) are precomputed in `services/coordinates.py` and stashed on `data-gal` / `data-ecl` attrs so cycling is pure DOM; HMS/Deg is hidden outside Equatorial (sexagesimal isn't a convention for ℓ/b or λ/β).
 - **Deep-link Back navigation** — `backToResults()` derives the listing URL from `window.location` (authoritative thanks to the detail route's `HX-Push-Url`) instead of reading the search form, whose dependent class-name select may not have the chosen class hydrated on first render. The result HTML is cached in `window._lastResultsHtml`; fallback calls `/htmx/list_objects` only on true deep-links.
 - **Parametric-fit overlays** — SPM (Sánchez-Sáez+2021), FLEET, and TDE-tail model curves drawn over the light curve. Picker is a `<select>` in the LC toolbar with per-overlay options disabled when the object has no fit for it; a mono-font strip under the toolbar shows the per-band params (plus χ²). `extract_parametric_fits` in `services/features.py` rides the same features fetch as the Fold period and uses `pick_default_version` so the overlay can't drift away from what the Show-features modal would display. Pure client-side rendering via Chart.js line datasets, re-projected through the active Flux/Mag × App/Abs × Obs/Der × Fold state (SPM_A is in mJy → ×1e6 to our nJy axis; FLEET/TDE return mag → converted via AB ZP 31.4). Overlay choice persists through `lc_overlay=` in the URL cache. LSST has no features endpoint → `parametric_fits={}` and the picker is hidden.
-- **Deferred** — crossmatch, periodogram (in-browser GLS), airmass, name resolver.
+- **Periodogram panel** — toggles into the position-residuals slot from the LC toolbar. Multi-band, multi-harmonic GLS (Schwarzenberg-Czerny 1996; same family as P4J's MHAOV). Inputs are the surveys/bands currently visible in the LC legend (incl. cross-survey via `$lcXRaw`); the status line lists the bands actually consumed (`LSST: g r · ZTF: g`). Selecting a peak folds the *main* LC chart via `window.lcSetFoldPeriod`. Pipeline `Multiband_period` reference line + the selected period's dashed line.
+- **catsHTM crossmatch panel** — bottom-of-page collapsible (`<details>` / `<summary>`); `hx-trigger="load"` so the catsHTM call fires as the detail view renders and opening the panel is instant. `services/crossmatch.py` shapes per-catalog rows (closest match each).
+- **Airmass panel** — toggleable from the basic-info "Airmass" button; shares a grid cell with periodogram + position residuals (mutually exclusive). `js/airmass.js` + `templates/airmass/airmassPanel.html.jinja`.
+- **Cross-survey LC overlay** — every detail view cone-searches the *other* survey at this object's RA/Dec (3″) via `/htmx/lc_xsurvey` and overlays the matched counterpart on the same chart. See domain-trap #12 for the end-to-end plumbing (per-survey markers, legend grouping, visibility memory, stamps dispatch, position-residuals + periodogram + CSV inheritance, basic-info xsurvey link). The header reads "ALeRCE multisurvey explorer" once this lands.
+- **Position residuals from live LC** — the `/htmx/coord_residuals` endpoint became a shell renderer; `js/coord_residuals.js` derives the scatter client-side from the LC chart's `$lcRaw` + `$lcXRaw`, filters by LC dataset visibility, and re-renders on `lc:dataChanged` / `lc:visibilityChanged`. Marker shape mirrors the LC (LSST=circle, ZTF=square).
+- **Deferred** — name resolver.
