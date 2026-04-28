@@ -430,13 +430,14 @@ def test_detail_renders_container(client):
     assert 'id="airmass-slot"' in r.text
     assert "data-airmass-panel" in r.text
     assert "airmass-canvas" in r.text
-    # Crossmatch slot — collapsed <details> at the bottom of the page that
-    # lazy-loads /htmx/crossmatch the first time it's expanded.
+    # Crossmatch slot — collapsed <details> at the bottom of the page; the
+    # body fetches /htmx/crossmatch on `load` so the data is in the DOM
+    # before the user expands the panel.
     assert 'id="crossmatch-slot"' in r.text
     assert 'id="crossmatch-details"' in r.text
     assert 'id="crossmatch-body"' in r.text
     assert "/htmx/crossmatch?oid=ZTF21abc&survey_id=ztf" in r.text
-    assert "toggle once from:#crossmatch-details" in r.text
+    assert 'hx-trigger="load"' in r.text
     # The Back button + prev/next arrows used to live in this fragment but
     # were promoted to the global header (#detail-nav-bar in index.html.jinja)
     # so the detail panels reclaim that row of vertical space.

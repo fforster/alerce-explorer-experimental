@@ -108,12 +108,13 @@
 
   {#
     Crossmatch — full-width collapsible at the bottom of the detail page.
-    Native <details>/<summary> handles the open/close UI; htmx fires the
-    fetch the first time the panel opens (`toggle once from:#crossmatch-details`)
-    so we never call catsHTM unless the user asks. After the first load
-    the body is cached in the DOM — re-collapsing keeps the data ready.
-    catsHTM is the only catalog source for now; future xmatch sources
-    will surface as additional cards inside this same panel.
+    Native <details>/<summary> handles the open/close UI; the fetch fires
+    on `load` (not on toggle) so the data is already in the DOM by the
+    time the user clicks the summary — no spinner-on-expand wait. The
+    panel stays collapsed by default; the only change is that opening
+    is instant. catsHTM is the only catalog source for now; future
+    xmatch sources will surface as additional cards inside this same
+    panel.
   #}
   <div id="crossmatch-slot" class="tw-mt-1">
     <details
@@ -130,7 +131,7 @@
         id="crossmatch-body"
         class="tw-px-4 tw-pb-4 tw-pt-3 tw-text-xs tw-border-t tw-border-border"
         hx-get="{{ API_URL }}/htmx/crossmatch?oid={{ oid }}&survey_id={{ survey_id }}"
-        hx-trigger="toggle once from:#crossmatch-details"
+        hx-trigger="load"
         hx-swap="innerHTML"
       >
         <div class="tw-text-text-muted tw-py-3">
