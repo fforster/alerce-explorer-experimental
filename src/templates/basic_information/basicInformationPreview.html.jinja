@@ -30,6 +30,19 @@
     {% endcall %}
     <div class="mono tw-text-base tw-mt-1">{{ info.oid }}</div>
     <div class="tw-text-text-muted tw-text-xs tw-mt-1">Survey: {{ survey_id }}</div>
+    {#
+      Cross-survey match placeholder. Hidden until the deferred LC fetch
+      (/htmx/lc_xsurvey) finds a counterpart and the inline `lcSetCrossSurvey`
+      call populates it via the data-* hooks below. data-oid is stamped so the
+      JS knows which detail view this row belongs to (avoids cross-talk if a
+      stale fragment lingers in the DOM during a swap).
+    #}
+    <div
+      id="basic-info-xsurvey"
+      class="tw-text-xs tw-mt-1 tw-hidden"
+      data-oid="{{ info.oid }}"
+      data-primary-survey="{{ survey_id }}"
+    ></div>
   </div>
 
   {#

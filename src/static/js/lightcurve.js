@@ -1556,6 +1556,10 @@
   // OID on the other survey) which we stash on the chart so a future
   // "open this on the other survey" affordance can read it back.
   // Tolerant: empty bundle / wrong-shape / null all leave the chart alone.
+  // Also surfaces the matched OID in the Basic Information panel as a
+  // clickable link — a full navigation to /?survey=<other>&oid=<other oid>
+  // re-runs the explorer for that survey, so the user can drill into the
+  // counterpart without copy-pasting the OID by hand.
   window.lcSetCrossSurvey = function (canvasId, bundle) {
     const canvas = document.getElementById(canvasId);
     const chart = canvas && charts.get(canvas);
@@ -1569,6 +1573,28 @@
     };
     chart.$lcXOid = bundle.oid || null;
     applyModes(chart);
+    // Basic-info placeholder lives in a sibling panel of the LC; safe to
+    // skip silently if the panel isn't in the DOM (e.g. listing view) or if
+    // the placeholder is wired to a different OID (stale fragment during a
+    // swap — don't smear the wrong cross-match onto the new object).
+    if (bundle.oid) {
+      const slot = document.getElementById("basic-info-xsurvey");
+      const oid = canvasId.replace(/^lc-canvas-/, "");
+      if (slot && slot.dataset.oid === oid) {
+        const otherLabel = surveyLabel(survey);
+        const url = `/?survey=${encodeURIComponent(survey)}&oid=${encodeURIComponent(bundle.oid)}`;
+        const safeOid = String(bundle.oid).replace(/[&<>"']/g, (c) => (
+          { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+        ));
+        slot.innerHTML =
+          `<span class="tw-text-text-secondary">Matched on ${otherLabel}:</span> ` +
+          `<a class="mono tw-text-accent hover:tw-underline" ` +
+              `href="${url}" ` +
+              `title="Open this counterpart on ${otherLabel} in a new explorer view.">` +
+          `${safeOid}</a>`;
+        slot.classList.remove("tw-hidden");
+      }
+    }
   };
 
   // Reveal + populate the Fold button and the parametric-overlay picker
