@@ -10,12 +10,13 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from ..services import classifiers as classifiers_service
@@ -46,6 +47,22 @@ templates.env.filters["tojson_compact"] = lambda v: json.dumps(v, separators=(",
 def _validate_survey(survey: str) -> None:
     if survey not in known_surveys():
         raise HTTPException(status_code=400, detail=f"Unknown survey: {survey!r}")
+
+
+# OID → survey detection for the legacy `/object/{oid}` redirect.
+# ZTF OIDs follow `ZTF<2-digit year><lowercase letters>` (e.g.
+# ZTF18adqimwe). LSST OIDs are 18-digit pure-numeric measurement-table
+# IDs (~313888627082919999). Anything else is rejected — better to 400
+# than guess and serve a wrong-survey detail view.
+_ZTF_OID_RE = re.compile(r"^ZTF\d{2}[a-z]+$")
+
+
+def _detect_survey_from_oid(oid: str) -> str | None:
+    if _ZTF_OID_RE.match(oid):
+        return "ztf"
+    if oid.isdigit():
+        return "lsst"
+    return None
 
 
 def _share_url(
@@ -118,6 +135,38 @@ def _share_url(
     if identifier:
         params.append(("identifier", identifier))
     return "/" if not params else f"/?{urlencode(params)}"
+
+
+@router.get("/object/{oid}")
+async def object_redirect(oid: str, request: Request):
+    """Legacy-URL compatibility for `https://alerce.online/object/<oid>`.
+
+    The production ALeRCE frontend exposes object detail pages at
+    `/object/<oid>` without a survey qualifier, so links shared in
+    papers, slack, or browser history land here. Auto-detects the
+    survey from the OID shape — `ZTF<digits><letters>` ⇒ ZTF, all-
+    digits ⇒ LSST, anything else ⇒ 400 — and 302s to the explorer's
+    canonical deep-link form `/?survey=…&oid=…`. Any extra query
+    params on the original URL (e.g. `?identifier=…` for a specific
+    detection) ride along.
+    """
+    survey = _detect_survey_from_oid(oid)
+    if survey is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Could not infer survey from oid {oid!r}. Expected a ZTF OID "
+                "(e.g. ZTF18adqimwe) or an LSST measurement_id (all-digit)."
+            ),
+        )
+    params: list[tuple[str, str]] = [("survey", survey), ("oid", oid)]
+    # Preserve any query string on the legacy URL (most useful: identifier=
+    # for a deep-link to a specific detection's stamps).
+    for key, val in request.query_params.multi_items():
+        if key in ("survey", "oid"):
+            continue  # let the inferred values win
+        params.append((key, val))
+    return RedirectResponse(url=f"/?{urlencode(params)}", status_code=302)
 
 
 @router.get("/", response_class=HTMLResponse)

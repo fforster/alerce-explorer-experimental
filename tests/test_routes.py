@@ -112,6 +112,47 @@ def test_index_rejects_unknown_survey(client):
     assert r.status_code == 400
 
 
+def test_object_redirect_ztf(client):
+    """Legacy `/object/<oid>` URLs (mirroring alerce.online) auto-detect
+    ZTF from the `ZTF<yy><letters>` shape and 302 to the deep-link
+    form."""
+    r = client.get("/object/ZTF18adqimwe", follow_redirects=False)
+    assert r.status_code == 302
+    loc = r.headers["location"]
+    assert loc.startswith("/?")
+    assert "survey=ztf" in loc
+    assert "oid=ZTF18adqimwe" in loc
+
+
+def test_object_redirect_lsst(client):
+    """All-digit OIDs are routed to LSST."""
+    r = client.get("/object/313888627082919999", follow_redirects=False)
+    assert r.status_code == 302
+    loc = r.headers["location"]
+    assert "survey=lsst" in loc
+    assert "oid=313888627082919999" in loc
+
+
+def test_object_redirect_preserves_extra_query_params(client):
+    """A legacy URL with `?identifier=…` (e.g. a detection deep-link)
+    keeps the param on the redirected target, but inferred survey/oid
+    win over any passed in the query string."""
+    r = client.get(
+        "/object/ZTF17aabhbva?identifier=cand-1&survey=panstarrs",
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    loc = r.headers["location"]
+    assert "survey=ztf" in loc
+    assert loc.count("survey=") == 1  # passed survey was dropped
+    assert "identifier=cand-1" in loc
+
+
+def test_object_redirect_rejects_unrecognized_oid(client):
+    r = client.get("/object/banana", follow_redirects=False)
+    assert r.status_code == 400
+
+
 def test_search_form_renders_classifiers(client, stub_services):
     r = client.get("/htmx/search_objects/?survey=lsst")
     assert r.status_code == 200
