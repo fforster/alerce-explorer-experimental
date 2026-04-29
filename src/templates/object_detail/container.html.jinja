@@ -2,16 +2,21 @@
   Object detail container — swapped into #results-slot when a row is clicked.
 
   Layout (search sidebar sits to the left of this, outside the container):
-    4-column grid with un-equal columns. Side panels (basic-info,
+    Two stacked CSS grids (one per row) with a draggable handle between
+    them — same `grid-template-columns: 1fr 1.3fr 1.3fr 1fr` on both, so
+    column widths line up across rows. Side panels (basic-info,
     position-residuals/periodogram/airmass, radar, aladin) sit in
     1-fr columns; the centre panels (light curve, stamps) span two
-    1.3-fr columns each. The 1 : 1.3 : 1.3 : 1 ratio nudges the side
-    panels toward a square aspect (the row height is ~23rem) and frees
-    the freed pixels for the wider LC + stamps. Inline
-    `grid-template-columns` so it works without depending on whether
-    Tailwind's JIT picked up the arbitrary `[…fr]` class.
-    Row 1: basic-information | light curve (2 cols) | position residuals.
-    Row 2: radar plot | stamps (2 cols) | Aladin.
+    1.3-fr columns each. Row 1: basic-information | light curve | position
+    residuals. Row 2: radar plot | stamps | Aladin.
+
+    The two grids are split (rather than one 2-row grid) so a resize
+    handle can sit between them and pin explicit pixel heights on each
+    row when the user drags. Default row sizing stays auto (LC drives
+    row 1 via its flex-col content; row-2 side panels' aspect-ratio
+    drives row 2). Inline `grid-template-columns` so it works without
+    depending on whether Tailwind's JIT picked up the arbitrary
+    `[…fr]` class.
 #}
 <div
   id="object-detail"
@@ -29,118 +34,192 @@
     whether `#object-detail` (this element) is in the DOM.
   #}
   {#
-    Row 2's side panels (radar, aladin) carry `aspect-ratio: 1/1` inline
-    so their height follows the column width — the grid takes the row
-    height from those widths, and the stamps panel (col-span-2) stretches
-    to match. Row 1 (basic-info | LC | residuals/period/airmass) does NOT
-    use aspect-ratio: the LC drives row height via its flex-col content
-    (toolbar + status strip + canvas min-h), so the row grows when LC
-    options wrap (Offset stepper, Overlay info, etc.) and the side panels
-    follow via the grid's default `align-items: stretch`. Aspect-ratio on
-    a grid item fixes block-size and prevents stretch — keeping it on
-    row 1 made the side panels stay square while the LC grew taller.
+    Neither row uses inline `aspect-ratio` on the side panels: aspect-ratio
+    on a grid item fixes its block-size and prevents `align-self: stretch`
+    from kicking in, so the side panels would stay square while the rest
+    of the row grew or shrank. Both rows use `grid-template-rows:
+    minmax(0, 1fr)` (set on the grid container) plus the resize-handle
+    JS pinning the container's height — that gives the panels a
+    synchronized track height to stretch into. Stamps still use
+    width-aspect-square children for individual stamp images, but each
+    one is wrapped in a flex layout that lets it shrink to
+    `min(cell_width, available_height)` when row 2 is dragged smaller.
+
+    The drag-handle wrapper has no internal gap; each handle's own
+    height provides the row separation that `tw-gap-3` gave when the
+    rows were a single grid.
   #}
-  {% set side_square = "aspect-ratio: 1 / 1;" %}
-  <div class="tw-grid tw-gap-3" style="grid-template-columns: 1fr 1.3fr 1.3fr 1fr;">
-    <div
-      id="basic-info-slot"
-      class="tw-col-span-1 tw-overflow-auto tw-min-h-0"
-      hx-get="{{ API_URL }}/htmx/object_information?oid={{ oid }}&survey_id={{ survey_id }}"
-      hx-trigger="load"
-      hx-swap="innerHTML"
-    >
-      <div class="tw-text-xs tw-text-text-muted tw-p-4">Loading basic information…</div>
-    </div>
-    <div
-      id="lightcurve-slot"
-      class="tw-col-span-2"
-      hx-get="{{ API_URL }}/htmx/lightcurve?oid={{ oid }}&survey_id={{ survey_id }}"
-      hx-trigger="load"
-      hx-swap="innerHTML"
-    >
-      <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
-        Loading light curve…
-      </div>
-    </div>
+  <div class="tw-flex tw-flex-col">
     {#
-      Position residuals + periodogram + airmass share the same grid cell.
-      Only one is visible at a time; togglePeriodogramPanel and
-      toggleAirmassPanel manage the mutual-exclusion (and which button is
-      highlighted) via tw-hidden. Periodogram is driven from the LC
-      toolbar's Periodogram button; Airmass from the Basic Information
-      panel's Airmass button. Panels carry their templates inline so the
-      canvas is ready for Chart.js the first time the toggle flips it on.
+      `minmax(0, …fr)` instead of bare `…fr` so each track is sized purely by
+      the fr ratios, not by the item's min-content. In the prior single-grid
+      layout column 2 saw both LC (row 1) and stamps (row 2) in the same
+      track, balancing min-content across rows. Splitting into two grids
+      broke that — stamps' fixed-aspect children would push row 2's fr
+      tracks wider than row 1's identical fr template, and the column edges
+      would drift. The minmax(0,…) wrapper lets the track shrink to 0 if
+      needed, so column widths come out the same on both rows.
+      `tw-overflow-hidden` clips inner overflow when the row is shrunk
+      below its natural content min — without it, the LC's
+      `min-h-[15.84rem]` canvas wrapper escapes the row's box and
+      visually overlaps row 2.
+      `tw-min-h-0` is the missing piece for the drag-to-resize: as a flex
+      child, the row's implicit `min-height: auto` resolves to its
+      content's min-content (~290 px from LC's flex-col children), which
+      *blocks* an explicit `style.height` set below that — so dragging
+      down (height > min-content) worked, but dragging up (height <
+      min-content) silently no-op'd. Pinning min-height to 0 lets the
+      explicit height win in both directions.
     #}
     <div
-      class="tw-col-span-1 tw-min-h-0 tw-min-w-0"
+      id="detail-row-1"
+      class="tw-grid tw-gap-3 tw-overflow-hidden tw-min-h-0"
+      style="grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);"
     >
       <div
-        id="coord-residuals-slot"
-        class="tw-h-full"
-        hx-get="{{ API_URL }}/htmx/coord_residuals?oid={{ oid }}&survey_id={{ survey_id }}"
+        id="basic-info-slot"
+        class="tw-col-span-1 tw-overflow-auto tw-min-h-0"
+        hx-get="{{ API_URL }}/htmx/object_information?oid={{ oid }}&survey_id={{ survey_id }}"
+        hx-trigger="load"
+        hx-swap="innerHTML"
+      >
+        <div class="tw-text-xs tw-text-text-muted tw-p-4">Loading basic information…</div>
+      </div>
+      <div
+        id="lightcurve-slot"
+        class="tw-col-span-2"
+        hx-get="{{ API_URL }}/htmx/lightcurve?oid={{ oid }}&survey_id={{ survey_id }}"
         hx-trigger="load"
         hx-swap="innerHTML"
       >
         <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
-          Loading position residuals…
+          Loading light curve…
         </div>
       </div>
-      <div id="periodogram-slot" class="tw-hidden tw-h-full">
-        {% include "periodogram/periodogramPreview.html.jinja" %}
-      </div>
-      <div id="airmass-slot" class="tw-hidden tw-h-full">
-        {% include "airmass/airmassPanel.html.jinja" %}
+      {#
+        Position residuals + periodogram + airmass share the same grid cell.
+        Only one is visible at a time; togglePeriodogramPanel and
+        toggleAirmassPanel manage the mutual-exclusion (and which button is
+        highlighted) via tw-hidden. Periodogram is driven from the LC
+        toolbar's Periodogram button; Airmass from the Basic Information
+        panel's Airmass button. Panels carry their templates inline so the
+        canvas is ready for Chart.js the first time the toggle flips it on.
+      #}
+      <div
+        class="tw-col-span-1 tw-min-h-0 tw-min-w-0"
+      >
+        <div
+          id="coord-residuals-slot"
+          class="tw-h-full"
+          hx-get="{{ API_URL }}/htmx/coord_residuals?oid={{ oid }}&survey_id={{ survey_id }}"
+          hx-trigger="load"
+          hx-swap="innerHTML"
+        >
+          <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
+            Loading position residuals…
+          </div>
+        </div>
+        <div id="periodogram-slot" class="tw-hidden tw-h-full">
+          {% include "periodogram/periodogramPreview.html.jinja" %}
+        </div>
+        <div id="airmass-slot" class="tw-hidden tw-h-full">
+          {% include "airmass/airmassPanel.html.jinja" %}
+        </div>
       </div>
     </div>
 
+    {#
+      Draggable resize handle. Pointer-events flow: pointerdown captures
+      the pointer on the handle so subsequent move/up events keep firing
+      even when the cursor strays outside the bar (or off-screen during a
+      fast drag). Δy adjusts row 1 by +Δ and row 2 by −Δ → total height is
+      preserved, the panel rows just trade vertical space. Both rows clamp
+      at MIN_ROW_PX so the user can't shrink either to zero. Double-click
+      clears the inline heights and returns to auto-sizing.
+    #}
     <div
-      id="radar-slot"
-      class="tw-col-span-1 tw-min-h-0"
-      style="{{ side_square }}"
-      hx-get="{{ API_URL }}/htmx/probability?oid={{ oid }}&survey_id={{ survey_id }}{% if classifier %}&classifier={{ classifier|urlencode }}{% endif %}"
-      hx-trigger="load"
-      hx-swap="innerHTML"
+      id="row-resize-handle"
+      class="tw-flex tw-items-center tw-justify-center hover:tw-bg-bg-tertiary tw-transition-colors tw-rounded"
+      style="height: 0.75rem; cursor: row-resize; touch-action: none;"
+      title="Drag to resize the top and bottom rows. Double-click to reset."
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize top and bottom rows"
     >
-      <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
-        Loading probabilities…
-      </div>
+      <div style="height: 3px; width: 4rem; border-radius: 9999px; background: #30363d;"></div>
     </div>
-    <div
-      id="stamps-slot"
-      class="tw-col-span-2 tw-min-h-0"
-      hx-get="{{ API_URL }}/htmx/stamps?oid={{ oid }}&survey_id={{ survey_id }}{% if identifier %}&identifier={{ identifier|urlencode }}{% endif %}"
-      hx-trigger="load"
-      hx-swap="innerHTML"
-    >
-      <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
-        Loading stamps…
-      </div>
-    </div>
-    <div
-      id="aladin-slot"
-      class="tw-col-span-1 tw-min-h-0"
-      style="{{ side_square }}"
-      hx-get="{{ API_URL }}/htmx/aladin?oid={{ oid }}&survey_id={{ survey_id }}"
-      hx-trigger="load"
-      hx-swap="innerHTML"
-    >
-      <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
-        Loading sky view…
-      </div>
-    </div>
-  </div>
 
-  {#
-    Crossmatch — full-width collapsible at the bottom of the detail page.
-    Native <details>/<summary> handles the open/close UI; the fetch fires
-    on `load` (not on toggle) so the data is already in the DOM by the
-    time the user clicks the summary — no spinner-on-expand wait. The
-    panel stays collapsed by default; the only change is that opening
-    is instant. catsHTM is the only catalog source for now; future
-    xmatch sources will surface as additional cards inside this same
-    panel.
-  #}
-  <div id="crossmatch-slot" class="tw-mt-1">
+    <div
+      id="detail-row-2"
+      class="tw-grid tw-gap-3 tw-overflow-hidden tw-min-h-0"
+      style="grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1.3fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);"
+    >
+      <div
+        id="radar-slot"
+        class="tw-col-span-1 tw-min-h-0"
+        hx-get="{{ API_URL }}/htmx/probability?oid={{ oid }}&survey_id={{ survey_id }}{% if classifier %}&classifier={{ classifier|urlencode }}{% endif %}"
+        hx-trigger="load"
+        hx-swap="innerHTML"
+      >
+        <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
+          Loading probabilities…
+        </div>
+      </div>
+      <div
+        id="stamps-slot"
+        class="tw-col-span-2 tw-min-h-0"
+        hx-get="{{ API_URL }}/htmx/stamps?oid={{ oid }}&survey_id={{ survey_id }}{% if identifier %}&identifier={{ identifier|urlencode }}{% endif %}"
+        hx-trigger="load"
+        hx-swap="innerHTML"
+      >
+        <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
+          Loading stamps…
+        </div>
+      </div>
+      <div
+        id="aladin-slot"
+        class="tw-col-span-1 tw-min-h-0"
+        hx-get="{{ API_URL }}/htmx/aladin?oid={{ oid }}&survey_id={{ survey_id }}"
+        hx-trigger="load"
+        hx-swap="innerHTML"
+      >
+        <div class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-text-xs tw-text-text-muted">
+          Loading sky view…
+        </div>
+      </div>
+    </div>
+
+    {#
+      Second draggable handle — sits between row 2 and the crossmatch
+      panel and resizes row 2 the same way the first handle resizes row 1.
+      Crossmatch is moved inside the wrapper so the handle's separator
+      replaces the previous flex gap (handle provides spacing; no extra
+      margin/gap needed).
+    #}
+    <div
+      id="row-resize-handle-2"
+      class="tw-flex tw-items-center tw-justify-center hover:tw-bg-bg-tertiary tw-transition-colors tw-rounded"
+      style="height: 0.75rem; cursor: row-resize; touch-action: none;"
+      title="Drag to resize the second row. Double-click to reset."
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize second row"
+    >
+      <div style="height: 3px; width: 4rem; border-radius: 9999px; background: #30363d;"></div>
+    </div>
+
+    {#
+      Crossmatch — full-width collapsible at the bottom of the detail page.
+      Native <details>/<summary> handles the open/close UI; the fetch fires
+      on `load` (not on toggle) so the data is already in the DOM by the
+      time the user clicks the summary — no spinner-on-expand wait. The
+      panel stays collapsed by default; the only change is that opening
+      is instant. catsHTM is the only catalog source for now; future
+      xmatch sources will surface as additional cards inside this same
+      panel. Lives inside the row-resize wrapper so handle-2 can sit
+      between row 2 and this slot.
+    #}
+    <div id="crossmatch-slot">
     <details
       id="crossmatch-details"
       class="tw-bg-bg-card tw-border tw-border-border tw-rounded"
@@ -164,6 +243,7 @@
         </div>
       </div>
     </details>
+    </div>
   </div>
 
   {# Overlay slot for the "Show features" modal — stays empty until the
@@ -176,3 +256,106 @@
   <div id="avro-modal"></div>
 
 </div>
+
+<script>
+(function () {
+  // Re-runs on every detail-view swap because the <script> is part of the
+  // fragment. IIFE-scoped so each run has its own refs; old listeners die
+  // with the old DOM elements. Pointer events (not mouse-only) so it works
+  // for touch + pen too; setPointerCapture keeps the move/up stream tied
+  // to the handle if the cursor strays during a fast drag.
+  // Two draggable separators: one between row 1 and row 2, another
+  // between row 2 and the crossmatch panel. Each binds the same
+  // pattern — drag adjusts the row *above* the handle; the rows below
+  // stay at content-driven heights and ride along with the line.
+  //
+  // Implementation notes (earlier attempts misbehaved on the shrink
+  // direction, so this is deliberately defensive):
+  //   - Direct math: the row's top is fixed during the drag, so the
+  //     new height is just `mouseY - row.top`. No accumulated delta
+  //     state, no `startH` baseline that could go stale if the layout
+  //     reflows mid-drag.
+  //   - `setProperty('height', …, 'important')` plus the matching
+  //     `min-height: 0 !important` and `max-height: … !important`
+  //     guarantee the box is *exactly* the requested size. Without all
+  //     three, a flex child's implicit `min-height: auto` (which can
+  //     resolve to the content's min-content even with overflow:hidden,
+  //     in some engines) silently floors the explicit height — drag
+  //     down grew past the floor and worked, drag up shrunk *below* it
+  //     and was a no-op.
+  //   - rAF coalesces pointermove bursts so high-rate mice don't queue
+  //     up dozens of layout passes per frame.
+  const MIN_ROW_PX = 120;
+
+  function bindRowResize(handle, row) {
+    if (!handle || !row) return;
+
+    function setHeight(px) {
+      const v = px + "px";
+      row.style.setProperty("height", v, "important");
+      row.style.setProperty("min-height", "0", "important");
+      row.style.setProperty("max-height", v, "important");
+    }
+    function clearHeight() {
+      row.style.removeProperty("height");
+      row.style.removeProperty("min-height");
+      row.style.removeProperty("max-height");
+    }
+
+    handle.addEventListener("pointerdown", (e) => {
+      // Left button only on mouse (e.button === 0); touch / pen always pass.
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      const rowTop = row.getBoundingClientRect().top;
+      let rafId = 0;
+      let pendingY = e.clientY;
+
+      function apply() {
+        rafId = 0;
+        // newH = mouseY - rowTop: the line follows the mouse exactly,
+        // and the row's bottom edge sits where the cursor is (modulo
+        // the floor clamp).
+        const newH = Math.max(MIN_ROW_PX, pendingY - rowTop);
+        setHeight(newH);
+      }
+      function onMove(ev) {
+        if (ev.pointerId !== e.pointerId) return;
+        pendingY = ev.clientY;
+        if (!rafId) rafId = requestAnimationFrame(apply);
+      }
+      function onUp(ev) {
+        if (ev.pointerId !== e.pointerId) return;
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        handle.removeEventListener("pointercancel", onUp);
+        if (rafId) cancelAnimationFrame(rafId);
+        try { handle.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ }
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+      }
+      // userSelect:none on body prevents text-selection drag; the global
+      // cursor mirrors the handle's so the visual stays consistent even
+      // if the pointer wanders off the handle during a fast drag.
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "row-resize";
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+      handle.addEventListener("pointercancel", onUp);
+    });
+
+    // Double-click clears all three inline properties so the row returns
+    // to its content-driven default.
+    handle.addEventListener("dblclick", clearHeight);
+  }
+
+  bindRowResize(
+    document.getElementById("row-resize-handle"),
+    document.getElementById("detail-row-1")
+  );
+  bindRowResize(
+    document.getElementById("row-resize-handle-2"),
+    document.getElementById("detail-row-2")
+  );
+})();
+</script>

@@ -20,7 +20,7 @@
      the bottom edge aligned with the side panels (radar / aladin) that
      drive the row height via `aspect-ratio: 1/1`. Without it the card
      ends just below the 3 square stamps and leaves a small gap below. #}
-  class="tw-h-full tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4"
+  class="tw-h-full tw-flex tw-flex-col tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-min-h-0"
   data-oid="{{ oid }}"
   data-survey="{{ survey_id }}"
   {#
@@ -135,10 +135,26 @@
   </div>
 
   {% if ctx.selected %}
-    <div class="tw-grid tw-grid-cols-3 tw-gap-3">
+    {#
+      Stamps row — laid out as a flex container that takes the panel's
+      remaining vertical space (`tw-flex-1 tw-min-h-0`). Each cell is a
+      column-flex with a square stamp wrapper plus a label. The wrapper
+      uses `aspect-ratio: 1` + `flex: 1 1 0` + `max-width: 100%` +
+      `align-self: center`, which resolves to a square sized as
+      `min(cell_width, cell_height_minus_label)` — so when row 2 is
+      dragged smaller, the stamps actually shrink instead of overflowing
+      the box and getting clipped. `align-self: center` is the key: it
+      makes the cross-axis (width) auto, so aspect-ratio can derive it
+      from the height; without it, default `stretch` would force width =
+      cell_width and aspect-ratio would be ignored.
+    #}
+    <div class="tw-flex tw-flex-1 tw-min-h-0 tw-min-w-0 tw-gap-3 tw-justify-center">
       {% for t in ctx.stamp_types %}
-        <div class="tw-flex tw-flex-col tw-items-center tw-gap-1">
-          <div class="tw-relative tw-w-full tw-aspect-square tw-bg-bg-secondary tw-rounded tw-overflow-hidden">
+        <div class="tw-flex tw-flex-col tw-items-center tw-gap-1 tw-min-h-0 tw-min-w-0" style="flex: 1 1 0;">
+          <div
+            class="tw-relative tw-bg-bg-secondary tw-rounded tw-overflow-hidden"
+            style="aspect-ratio: 1; flex: 1 1 0; min-height: 0; max-width: 100%; align-self: center;"
+          >
             <canvas
               class="stamp-canvas tw-w-full tw-h-full tw-block"
               data-stamp-url="{{ ctx.stamp_urls[t] }}"
@@ -172,7 +188,7 @@
             </button>
             <div class="stamp-compass tw-absolute tw-top-1 tw-right-1 tw-text-xs tw-text-text-secondary tw-font-mono"></div>
           </div>
-          <div class="tw-text-xs tw-text-text-muted tw-capitalize">{{ t }}</div>
+          <div class="tw-text-xs tw-text-text-muted tw-capitalize" style="flex-shrink: 0;">{{ t }}</div>
         </div>
       {% endfor %}
     </div>
