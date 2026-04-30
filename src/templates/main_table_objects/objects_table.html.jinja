@@ -21,6 +21,19 @@
   {%- if oids %}&oids={{ oids|urlencode }}{% endif %}
   {%- if page and page > 1 %}&page={{ page }}{% endif %}
 {%- endset %}
+<style>
+  /*
+    Below Tailwind's lg breakpoint (1024 px), drop the lower-priority
+    columns from the results table so the remaining columns (OID,
+    Class, Prob) fit comfortably on phone widths instead of forcing a
+    horizontal scroll. Marked with `.col-mobile-hide` on both <th>
+    and <td>; toggled via a CSS class instead of `lg:` Tailwind
+    variants so a stale Tailwind build doesn't drop the rule.
+  */
+  @media (max-width: 1023px) {
+    #objects_table .col-mobile-hide { display: none; }
+  }
+</style>
 <div
   id="objects_table"
   class="tw-bg-bg-card tw-border tw-border-border tw-rounded"
@@ -44,14 +57,14 @@
         <thead class="tw-text-left tw-text-text-secondary tw-text-xs tw-uppercase">
           <tr class="tw-border-b tw-border-border">
             <th class="tw-px-3 tw-py-2">Object ID</th>
-            <th class="tw-px-3 tw-py-2">N det</th>
-            <th class="tw-px-3 tw-py-2">Classifier</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">N det</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">Classifier</th>
             <th class="tw-px-3 tw-py-2">Class</th>
             <th class="tw-px-3 tw-py-2">Prob</th>
-            <th class="tw-px-3 tw-py-2">RA</th>
-            <th class="tw-px-3 tw-py-2">Dec</th>
-            <th class="tw-px-3 tw-py-2">First MJD</th>
-            <th class="tw-px-3 tw-py-2">Last MJD</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">RA</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">Dec</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">First MJD</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">Last MJD</th>
           </tr>
         </thead>
         <tbody>
@@ -64,22 +77,22 @@
             hx-indicator="#results-loading"
           >
             <td class="tw-px-3 tw-py-2 mono">{{ obj.get('oid', '-') }}</td>
-            <td class="tw-px-3 tw-py-2 mono">{{ obj.get('n_det', '-') }}</td>
-            <td class="tw-px-3 tw-py-2">{{ obj.get('classifier_name', '-') }}</td>
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide">{{ obj.get('n_det', '-') }}</td>
+            <td class="tw-px-3 tw-py-2 col-mobile-hide">{{ obj.get('classifier_name', '-') }}</td>
             <td class="tw-px-3 tw-py-2">{{ obj.get('class_name', '-') }}</td>
             <td class="tw-px-3 tw-py-2 mono">
               {% if obj.get('probability') is not none %}{{ "%.3f"|format(obj['probability']) }}{% else %}-{% endif %}
             </td>
-            <td class="tw-px-3 tw-py-2 mono">
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide">
               {% if obj.get('meanra') is not none %}{{ "%.5f"|format(obj['meanra']) }}{% else %}-{% endif %}
             </td>
-            <td class="tw-px-3 tw-py-2 mono">
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide">
               {% if obj.get('meandec') is not none %}{{ "%.5f"|format(obj['meandec']) }}{% else %}-{% endif %}
             </td>
-            <td class="tw-px-3 tw-py-2 mono">
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide">
               {% if obj.get('firstmjd') is not none %}{{ "%.3f"|format(obj['firstmjd']) }}{% else %}-{% endif %}
             </td>
-            <td class="tw-px-3 tw-py-2 mono">
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide">
               {% if obj.get('lastmjd') is not none %}{{ "%.3f"|format(obj['lastmjd']) }}{% else %}-{% endif %}
             </td>
           </tr>

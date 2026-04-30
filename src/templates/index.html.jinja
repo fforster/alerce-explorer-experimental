@@ -1,6 +1,39 @@
 {% extends "base.html.jinja" %}
 
 {% block body %}
+<style>
+  /*
+    Mobile layout (< Tailwind lg = 1024 px). On desktop the sidebar is
+    a 320 px column to the left of the main content; on phone widths
+    there isn't room for both side-by-side, so we flip the row into a
+    column: sidebar on top, results below.
+      - `#app-row` switches from `flex-row` to `flex-column`.
+      - `#search-panel` takes the full width, drops its fixed 320 px
+        column, swaps the right border for a bottom border, and is
+        capped at `50vh` with internal scroll so a long filter form
+        doesn't push the listing entirely off-screen.
+      - `#search-panel-toggle` is hidden — there's no horizontal axis
+        to collapse against. The auto-hide-on-detail in helpers.js
+        still applies (the sidebar disappears via `tw-hidden`/display:
+        none on detail-drill, freeing the full screen for the panels).
+    Desktop styles (≥ 1024 px) are unchanged.
+  */
+  @media (max-width: 1023px) {
+    #app-row {
+      flex-direction: column;
+    }
+    #search-panel {
+      width: 100%;
+      flex-shrink: 0;
+      border-right: none;
+      border-bottom: 1px solid rgb(48 54 61);
+      max-height: 50vh;
+    }
+    #search-panel-toggle {
+      display: none;
+    }
+  }
+</style>
 <div class="tw-flex tw-flex-col tw-h-full">
 
   <header class="tw-h-12 tw-bg-bg-secondary tw-border-b tw-border-border tw-flex tw-items-center tw-px-4 tw-gap-3">
@@ -91,7 +124,7 @@
     </div>
   </header>
 
-  <div class="tw-flex tw-flex-1 tw-min-h-0">
+  <div id="app-row" class="tw-flex tw-flex-1 tw-min-h-0">
 
     {#
       Every filter param flows through `filter_qs` so the initial search-form,
