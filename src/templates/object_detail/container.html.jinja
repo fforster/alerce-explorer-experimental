@@ -332,21 +332,37 @@
   //   - rAF coalesces pointermove bursts so high-rate mice don't queue
   //     up dozens of layout passes per frame.
   const MIN_ROW_PX = 120;
+  // Row heights persist across object navigation via sessionStorage —
+  // every detail swap re-runs this script, and reading the stored value
+  // here propagates the user's last drag to the new view. Cleared on
+  // dblclick (per row). sessionStorage so it lives only for the tab.
+  const STORAGE_KEY = "objectDetailRowHeights";
 
-  function bindRowResize(handle, row) {
+  function loadHeights() {
+    try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "{}"); }
+    catch (_) { return {}; }
+  }
+  function saveHeight(key, value) {
+    const data = loadHeights();
+    if (value == null) delete data[key]; else data[key] = value;
+    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
+    catch (_) { /* quota / disabled / private mode — silently skip */ }
+  }
+
+  function setHeight(row, px) {
+    const v = px + "px";
+    row.style.setProperty("height", v, "important");
+    row.style.setProperty("min-height", "0", "important");
+    row.style.setProperty("max-height", v, "important");
+  }
+  function clearHeight(row) {
+    row.style.removeProperty("height");
+    row.style.removeProperty("min-height");
+    row.style.removeProperty("max-height");
+  }
+
+  function bindRowResize(handle, row, storageKey) {
     if (!handle || !row) return;
-
-    function setHeight(px) {
-      const v = px + "px";
-      row.style.setProperty("height", v, "important");
-      row.style.setProperty("min-height", "0", "important");
-      row.style.setProperty("max-height", v, "important");
-    }
-    function clearHeight() {
-      row.style.removeProperty("height");
-      row.style.removeProperty("min-height");
-      row.style.removeProperty("max-height");
-    }
 
     handle.addEventListener("pointerdown", (e) => {
       // Left button only on mouse (e.button === 0); touch / pen always pass.
@@ -356,6 +372,7 @@
       const rowTop = row.getBoundingClientRect().top;
       let rafId = 0;
       let pendingY = e.clientY;
+      let lastH = null;
 
       function apply() {
         rafId = 0;
@@ -363,7 +380,8 @@
         // and the row's bottom edge sits where the cursor is (modulo
         // the floor clamp).
         const newH = Math.max(MIN_ROW_PX, pendingY - rowTop);
-        setHeight(newH);
+        setHeight(row, newH);
+        lastH = newH;
       }
       function onMove(ev) {
         if (ev.pointerId !== e.pointerId) return;
@@ -379,6 +397,9 @@
         try { handle.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ }
         document.body.style.userSelect = "";
         document.body.style.cursor = "";
+        // Persist once per drag, at release. Mid-drag writes would just
+        // burn cycles since storage is only read on script re-init.
+        if (lastH != null) saveHeight(storageKey, lastH);
       }
       // userSelect:none on body prevents text-selection drag; the global
       // cursor mirrors the handle's so the visual stays consistent even
@@ -391,17 +412,29 @@
     });
 
     // Double-click clears all three inline properties so the row returns
-    // to its content-driven default.
-    handle.addEventListener("dblclick", clearHeight);
+    // to its content-driven default — and forgets the saved size so the
+    // next object navigation starts fresh too.
+    handle.addEventListener("dblclick", () => {
+      clearHeight(row);
+      saveHeight(storageKey, null);
+    });
   }
 
-  bindRowResize(
-    document.getElementById("row-resize-handle"),
-    document.getElementById("detail-row-1")
-  );
-  bindRowResize(
-    document.getElementById("row-resize-handle-2"),
-    document.getElementById("detail-row-2")
-  );
+  const row1 = document.getElementById("detail-row-1");
+  const row2 = document.getElementById("detail-row-2");
+  bindRowResize(document.getElementById("row-resize-handle"), row1, "row1");
+  bindRowResize(document.getElementById("row-resize-handle-2"), row2, "row2");
+
+  // Restore on swap-in. Mobile (`display: contents` on the rows) ignores
+  // the inline height — the value sits dormant and re-applies if the
+  // viewport returns to desktop. Numeric guard so a malformed stored
+  // value can't poison the layout.
+  const saved = loadHeights();
+  if (row1 && typeof saved.row1 === "number" && saved.row1 >= MIN_ROW_PX) {
+    setHeight(row1, saved.row1);
+  }
+  if (row2 && typeof saved.row2 === "number" && saved.row2 >= MIN_ROW_PX) {
+    setHeight(row2, saved.row2);
+  }
 })();
 </script>
