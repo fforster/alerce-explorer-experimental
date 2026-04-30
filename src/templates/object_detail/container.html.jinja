@@ -18,6 +18,51 @@
     depending on whether Tailwind's JIT picked up the arbitrary
     `[…fr]` class.
 #}
+<style>
+  /*
+    Mobile layout (< Tailwind lg = 1024 px): collapse the two-row grid
+    into a single stacked column. We use `display: contents` to flatten
+    the row hierarchy so every panel becomes a direct flex child of
+    `#object-detail`, then sequence them with `order:` to get the
+    requested mobile reading order:
+      basic-info → probabilities → light curve →
+      position residuals/periodogram/airmass → stamps → aladin → xmatch
+    Drag-resize handles are hidden because side-by-side resize doesn't
+    apply to a single column.
+
+    Chart-bearing panels carry an explicit `height` (not `min-height`):
+    the inner cards use `tw-h-full` (height: 100%) which only resolves
+    against a definite parent height. With only `min-height` on the
+    slot, the parent's height stays `auto` and `tw-h-full` collapses
+    to 0 — the visible symptom is "stamps and aladin not showing"
+    because the canvas wrappers inside (`flex-1 min-h-0`) inherit a
+    zero height from their content-sized ancestor. Explicit `height`
+    pins the slot, the inner card fills it via `tw-h-full`, and the
+    canvas wrappers grow into the remaining space.
+    Basic-info uses `min-height` so its variable-length info table
+    isn't capped — it scrolls inside the slot via `tw-overflow-auto`.
+    Crossmatch is the collapsible summary, sized by its own content.
+  */
+  @media (max-width: 1023px) {
+    #rows-wrapper,
+    #detail-row-1,
+    #detail-row-2 {
+      display: contents;
+    }
+    #row-resize-handle,
+    #row-resize-handle-2 {
+      display: none;
+    }
+    #basic-info-slot   { order: 1; min-height: 18rem; }
+    #radar-slot        { order: 2; height: 22rem; }
+    #lightcurve-slot   { order: 3; height: 31.2rem; }
+    #residuals-cell    { order: 4; height: 22rem; }
+    #stamps-slot       { order: 5; height: 16rem; }
+    #aladin-slot       { order: 6; height: 22rem; }
+    #crossmatch-slot   { order: 7; }
+  }
+</style>
+
 <div
   id="object-detail"
   class="tw-flex tw-flex-col tw-gap-3"
@@ -49,7 +94,7 @@
     height provides the row separation that `tw-gap-3` gave when the
     rows were a single grid.
   #}
-  <div class="tw-flex tw-flex-col">
+  <div id="rows-wrapper" class="tw-flex tw-flex-col">
     {#
       `minmax(0, …fr)` instead of bare `…fr` so each track is sized purely by
       the fr ratios, not by the item's min-content. In the prior single-grid
@@ -106,6 +151,7 @@
         canvas is ready for Chart.js the first time the toggle flips it on.
       #}
       <div
+        id="residuals-cell"
         class="tw-col-span-1 tw-min-h-0 tw-min-w-0"
       >
         <div

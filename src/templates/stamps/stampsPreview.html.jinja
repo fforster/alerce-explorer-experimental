@@ -136,24 +136,46 @@
 
   {% if ctx.selected %}
     {#
-      Stamps row — laid out as a flex container that takes the panel's
-      remaining vertical space (`tw-flex-1 tw-min-h-0`). Each cell is a
-      column-flex with a square stamp wrapper plus a label. The wrapper
-      uses `aspect-ratio: 1` + `flex: 1 1 0` + `max-width: 100%` +
-      `align-self: center`, which resolves to a square sized as
-      `min(cell_width, cell_height_minus_label)` — so when row 2 is
-      dragged smaller, the stamps actually shrink instead of overflowing
-      the box and getting clipped. `align-self: center` is the key: it
-      makes the cross-axis (width) auto, so aspect-ratio can derive it
-      from the height; without it, default `stretch` would force width =
-      cell_width and aspect-ratio would be ignored.
+      Stamps row — laid out so each stamp is a true `min(cell_width,
+      cell_height_minus_label)` square in every state (default, row-2
+      dragged taller, row-2 dragged shorter, mobile stack).
+
+      The trick is the extra `stamp-area` flex wrapper between the cell
+      (column flex with stamp + label) and the actual stamp wrapper.
+      `stamp-area` is `flex: 1 1 0` (takes all cell height after the
+      label) and full `width: 100%` (cell width). The `stamp-wrapper`
+      inside it uses `aspect-ratio: 1; width: 100%; max-height: 100%;
+      max-width: 100%` — width: 100% of stamp-area seeds the size, the
+      aspect-ratio derives height = width, and `max-height: 100%`
+      clamps height to stamp-area's height (re-resolving width =
+      height) when stamp-area is wider than tall. Result: square sized
+      as `min(stamp_area_width, stamp_area_height)`. Without the
+      stamp-area wrapper, `flex: 1 1 0` on the stamp itself would
+      distribute extra row height to the wrapper, fighting with the
+      aspect-ratio and stretching the box into a rectangle.
     #}
     <div class="tw-flex tw-flex-1 tw-min-h-0 tw-min-w-0 tw-gap-3 tw-justify-center">
       {% for t in ctx.stamp_types %}
         <div class="tw-flex tw-flex-col tw-items-center tw-gap-1 tw-min-h-0 tw-min-w-0" style="flex: 1 1 0;">
+          {#
+            stamp-area is the size-query container. Its width is the cell
+            width (100%) and its height is whatever flex leaves after the
+            label (`flex: 1 1 0`). Inside it, stamp-wrapper sets both
+            `width` and `height` to `min(100cqw, 100cqh)` — i.e. the
+            shorter of the container's two axes — which guarantees a true
+            square no matter how row 2 is dragged. CSS `aspect-ratio` +
+            `max-*` would not re-compute the explicit dimension when the
+            other is clamped, so a tall row left the stamps as a
+            cell-wide × clamped-height rectangle. Container-query units
+            sidestep that by deriving both dimensions from the container.
+          #}
+          <div
+            class="tw-flex tw-items-center tw-justify-center tw-w-full"
+            style="flex: 1 1 0; min-height: 0; container-type: size;"
+          >
           <div
             class="tw-relative tw-bg-bg-secondary tw-rounded tw-overflow-hidden"
-            style="aspect-ratio: 1; flex: 1 1 0; min-height: 0; max-width: 100%; align-self: center;"
+            style="width: min(100cqw, 100cqh); height: min(100cqw, 100cqh);"
           >
             <canvas
               class="stamp-canvas tw-w-full tw-h-full tw-block"
@@ -187,6 +209,7 @@
               <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m6 11 6 6 6-6"/><path d="M5 21h14"/></svg>
             </button>
             <div class="stamp-compass tw-absolute tw-top-1 tw-right-1 tw-text-xs tw-text-text-secondary tw-font-mono"></div>
+          </div>
           </div>
           <div class="tw-text-xs tw-text-text-muted tw-capitalize" style="flex-shrink: 0;">{{ t }}</div>
         </div>
