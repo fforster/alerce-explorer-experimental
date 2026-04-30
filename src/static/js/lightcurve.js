@@ -943,6 +943,18 @@
     // restore whatever the legend toggled them to before the rebuild.
     applyVisibility(chart, visibility);
     renderOverlayInfo(chart);
+    // The parametric-fit overlays (SPM / FLEET / TDE) are functions of MJD,
+    // not phase, so they don't make sense in fold mode — hide the picker
+    // entirely while folded. Restore visibility on unfold IFF the object
+    // actually has at least one fit (mirrors the gate `lcSetFeatures` uses
+    // when first revealing the wrap).
+    const foldOverlayOid = chart.canvas.id.replace(/^lc-canvas-/, "");
+    const foldOverlayWrap = document.getElementById(`lc-overlay-wrap-${foldOverlayOid}`);
+    if (foldOverlayWrap) {
+      const fits = chart.$lcFits || {};
+      const hasAnyFit = !!(fits.spm || fits.fleet || fits.tde);
+      foldOverlayWrap.classList.toggle("tw-hidden", foldPeriod != null || !hasAnyFit);
+    }
     const x = chart.options.scales.x;
     if (foldPeriod) {
       x.title.text = `Phase (P = ${foldPeriod.toPrecision(6)} d)`;
