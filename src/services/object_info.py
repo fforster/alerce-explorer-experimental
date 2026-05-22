@@ -111,7 +111,7 @@ def shape_object_info(raw: dict[str, Any], *, survey: str) -> dict[str, Any]:
     else:
         l_gal = b_gal = lambda_ecl = beta_ecl = None
 
-    archives = build_archive_links(survey=survey, oid=oid or "", ra=ra, dec=dec)
+    archives = build_archive_links(ra=ra, dec=dec)
 
     return {
         "oid": oid,

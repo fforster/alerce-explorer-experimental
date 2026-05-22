@@ -64,8 +64,8 @@ def test_archives_included():
     raw = {"oid": "ZTF21abc", "meanra": 180.0, "meandec": -30.0}
     info = shape_object_info(raw, survey="ztf")
     names = [link["name"] for link in info["archives"]]
-    assert "ALeRCE Explorer" in names
     assert "SIMBAD" in names
+    assert "DESI Legacy Survey DR11" in names
 
 
 def test_delta_mjd_prefers_explicit_field():

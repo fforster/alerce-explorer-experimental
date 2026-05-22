@@ -502,7 +502,7 @@ def test_object_information_renders_basic_fields(client, monkeypatch):
             "firstmjd": 60000.0, "lastmjd": 60100.0, "delta_mjd": 100.0,
             "n_det": 12, "n_non_det": 38, "n_forced": None,
             "corrected": True, "stellar": False,
-            "archives": [{"name": "ALeRCE Explorer", "url": "https://alerce.online/object/ZTF21abc"}],
+            "archives": [{"name": "SIMBAD", "url": "https://simbad.u-strasbg.fr/simbad/sim-coo?Coord=180.0%20-30.0&Radius.unit=arcsec&Radius=10"}],
         }
 
     monkeypatch.setattr(
@@ -531,7 +531,7 @@ def test_object_information_renders_basic_fields(client, monkeypatch):
     assert 'data-ecl="201.76000"' in r.text
     assert 'data-ecl="-21.88000"' in r.text
     assert "60000.000" in r.text
-    assert "ALeRCE Explorer" in r.text
+    assert "SIMBAD" in r.text
     # ZTF has a features endpoint, so the "Show features" button should render.
     assert "Show features" in r.text
     assert "/htmx/features?oid=ZTF21abc&survey_id=ztf" in r.text
