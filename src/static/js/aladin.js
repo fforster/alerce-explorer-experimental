@@ -191,6 +191,17 @@
         });
       }
       loadLsstNeighbors(aladin, ra, dec, lastmjd, oid, legendEl);
+
+      // Wire the stamp-footprint overlay. The handler is module-scoped
+      // (registered once below) and discovers this host via the live
+      // .aladin-host element, so we just stash the Aladin instance and
+      // replay any footprint that already arrived while Aladin was
+      // booting (stamps.js may resolve its FITS fetch before the Aladin
+      // CDN finishes loading on a cold cache).
+      host.$aladin = aladin;
+      if (host.$stampFootprintLatest) {
+        applyStampFootprint(host, host.$stampFootprintLatest);
+      }
     } catch (e) {
       console.error("Aladin init failed:", e);
       if (loadingEl) {
@@ -244,6 +255,38 @@
     cat.addSources(sources);
     addLegendChip(legendEl, `LSST neighbours (${rows.length})`, color);
   }
+
+  // Stamp footprint overlay. `corners` is [[ra, dec], …] in degrees,
+  // walking the four image corners (already closed by re-appending the
+  // first point inside the polyline). One graphicOverlay per host,
+  // re-created on the first call and reused on every subsequent update
+  // so we can swap the polygon by `removeAll()` rather than allocating
+  // a fresh Aladin layer on every detection click.
+  function applyStampFootprint(host, corners) {
+    const aladin = host.$aladin;
+    if (!aladin || !window.A || !corners || corners.length < 3) return;
+    if (!host.$stampFootprintOverlay) {
+      host.$stampFootprintOverlay = window.A.graphicOverlay({
+        color: "#fbbf24",     // amber — distinct from the object marker
+        lineWidth: 1.5,       //         (blue), spec-z chips, and gray
+      });                     //         LSST-neighbour squares.
+      aladin.addOverlay(host.$stampFootprintOverlay);
+    } else {
+      host.$stampFootprintOverlay.removeAll();
+    }
+    const closed = corners.concat([corners[0]]);
+    host.$stampFootprintOverlay.add(window.A.polyline(closed));
+  }
+
+  // Single delegated listener: stamps.js dispatches the event each time
+  // the science stamp finishes parsing, and we route it to whichever
+  // .aladin-host happens to be live on the page.
+  document.addEventListener("stamp:footprintChanged", (evt) => {
+    const host = document.querySelector(".aladin-host");
+    if (!host) return;
+    host.$stampFootprintLatest = evt.detail.footprint;
+    applyStampFootprint(host, evt.detail.footprint);
+  });
 
   function addLegendChip(legendEl, label, color) {
     if (!legendEl) return;

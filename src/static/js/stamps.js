@@ -78,6 +78,31 @@
           : "N↑ E←";
       }
       if (loadingEl) loadingEl.style.display = "none";
+
+      // Fire once per detection: the science / template / difference
+      // stamps share the same WCS by construction, so re-broadcasting
+      // for each would only redraw the same polygon in Aladin. We pick
+      // science as the canonical source.
+      //
+      // Stash the latest footprint on the aladin host so initHost can
+      // pick it up when stamps render before Aladin finishes booting
+      // (CDN cold-start path) — without this, the polygon would be
+      // missed on the very first render of a fresh detail view.
+      if (canvas.dataset.stampType === "science") {
+        // ZTF cutouts have no WCS in the FITS header — synthesise one
+        // centred on the object before computing corners, so the polygon
+        // outline still appears in Aladin (and matches the ~63" stamp
+        // size). LSST stamps already carry full WCS and this is a no-op.
+        augmentZTFStampWCS(fits.header, fits.naxis1, fits.naxis2, canvas);
+        const footprint = computeStampFootprint(fits.header, fits.naxis1, fits.naxis2);
+        if (footprint) {
+          const host = document.querySelector(".aladin-host");
+          if (host) host.$stampFootprintLatest = footprint;
+          document.dispatchEvent(new CustomEvent("stamp:footprintChanged", {
+            detail: { footprint },
+          }));
+        }
+      }
     } catch (e) {
       console.error("FITS stamp error:", e, url);
       if (loadingEl) loadingEl.textContent = "stamp error";
@@ -190,41 +215,155 @@
     return pixels;
   }
 
-  function computeNorthAngle(header) {
-    let cd11 = header.CD1_1;
-    let cd12 = header.CD1_2;
-    let cd21 = header.CD2_1;
-    let cd22 = header.CD2_2;
-
-    if (cd11 == null || cd22 == null) {
-      const pc11 = header.PC1_1 ?? header.PC001001;
-      const pc12 = header.PC1_2 ?? header.PC001002;
-      const pc21 = header.PC2_1 ?? header.PC002001;
-      const pc22 = header.PC2_2 ?? header.PC002002;
-      const cdelt1 = header.CDELT1;
-      const cdelt2 = header.CDELT2;
-      if (pc11 != null && pc22 != null && cdelt1 != null && cdelt2 != null) {
-        cd11 = pc11 * cdelt1;
-        cd12 = (pc12 || 0) * cdelt2;
-        cd21 = (pc21 || 0) * cdelt1;
-        cd22 = pc22 * cdelt2;
-      } else if (cdelt1 != null && cdelt2 != null) {
-        const crota2 = (header.CROTA2 || 0) * Math.PI / 180;
-        cd11 = cdelt1 * Math.cos(crota2);
-        cd12 = -cdelt2 * Math.sin(crota2);
-        cd21 = cdelt1 * Math.sin(crota2);
-        cd22 = cdelt2 * Math.cos(crota2);
-      } else {
-        return 0;
-      }
+  // Effective CD matrix in deg/pix from any of the FITS WCS conventions:
+  //   CD_ij                          (CD matrix style, used by ZTF stamps)
+  //   PC_ij + CDELT_i                (PC + CDELT style, used by LSST stamps —
+  //                                   LSST sets CDELT=1 and packs the scale
+  //                                   into PC, so the off-diagonals must be
+  //                                   scaled by CDELT_i not CDELT_j)
+  //   CDELT_i + CROTA2               (legacy rotation-angle style)
+  //   diagonal CDELT only            (no rotation/skew fallback)
+  // Returns {cd11, cd12, cd21, cd22} or null when nothing usable is present.
+  function effectiveCDMatrix(header) {
+    if (header.CD1_1 != null && header.CD2_2 != null) {
+      return {
+        cd11: header.CD1_1,
+        cd12: header.CD1_2 || 0,
+        cd21: header.CD2_1 || 0,
+        cd22: header.CD2_2,
+      };
     }
-    if (cd12 == null) cd12 = 0;
-    if (cd21 == null) cd21 = 0;
+    const pc11 = header.PC1_1 ?? header.PC001001;
+    const pc12 = header.PC1_2 ?? header.PC001002;
+    const pc21 = header.PC2_1 ?? header.PC002001;
+    const pc22 = header.PC2_2 ?? header.PC002002;
+    const cdelt1 = header.CDELT1;
+    const cdelt2 = header.CDELT2;
+    if (pc11 != null && pc22 != null && cdelt1 != null && cdelt2 != null) {
+      return {
+        cd11: cdelt1 * pc11,
+        cd12: cdelt1 * (pc12 || 0),
+        cd21: cdelt2 * (pc21 || 0),
+        cd22: cdelt2 * pc22,
+      };
+    }
+    if (cdelt1 != null && cdelt2 != null) {
+      const crota2 = (header.CROTA2 || 0) * Math.PI / 180;
+      return {
+        cd11:  cdelt1 * Math.cos(crota2),
+        cd12: -cdelt2 * Math.sin(crota2),
+        cd21:  cdelt1 * Math.sin(crota2),
+        cd22:  cdelt2 * Math.cos(crota2),
+      };
+    }
+    return null;
+  }
 
-    const det = cd11 * cd22 - cd12 * cd21;
+  // Gnomonic (TAN) WCS pixel → world coordinates. Inputs use the FITS
+  // 1-indexed pixel convention (pixel centers at integer coordinates,
+  // image corners at half-integer 0.5 / NAXIS+0.5). Returns [ra, dec] in
+  // degrees, or null when the header is missing the keywords we need.
+  // Reference: Calabretta & Greisen 2002, A&A 395, 1077.
+  function pixelToWorldTAN(px, py, header) {
+    const cd = effectiveCDMatrix(header);
+    if (!cd) return null;
+    const crpix1 = header.CRPIX1;
+    const crpix2 = header.CRPIX2;
+    const crval1 = header.CRVAL1;
+    const crval2 = header.CRVAL2;
+    if (crpix1 == null || crpix2 == null || crval1 == null || crval2 == null) {
+      return null;
+    }
+
+    const dx = px - crpix1;
+    const dy = py - crpix2;
+    // Intermediate world coords (degrees), then to radians for the
+    // spherical inverse projection.
+    const xi  = (cd.cd11 * dx + cd.cd12 * dy) * Math.PI / 180;
+    const eta = (cd.cd21 * dx + cd.cd22 * dy) * Math.PI / 180;
+
+    const a0 = crval1 * Math.PI / 180;
+    const d0 = crval2 * Math.PI / 180;
+    const rho = Math.hypot(xi, eta);
+    let raRad, decRad;
+    if (rho === 0) {
+      raRad = a0;
+      decRad = d0;
+    } else {
+      const c = Math.atan(rho);
+      const cosc = Math.cos(c);
+      const sinc = Math.sin(c);
+      decRad = Math.asin(cosc * Math.sin(d0) + (eta * sinc * Math.cos(d0)) / rho);
+      raRad = a0 + Math.atan2(
+        xi * sinc,
+        rho * Math.cos(d0) * cosc - eta * Math.sin(d0) * sinc,
+      );
+    }
+    let ra = raRad * 180 / Math.PI;
+    let dec = decRad * 180 / Math.PI;
+    ra = ((ra % 360) + 360) % 360;
+    return [ra, dec];
+  }
+
+  // ZTF cutouts ship a bare FITS header (no CRVAL, CRPIX, CD, etc.), so
+  // there's nothing for `pixelToWorldTAN` to work with. Synthesise a
+  // default WCS centred on the object's known position with a 1"/pix
+  // N-up E-left orientation — accurate enough for the Aladin footprint
+  // outline, which only needs to be sub-arcsec-correct on a stamp that's
+  // 63" wide. The detection's RA/Dec lives on the aladin-host element
+  // (the same source the panel was centred on).
+  //
+  // Mutates `header` in place so downstream callers (footprint, scale
+  // bar on a future redraw) all see the synthesised WCS. Skipped when
+  // the header already has WCS (LSST stamps).
+  function augmentZTFStampWCS(header, nx, ny, canvas) {
+    if (header.CRVAL1 != null && header.CRPIX1 != null) return;
+    const url = canvas.dataset.stampUrl || "";
+    if (url.indexOf("avro.alerce.online") === -1) return;
+    const host = document.querySelector(".aladin-host");
+    if (!host) return;
+    const ra = parseFloat(host.dataset.ra);
+    const dec = parseFloat(host.dataset.dec);
+    if (!isFinite(ra) || !isFinite(dec)) return;
+    const PIX_DEG = 1.0 / 3600.0;          // ZTF pixel scale ~ 1″/pix
+    header.CRPIX1 = (nx + 1) / 2;          // 1-indexed image centre
+    header.CRPIX2 = (ny + 1) / 2;
+    header.CRVAL1 = ra;
+    header.CRVAL2 = dec;
+    // Standard astronomical convention: RA decreases with column (E-left),
+    // Dec increases with row (N-up, matching CD2_2 > 0 + the flipY path).
+    header.CD1_1 = -PIX_DEG;
+    header.CD1_2 = 0;
+    header.CD2_1 = 0;
+    header.CD2_2 = PIX_DEG;
+  }
+
+  // The four image corners (TL, TR, BR, BL) in sky coordinates. Walks
+  // around the rectangle so a polyline drawn through the returned points
+  // traces the stamp's outline.
+  function computeStampFootprint(header, nx, ny) {
+    const corners = [
+      [0.5,         ny + 0.5],   // top-left
+      [nx + 0.5,    ny + 0.5],   // top-right
+      [nx + 0.5,    0.5],        // bottom-right
+      [0.5,         0.5],        // bottom-left
+    ];
+    const out = [];
+    for (const [px, py] of corners) {
+      const w = pixelToWorldTAN(px, py, header);
+      if (!w) return null;
+      out.push(w);
+    }
+    return out;
+  }
+
+  function computeNorthAngle(header) {
+    const cd = effectiveCDMatrix(header);
+    if (!cd) return 0;
+    const det = cd.cd11 * cd.cd22 - cd.cd12 * cd.cd21;
     if (Math.abs(det) < 1e-20) return 0;
-    const dpx = -cd12 / det;
-    const dpy = cd11 / det;
+    const dpx = -cd.cd12 / det;
+    const dpy = cd.cd11 / det;
     return Math.atan2(dpx, dpy);
   }
 
@@ -330,22 +469,11 @@
 
   function drawScaleBar(ctx, canvasSize, imageScale, header) {
     let pixScaleArcsec = 0;
-    const cd11 = header.CD1_1;
-    const cd12 = header.CD1_2 || 0;
-    const cd21 = header.CD2_1 || 0;
-    const cd22 = header.CD2_2;
-    if (cd11 != null && cd22 != null) {
-      const det = Math.abs(cd11 * cd22 - cd12 * cd21);
+    const cd = effectiveCDMatrix(header);
+    if (cd) {
+      const det = Math.abs(cd.cd11 * cd.cd22 - cd.cd12 * cd.cd21);
       const arcsec = Math.sqrt(det) * 3600;
       if (arcsec > 0 && arcsec < 10) pixScaleArcsec = arcsec;
-    }
-    if (!pixScaleArcsec) {
-      const cdelt1 = header.CDELT1;
-      const cdelt2 = header.CDELT2;
-      if (cdelt1 != null && cdelt2 != null) {
-        const arcsec = Math.sqrt(Math.abs(cdelt1 * cdelt2)) * 3600;
-        if (arcsec > 0 && arcsec < 10) pixScaleArcsec = arcsec;
-      }
     }
     if (!pixScaleArcsec) pixScaleArcsec = 1.0;  // ZTF ~1"/px, LSST ~0.2"/px; 1" is a sane fallback
 
