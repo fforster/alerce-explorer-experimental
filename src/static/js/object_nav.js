@@ -102,6 +102,83 @@
     list.appendChild(frag);
   }
 
+  // Highest results page the user has visited in this session — only used
+  // when the server doesn't supply an exact `total_pages`. The upstream
+  // doesn't report a total count (count=False) for generic searches, so
+  // this is our only ceiling for the page-jump dropdown in that case.
+  // Grows as the user walks forward; never shrinks within a session.
+  function bumpMaxPage(nav) {
+    if (!nav) return;
+    const candidate = nav.current_page + (nav.has_next ? 1 : 0);
+    window._resultsMaxPage = Math.max(window._resultsMaxPage || 1, candidate);
+  }
+
+  function renderPagePicker(posEl, nav, pos) {
+    posEl.innerHTML = "";
+    if (!nav) return;
+    const human = pos >= 0 ? (pos + 1) : "?";
+    const prefix = document.createElement("span");
+    prefix.textContent = `${human}/${nav.oids.length} · page `;
+    posEl.appendChild(prefix);
+
+    // Two regimes:
+    //   - Exact total known (`total_pages` from the server, set when the
+    //     user filtered by an OID list — we know len(oids)/page_size up
+    //     front). Dropdown lists 1..total exactly.
+    //   - Total unknown (generic search; upstream doesn't return a count).
+    //     Dropdown lists 1..max-seen plus a disabled "…" entry so the
+    //     user can tell more pages exist beyond what's enumerated.
+    const exactTotal = Number.isFinite(nav.total_pages) ? nav.total_pages : null;
+    const maxKnown = exactTotal != null
+      ? exactTotal
+      : (window._resultsMaxPage || nav.current_page);
+    if (maxKnown <= 1 && exactTotal == null) {
+      const tail = document.createElement("span");
+      tail.textContent = String(nav.current_page);
+      posEl.appendChild(tail);
+      return;
+    }
+    const select = document.createElement("select");
+    select.className =
+      "object-nav-page-select tw-bg-bg-card tw-border tw-border-border tw-rounded "
+      + "tw-px-1 tw-py-0.5 tw-text-xs tw-text-text-primary mono";
+    select.title = exactTotal != null
+      ? `Jump to results page (1 of ${exactTotal})`
+      : "Jump to results page (total unknown — more pages may exist)";
+    select.setAttribute("aria-label", "Jump to results page");
+    for (let p = 1; p <= maxKnown; p++) {
+      const opt = document.createElement("option");
+      opt.value = String(p);
+      opt.textContent = exactTotal != null ? `${p} / ${exactTotal}` : String(p);
+      if (p === nav.current_page) opt.selected = true;
+      select.appendChild(opt);
+    }
+    if (exactTotal == null) {
+      // Non-selectable hint: there are pages beyond what we know about.
+      // `disabled` keeps it un-clickable; users still see "…" in the
+      // dropdown panel so the open-endedness is communicated.
+      const more = document.createElement("option");
+      more.textContent = "…";
+      more.disabled = true;
+      select.appendChild(more);
+    }
+    select.addEventListener("change", () => {
+      const target = parseInt(select.value, 10);
+      if (Number.isFinite(target)) jumpToPage(target);
+    });
+    posEl.appendChild(select);
+  }
+
+  async function jumpToPage(page) {
+    const nav = window._resultsNav;
+    if (!nav || page === nav.current_page) return;
+    const newNav = await fetchPageNav(page);
+    if (!newNav || !newNav.oids || !newNav.oids.length) return;
+    window._resultsNav = newNav;
+    bumpMaxPage(newNav);
+    openDetail(newNav.oids[0]);
+  }
+
   function updateButtons() {
     const wrap = document.getElementById("object-nav");
     const bar = document.getElementById("detail-nav-bar");
@@ -127,11 +204,12 @@
     if (!nav || !nav.oids || !nav.oids.length || !oid) {
       wrap.classList.add("tw-hidden");
       wrap.classList.remove("tw-flex");
-      if (posEl) posEl.textContent = "";
+      if (posEl) posEl.innerHTML = "";
       return;
     }
     wrap.classList.remove("tw-hidden");
     wrap.classList.add("tw-flex");
+    bumpMaxPage(nav);
     const pos = nav.oids.indexOf(String(oid));
     const prevBtn = document.getElementById("object-nav-prev");
     const nextBtn = document.getElementById("object-nav-next");
@@ -141,12 +219,7 @@
     if (nextBtn) {
       nextBtn.disabled = !((pos >= 0 && pos < nav.oids.length - 1) || nav.has_next);
     }
-    if (posEl) {
-      // "3/20 · page 2" — "?/N" when the current OID isn't in the cached page
-      // (e.g. deep-linked from a URL whose filters differ from the sidebar).
-      const human = pos >= 0 ? (pos + 1) : "?";
-      posEl.textContent = `${human}/${nav.oids.length} · page ${nav.current_page}`;
-    }
+    if (posEl) renderPagePicker(posEl, nav, pos);
   }
 
   async function navObject(direction) {
@@ -164,6 +237,7 @@
         const newNav = await fetchPageNav(nav.next);
         if (newNav && newNav.oids && newNav.oids.length) {
           window._resultsNav = newNav;
+          bumpMaxPage(newNav);
           target = newNav.oids[0];
         }
       }
@@ -174,6 +248,7 @@
         const newNav = await fetchPageNav(nav.prev);
         if (newNav && newNav.oids && newNav.oids.length) {
           window._resultsNav = newNav;
+          bumpMaxPage(newNav);
           target = newNav.oids[newNav.oids.length - 1];
         }
       }

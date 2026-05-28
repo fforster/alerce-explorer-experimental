@@ -11,6 +11,47 @@ from . import alerce_client
 DEFAULT_PAGE_SIZE = 20
 
 
+def parse_oid_list(oid_str: str | None) -> list[str]:
+    """Split the free-text OID-list filter into individual OIDs.
+
+    Mirrors the prototype's `oidRaw.split(/[\\s,]+/)` and the inline parse
+    inside `build_search_params`. De-duplicates so a user typing the same
+    OID twice (or whitespace-padded variants) doesn't inflate downstream
+    counts. Returns [] for None / empty / whitespace-only input.
+    """
+    if not oid_str:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in re.split(r"[\s,]+", oid_str):
+        if not tok or tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
+def _dedupe_by_oid(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop later duplicates of the same oid while preserving order. LSST
+    list_objects emits one row per (object, classifier) so any search that
+    matches by oid (the `oids` free-text filter in particular) returns each
+    object twice — once per classifier. The first row wins because upstream
+    sorts by probability DESC."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for r in items:
+        oid = r.get("oid")
+        if oid is None:
+            out.append(r)
+            continue
+        key = str(oid)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 def _normalize_ztf_row(row: dict[str, Any]) -> dict[str, Any]:
     """ZTF API uses different field names than LSST — map to the common schema.
 
@@ -105,7 +146,7 @@ def build_search_params(
         # "ZTF26aaumzmq, ZTF22abqqckk" becomes repeated `oid=` query params
         # (the upstream filter is `oid: list[str]`). Mirrors the prototype's
         # `oidRaw.split(/[\s,]+/)` at alerce_explorer.html:2141.
-        oids = [s for s in re.split(r"[\s,]+", oid) if s]
+        oids = parse_oid_list(oid)
         if oids:
             p["oid"] = oids if len(oids) > 1 else oids[0]
     return p
@@ -130,6 +171,13 @@ def shape_response(
 
     if survey == "ztf":
         items = [_normalize_ztf_row(dict(r)) for r in items]
+
+    # Upstream LSST returns one row per (object, classifier) so a 3-OID
+    # search comes back with 6 rows (two classifiers). The results table
+    # and the detail-view dots row both treat items as a per-object list,
+    # so dedupe by oid here — keep the first occurrence which preserves
+    # the upstream's probability-DESC ordering.
+    items = _dedupe_by_oid(items)
 
     has_next = bool(has_next_raw) if has_next_raw is not None else len(items) > 0
     has_prev = page > 1

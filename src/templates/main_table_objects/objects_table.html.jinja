@@ -46,6 +46,7 @@
     "next": objects_list["next"] if objects_list["has_next"] else None,
     "survey": survey|default(none),
     "classifier": classifier|default(none),
+    "total_pages": objects_list["total_pages"] if objects_list.get("total_pages") else None,
   } | tojson_compact }}'
 >
 

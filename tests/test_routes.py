@@ -274,6 +274,70 @@ def test_list_objects_accepts_oids_and_forwards_as_oid(client, monkeypatch):
     assert captured.get("oid") == "OID1,OID2"
 
 
+def test_list_objects_emits_total_pages_for_oid_list(client, monkeypatch):
+    """When the search uses an OID list, total page count is exact:
+    ceil(len(parsed oids) / page_size). The dots-row dropdown reads this
+    from data-nav so it can list 1..N up-front instead of the "…" marker."""
+    async def fake_objects(**kwargs):
+        return {
+            "items": [{"oid": f"OID{i}"} for i in range(20)],
+            "current_page": 1, "has_prev": False, "prev": False,
+            "has_next": True, "next": 2, "info_message": None,
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_list_service.get_objects_list",
+        fake_objects,
+    )
+    # 25 distinct oids with page_size=20 → 2 pages exactly.
+    oids = ",".join(f"OID{i}" for i in range(25))
+    r = client.get(f"/htmx/list_objects?survey=lsst&oids={oids}")
+    assert r.status_code == 200
+    # data-nav is HTML-encoded by Jinja autoescape (&#34; for ").
+    assert "&#34;total_pages&#34;:2" in r.text
+
+
+def test_list_objects_omits_total_pages_for_generic_search(client, monkeypatch):
+    """Without an OID list we have no way to know the total — data-nav
+    must say `total_pages: null` so the dropdown falls back to the "…"
+    open-ended marker."""
+    async def fake_objects(**kwargs):
+        return {
+            "items": [{"oid": "X"}], "current_page": 1,
+            "has_prev": False, "prev": False,
+            "has_next": True, "next": 2, "info_message": None,
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_list_service.get_objects_list",
+        fake_objects,
+    )
+    r = client.get("/htmx/list_objects?survey=lsst&classifier=lc_top&class_name=SN")
+    assert r.status_code == 200
+    assert "&#34;total_pages&#34;:null" in r.text
+
+
+def test_list_objects_dedupes_repeated_oids_for_total_pages(client, monkeypatch):
+    """A user pasting the same OID twice shouldn't inflate the total
+    page count. parse_oid_list dedupes before the ceil()."""
+    async def fake_objects(**kwargs):
+        return {
+            "items": [], "current_page": 1, "has_prev": False, "prev": False,
+            "has_next": False, "next": False, "info_message": None,
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_list_service.get_objects_list",
+        fake_objects,
+    )
+    # 21 distinct OIDs but duplicated → still 2 pages.
+    base = [f"OID{i}" for i in range(21)]
+    oids = ",".join(base + base)
+    r = client.get(f"/htmx/list_objects?survey=lsst&oids={oids}")
+    assert r.status_code == 200
+    assert "&#34;total_pages&#34;:2" in r.text
+
+
 def test_list_objects_without_survey_does_not_push_url(client):
     r = client.get("/htmx/list_objects")
     assert r.status_code == 200

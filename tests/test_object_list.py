@@ -1,4 +1,14 @@
-from src.services.object_list import build_search_params, shape_response
+from src.services.object_list import build_search_params, parse_oid_list, shape_response
+
+
+def test_parse_oid_list_splits_and_dedupes():
+    assert parse_oid_list("ZTF21abc, ZTF21def\t  ZTF21abc\nZTF22xyz") == [
+        "ZTF21abc", "ZTF21def", "ZTF22xyz",
+    ]
+    assert parse_oid_list(None) == []
+    assert parse_oid_list("") == []
+    assert parse_oid_list("   \n\t  ") == []
+    assert parse_oid_list("single") == ["single"]
 
 
 def test_build_search_params_drops_empty_fields():
@@ -152,3 +162,39 @@ def test_shape_response_accepts_plain_array():
     raw = [{"oid": "X"}]
     out = shape_response(raw, survey="lsst", page=1)
     assert out["items"] == [{"oid": "X"}]
+
+
+def test_shape_response_dedupes_same_oid_across_classifiers():
+    """LSST list_objects emits one row per (object, classifier) so a 3-OID
+    query comes back with 6 rows. shape_response keeps only the first
+    occurrence per oid — preserving probability-DESC ordering — so the
+    results table and the detail-view dots row aren't double-stamped."""
+    raw = {
+        "items": [
+            {"oid": "A", "classifier_name": "stamp", "probability": 0.9},
+            {"oid": "A", "classifier_name": "lc_classifier", "probability": 0.6},
+            {"oid": "B", "classifier_name": "stamp", "probability": 0.8},
+            {"oid": "B", "classifier_name": "lc_classifier", "probability": 0.5},
+        ],
+        "next": None,
+    }
+    out = shape_response(raw, survey="lsst", page=1)
+    assert [r["oid"] for r in out["items"]] == ["A", "B"]
+    # First-wins: the higher-probability classifier row survives.
+    assert out["items"][0]["classifier_name"] == "stamp"
+    assert out["items"][1]["classifier_name"] == "stamp"
+
+
+def test_shape_response_dedupe_handles_int_oids_and_missing_oid():
+    raw = {
+        "items": [
+            {"oid": 123456789012345678},
+            {"oid": "123456789012345678"},  # same as int when stringified
+            {"classifier_name": "x"},        # no oid at all — passes through
+            {"oid": 999},
+        ],
+        "next": None,
+    }
+    out = shape_response(raw, survey="lsst", page=1)
+    oids = [r.get("oid") for r in out["items"]]
+    assert oids == [123456789012345678, None, 999]
