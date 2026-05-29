@@ -50,29 +50,38 @@
     };
   }
 
-  // Round up to the next "nice" axis tick: {1, 2, 2.5, 5} × 10ⁿ. Lets the
-  // radar zoom into low-probability groups (e.g. max=0.04 → axis max=0.05)
-  // without leaving an awkward 0.043 tick label on top.
-  function niceCeiling(v) {
-    if (!isFinite(v) || v <= 0) return 1;
-    const exp = Math.pow(10, Math.floor(Math.log10(v)));
-    const mantissa = v / exp;
-    let m;
-    if (mantissa <= 1) m = 1;
-    else if (mantissa <= 2) m = 2;
-    else if (mantissa <= 2.5) m = 2.5;
-    else if (mantissa <= 5) m = 5;
-    else m = 10;
-    return m * exp;
-  }
-
+  // Per-group axis max + tick step. The axis is auto-zoomed to *this*
+  // object/classifier so the scale changes on every navigation instead of
+  // pinning at 1.0.
+  //
+  // We set the radius to the peak probability plus a little headroom, so the
+  // dominant class always reaches near the rim and weaker classes read as
+  // their fraction of it. A "nice"-rounded ceiling ({1,2,2.5,5} or even a
+  // 0.1-step bucket) can't do this: a list of confidently-classified objects
+  // (e.g. TDEs whose top probability is all > 0.9) would bucket to the same
+  // max and look identically scaled — which is exactly the "scale never
+  // changes" complaint.
+  //
+  // 5 ticks; labels are formatted in the chart's `ticks.callback` (they're
+  // no longer round, so we trim them to 2–3 significant figures there).
   function scaleForGroup(group) {
     const values = (group.classes || []).map(
       (c) => (typeof c.probability === "number" ? c.probability : 0),
     );
     const peak = values.length ? Math.max(...values) : 0;
-    const max = niceCeiling(peak);
+    if (!isFinite(peak) || peak <= 0) return { max: 1, stepSize: 0.2 };
+    // 5% headroom keeps the peak marker off the outer ring (so it isn't
+    // visually clipped); cap at 1.0 since probabilities can't exceed it.
+    const max = Math.min(1, peak * 1.05);
     return { max, stepSize: max / 5 };
+  }
+
+  // Compact tick label for the auto-zoomed radial axis. Values are
+  // probabilities in (0, 1], and the tick step is arbitrary (max/5), so we
+  // show 2 decimals normally and 3 once the axis zooms below 0.1.
+  function formatTick(v) {
+    if (v === 0) return "0";
+    return Math.abs(v) < 0.1 ? Number(v).toFixed(3) : Number(v).toFixed(2);
   }
 
   // Build a fresh Chart on `canvas` for the given group. Single source of
@@ -98,6 +107,7 @@
               stepSize,
               color: "#8b949e",
               backdropColor: "transparent",
+              callback: (value) => formatTick(value),
             },
             grid: { color: "rgba(139,148,158,0.25)" },
             angleLines: { color: "rgba(139,148,158,0.25)" },
