@@ -1,0 +1,43 @@
+# Production stack for explorer-experiment.alerce.online
+#
+#   Internet --443/80--> [caddy] --8000--> [app]
+#
+# Caddy terminates HTTPS (automatic Let's Encrypt cert + renewal) and reverse
+# proxies to the app. The app container is NOT published to the host, so it is
+# only reachable through Caddy on the internal compose network.
+#
+# First run:
+#   cp .env.example .env      # then edit values
+#   docker compose up -d --build
+#
+# DNS: an A record for explorer-experiment.alerce.online must point at this
+# host's public IP, and the AWS security group must allow inbound 80 + 443,
+# BEFORE Caddy can obtain a certificate.
+
+services:
+  app:
+    build: .
+    image: alerce-explorer-experimental:latest
+    restart: unless-stopped
+    env_file: .env          # API_URL and any future secrets (git-ignored)
+    expose:
+      - "8000"              # internal only — no `ports:`, never hits the host
+    # No volumes, no secrets baked in. Stateless container.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"            # HTTP -> auto-redirect to HTTPS + ACME challenge
+      - "443:443"
+      - "443:443/udp"      # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data     # persists issued certificates across restarts
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

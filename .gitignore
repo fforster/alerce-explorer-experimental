@@ -8,3 +8,10 @@ venv/
 node_modules/
 .DS_Store
 src/static/css/main.css
+
+# Secrets — never commit. SSH keys, TLS keys, runtime env.
+*.pem
+*.key
+*.p12
+.env.*
+!.env.example

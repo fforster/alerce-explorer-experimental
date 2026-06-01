@@ -1,0 +1,31 @@
+# Keep secrets and local cruft OUT of the build context, so they can never be
+# COPYed into an image layer. This is the primary guard against a stray
+# `COPY . .` sweeping in your .pem / .env.
+.git
+.gitignore
+
+# Secrets
+*.pem
+*.key
+*.p12
+.env
+.env.*
+!.env.example
+
+# Python / build artifacts (reinstalled or rebuilt inside the image)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+node_modules/
+
+# CSS is rebuilt by the Tailwind stage in the Dockerfile
+src/static/css/main.css
+
+# Editor / OS / docs not needed at runtime
+.DS_Store
+tests/
+*.md
+.ignore

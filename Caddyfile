@@ -1,0 +1,14 @@
+# Reverse proxy + automatic HTTPS for the ALeRCE Explorer.
+# Caddy fetches and renews a free Let's Encrypt certificate automatically the
+# first time this domain is hit over HTTPS (needs ports 80+443 reachable and
+# the DNS A record pointing here).
+
+{
+	# Email used by Let's Encrypt for expiry notices. Set a real one in prod.
+	email francisco.forster@gmail.com
+}
+
+explorer-experiment.alerce.online {
+	encode gzip zstd
+	reverse_proxy app:8000
+}
