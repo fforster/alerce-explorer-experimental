@@ -47,8 +47,18 @@
         <li><strong class="tw-text-text-primary">App ↔ Abs</strong> — apparent ↔ absolute (rest-frame @ 10 pc; requires z &gt; 0; Planck-2018 distance modulus)</li>
         <li><strong class="tw-text-text-primary">Obs ↔ Der</strong> — observed ↔ dereddened (Fitzpatrick 1999, A<sub>λ</sub> = R<sub>λ</sub> × E(B-V) per band; requires E(B-V) &gt; 0)</li>
         <li><strong class="tw-text-text-primary">ZTF DR</strong> — archival ZTF science photometry at this sky position (cone 1.5″); Sci mode only</li>
-        <li><strong class="tw-text-text-primary">Overlay</strong> — parametric model fit from the latest feature-extractor version (SPM, FLEET, or TDE tail), when available</li>
+        <li><strong class="tw-text-text-primary">Overlay</strong> — a model curve on the light curve: <strong class="tw-text-text-primary">GP</strong> (a multi-band Gaussian Process, always available) or a parametric fit from the latest feature-extractor version (SPM, FLEET, or TDE tail, when available)</li>
         <li><strong class="tw-text-text-primary">Offset</strong> — visual band separation: subtract each band's mean / median / max / min, then spread by step × frequency rank (u<g<r<i<z<Y). The +/− bumps the spread by 0.1 mag; legend shows the per-band Δ in mag (multiplicative in Flux mode)</li>
+      </ul>
+      <div class="tw-font-semibold tw-mb-1">GP overlay</div>
+      <p class="tw-mb-2 tw-text-text-secondary">
+        Draws a smooth curve through the points with a shaded uncertainty band — a quick way to see the overall shape. Pick <span class="mono">GP</span> from the Overlay menu; it works on any object (a brief <span class="mono">fitting GP…</span> spinner shows while it computes).
+      </p>
+      <ul class="tw-space-y-0.5 tw-mb-3 tw-list-disc tw-list-inside tw-text-text-secondary">
+        <li>All bands are fit together, so a well-measured band helps fill in a sparsely-sampled one</li>
+        <li>Each band is its own legend entry you can show or hide</li>
+        <li>Fold the light curve (in Sci mode) and the curve is re-fit to the folded shape</li>
+        <li>Turns off when you move to another object</li>
       </ul>
     {% endcall %}
     <div class="tw-flex tw-items-center tw-gap-1.5 tw-flex-wrap tw-justify-end">
