@@ -789,19 +789,22 @@
       }
       const fmt = (v, d) => (v != null && isFinite(v) ? Number(v).toPrecision(d) : "—");
       // When folded the fit is in phase space: the time length scale is in
-      // cycles, not days.
+      // cycles, not days. σ_f / jitter are dimensionless (per-band-standardized
+      // units: a fraction of each band's own scatter), since bands are now
+      // standardized individually before the fit.
       const lt = gp.folded
         ? `ℓ<sub>φ</sub>=<b>${fmt(hp.l_t_days, 3)}</b> cyc`
         : `ℓ<sub>t</sub>=<b>${fmt(hp.l_t_days, 3)}</b> d`;
       const parts = [
         lt,
         `ℓ<sub>λ</sub>=<b>${fmt(hp.l_lambda_kA, 3)}</b> kÅ`,
-        `σ<sub>f</sub>=<b>${fmt(hp.sigma_f_njy, 3)}</b> nJy`,
-        `jitter=<b>${fmt(hp.jitter_njy, 3)}</b> nJy`,
+        `σ<sub>f</sub>=<b>${fmt(hp.sigma_f, 2)}</b>`,
+        `jitter=<b>${fmt(hp.jitter, 2)}</b>`,
       ];
+      const flux = gp.science ? "sci flux" : "diff flux";
       const tag = gp.folded
-        ? `folded P=${fmt(gp.period, 6)} d, ${gp.n_points} det`
-        : `${gp.n_points} det, ${gp.n_bands} bands`;
+        ? `folded P=${fmt(gp.period, 6)} d · ${flux} · ${gp.n_points} det`
+        : `${flux} · ${gp.n_points} det, ${gp.n_bands} bands`;
       strip.innerHTML =
         `GP&nbsp;&nbsp;${parts.join("&nbsp;&nbsp;")}` +
         `&nbsp;&nbsp;<span style="color:#888">(${tag})</span>`;
@@ -2503,26 +2506,31 @@
     }
   }
 
-  // Which GP variant the chart currently needs:
-  //   "time"        — unfolded: time-domain fit of the difference flux.
-  //   "fold:P"      — folded *and* in Sci mode: phase-domain fit of the
-  //                   science flux at period P (folding only makes sense on
-  //                   the science light curve, so it's gated to Sci mode).
+  // Which GP variant the chart currently needs — the fit follows the display
+  // mode, so the right flux is always fit:
+  //   "time"        — unfolded, Diff mode: time-domain fit of difference flux.
+  //   "sci"         — unfolded, Sci mode: time-domain fit of science flux.
+  //   "fold:P"      — folded (Sci only): phase-domain fit of the science flux
+  //                   at period P (folding only makes sense on the science
+  //                   light curve, so it's gated to Sci mode).
   //   null          — folded but not in Sci mode: no valid GP to show.
-  // ensureGpLoaded fetches/caches per key so folding, switching to Sci, or
-  // picking a new period swaps the fit. Keys derive from the same chart.$lcPeriod
-  // Number on both request and response, so they round-trip-match exactly.
+  // ensureGpLoaded fetches/caches per key so switching Diff↔Sci, folding, or
+  // picking a new period swaps to the matching fit. Keys derive from the same
+  // chart.$lcPeriod Number on both request and response, so they round-trip-
+  // match exactly.
   function gpDesiredKey(chart) {
     if (chart.$lcFold === "fold" && chart.$lcPeriod > 0) {
       return chart.$lcSource === "sci" ? "fold:" + chart.$lcPeriod : null;
     }
-    return "time";
+    return chart.$lcSource === "sci" ? "sci" : "time";
   }
 
-  // The key a returned bundle represents — derived from its OWN folded/period
-  // (NOT a shared loading flag), so overlapping fetches can't be misattributed.
+  // The key a returned bundle represents — derived from its OWN folded / science
+  // / period flags (NOT a shared loading flag), so overlapping fetches can't be
+  // misattributed.
   function gpBundleKey(bundle) {
-    return bundle && bundle.folded ? "fold:" + bundle.period : "time";
+    if (bundle && bundle.folded) return "fold:" + bundle.period;
+    return bundle && bundle.science ? "sci" : "time";
   }
 
   // Spinner reflects "the desired variant isn't here yet and is being fetched".
@@ -2559,9 +2567,11 @@
     const slot = document.getElementById(`lc-gp-slot-${oid}`);
     const base = slot && slot.dataset.gpUrl;
     if (!base || !(window.htmx && typeof window.htmx.ajax === "function")) return;
-    const url = want.startsWith("fold:")
-      ? base + "&fold_period=" + encodeURIComponent(chart.$lcPeriod)
-      : base;
+    // Variant → query params: folded carries the period (science implied
+    // server-side); unfolded Sci asks for science flux; unfolded Diff is bare.
+    let url = base;
+    if (want.startsWith("fold:")) url += "&fold_period=" + encodeURIComponent(chart.$lcPeriod);
+    else if (want === "sci") url += "&science=1";
     inflight.add(want);
     refreshGpSpinner(chart);
     // Each fetch clears its OWN key on completion (the response identifies its

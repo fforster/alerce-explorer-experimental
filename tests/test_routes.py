@@ -1153,7 +1153,7 @@ def test_lc_xsurvey_endpoint_handles_no_match(client, monkeypatch):
 def test_lc_gp_endpoint_returns_inline_setGp(client, monkeypatch):
     """Deferred GP endpoint hands the per-band posterior grid to
     `window.lcSetGp` so the client can draw the multi-band overlay."""
-    async def fake_bundle(*, survey, oid, fold_period=None):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
         return {
             "available": True,
             "grid": [{
@@ -1180,7 +1180,7 @@ def test_lc_gp_endpoint_returns_inline_setGp(client, monkeypatch):
 def test_lc_gp_endpoint_handles_fit_failure(client, monkeypatch):
     """A raised error from the service still yields a 200 fragment carrying an
     `available:false` bundle so the client clears the spinner + reverts."""
-    async def boom(*, survey, oid, fold_period=None):
+    async def boom(*, survey, oid, fold_period=None, science=False):
         raise RuntimeError("sklearn blew up")
 
     monkeypatch.setattr(
@@ -1197,7 +1197,7 @@ def test_lc_gp_endpoint_forwards_fold_period(client, monkeypatch):
     on the folded (phase) light curve."""
     seen = {}
 
-    async def fake_bundle(*, survey, oid, fold_period=None):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
         seen["fold_period"] = fold_period
         return {"available": True, "grid": [{
             "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
@@ -1214,6 +1214,29 @@ def test_lc_gp_endpoint_forwards_fold_period(client, monkeypatch):
     assert r.status_code == 200
     assert seen["fold_period"] == 2.5
     assert '"folded":true' in r.text
+
+
+def test_lc_gp_endpoint_forwards_science_flag(client, monkeypatch):
+    """science=1 selects a science-flux fit (unfolded Sci mode)."""
+    seen = {}
+
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
+        seen["science"] = science
+        return {"available": True, "grid": [{
+            "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
+            "mjd": [60000.0, 60001.0], "flux_mean": [9000.0, 9100.0], "flux_std": [50.0, 55.0],
+        }], "hyperparams": {"l_t_days": 12.0, "l_lambda_kA": 1.0,
+                            "sigma_f": 1.0, "jitter": 0.1},
+            "n_points": 20, "n_bands": 1, "folded": False, "period": None,
+            "science": True, "message": "", "oid": oid}
+
+    monkeypatch.setattr(
+        "src.routes.htmx.lightcurve_service.get_lc_gp_bundle", fake_bundle,
+    )
+    r = client.get("/htmx/lc_gp?oid=ZTF21abc&survey_id=ztf&science=1")
+    assert r.status_code == 200
+    assert seen["science"] is True
+    assert '"science":true' in r.text
 
 
 def test_lightcurve_empty_shows_message(client, monkeypatch):

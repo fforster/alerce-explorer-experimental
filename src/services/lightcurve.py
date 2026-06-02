@@ -504,19 +504,21 @@ def _assemble_gp_series(
 
 
 async def get_lc_gp_bundle(
-    *, survey: str, oid: str, fold_period: float | None = None
+    *, survey: str, oid: str, fold_period: float | None = None, science: bool = False
 ) -> dict[str, Any]:
     """Deferred multi-band Gaussian-Process overlay fetch.
 
-    Assembles difference-flux detections + forced photometry (the latter capped
-    to GP_FP_WINDOW_DAYS around the detection span) from this object *and*
+    Assembles detections + forced photometry (the latter capped to
+    GP_FP_WINDOW_DAYS around the detection span) from this object *and*
     (best-effort) its cross-survey counterpart, maps each band to its central
     wavelength, and fits one joint GP over (time, wavelength) — see
-    `services/gp.py`. When `fold_period` is given the fit is done in phase space
-    (the folded light curve). The cross-survey lookup is wrapped so a failure
-    there still yields a single-survey fit. Returns `{oid, available, grid,
-    hyperparams, folded, period, ...}`; on any fatal error the caller renders an
-    `available=false` fragment.
+    `services/gp.py`. The flux fitted follows the client's display mode:
+    difference flux by default, science flux when `science` is set (and always
+    when folded — folding only makes sense on the science light curve). When
+    `fold_period` is given the fit is done in phase space. The cross-survey
+    lookup is wrapped so a failure there still yields a single-survey fit.
+    Returns `{oid, available, grid, hyperparams, folded, period, science, ...}`;
+    on any fatal error the caller renders an `available=false` fragment.
     """
     # get_lightcurve is detections-only; get_lc_fp_bundle returns the same
     # payload *with* forced_phot_bands populated (and the ZTF v2 mag_corr
@@ -534,11 +536,14 @@ async def get_lc_gp_bundle(
     if isinstance(xbundle, dict) and xbundle.get("survey"):
         sources.append((xbundle["survey"], xbundle))
 
-    # The folded fit is on the science light curve (folding only makes sense
-    # there); the unfolded fit uses difference flux, the alert-native value.
+    # Fit science flux when the client is in Sci mode, and always when folded
+    # (folding only makes sense on the science light curve); else difference
+    # flux, the alert-native value.
     folding = fold_period is not None and fold_period > 0
+    use_science = bool(science) or folding
     result = gp_service.fit_multiband_gp(
-        _assemble_gp_series(sources, science=folding), fold_period=fold_period
+        _assemble_gp_series(sources, science=use_science), fold_period=fold_period
     )
     result["oid"] = oid
+    result["science"] = use_science
     return result

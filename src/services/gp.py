@@ -177,28 +177,34 @@ def fit_multiband_gp(
             f"Too few detections for a GP fit ({n_total} < {_MIN_POINTS})."
         )
 
-    # Stack all bands. Per-band mean subtraction (the GP assumes a zero mean),
-    # then a single global scale so one amplitude σ_f is well-conditioned across
-    # bands whose flux levels differ by orders of magnitude.
+    # Per-band standardization: subtract each band's mean and divide by its own
+    # scatter, so every band enters the kernel at ~unit variance. Without this
+    # a band whose flux varies orders of magnitude more than another would
+    # dominate the single shared amplitude σ_f, and the lower-amplitude bands
+    # would be over-smoothed (their signal lost under the shared jitter). This
+    # is acute for science flux, where per-band amplitudes differ widely. With
+    # it, the wavelength coregionalization couples band *shapes*, not their
+    # amplitudes — exactly "a well-sampled band informs a sparse one". The fit
+    # runs in these standardized units; predictions are de-standardized per
+    # band (× scale_b + mean_b) on the way out, and σ_f/jitter are reported
+    # dimensionless (a fraction of each band's own scatter).
     t_all = np.concatenate([g["mjd"] for g in groups])
-    flux_all = np.concatenate([g["flux"] for g in groups])
-    eflux_all = np.concatenate([g["eflux"] for g in groups])
-    band_mean = {
-        (g["survey"], g["band"]): float(np.mean(g["flux"])) for g in groups
-    }
-    means_per_point = np.concatenate(
-        [np.full(len(g["mjd"]), band_mean[(g["survey"], g["band"])]) for g in groups]
-    )
-    y_centered = flux_all - means_per_point
-    scale = float(np.std(y_centered))
-    if not np.isfinite(scale) or scale <= 0:
-        scale = 1.0
+    band_stats: dict[tuple[str, str], tuple[float, float]] = {}
+    for g in groups:
+        m = float(np.mean(g["flux"]))
+        s = float(np.std(g["flux"]))
+        if not np.isfinite(s) or s <= 0:
+            s = 1.0  # single-point / zero-variance band → its y collapses to 0
+        band_stats[(g["survey"], g["band"])] = (m, s)
 
+    def _stats(g):
+        return band_stats[(g["survey"], g["band"])]
+
+    y = np.concatenate([(g["flux"] - _stats(g)[0]) / _stats(g)[1] for g in groups])
+    alpha = np.concatenate([(g["eflux"] / _stats(g)[1]) ** 2 for g in groups])
     lam_col = np.concatenate(
         [np.full(len(g["mjd"]), g["lambda_eff"]) for g in groups]
     ) / _LAMBDA_UNIT_ANGSTROM
-    y = y_centered / scale
-    alpha = (eflux_all / scale) ** 2
 
     t0 = float(np.mean(t_all))
     t_span = float(t_all.max() - t_all.min()) or 1.0
@@ -256,9 +262,9 @@ def fit_multiband_gp(
         lam_scaled = g["lambda_eff"] / _LAMBDA_UNIT_ANGSTROM
         X_test = np.column_stack([grid_t, np.full(n_grid, lam_scaled)])
         mu, std = gp.predict(X_test, return_std=True)
-        mean_b = band_mean[(g["survey"], g["band"])]
-        flux_mean = (mu * scale + mean_b).astype(float)
-        flux_std = (np.clip(std, 0.0, None) * scale).astype(float)
+        mean_b, scale_b = band_stats[(g["survey"], g["band"])]
+        flux_mean = (mu * scale_b + mean_b).astype(float)
+        flux_std = (np.clip(std, 0.0, None) * scale_b).astype(float)
         grid.append(
             {
                 "survey": g["survey"],
@@ -274,7 +280,7 @@ def fit_multiband_gp(
     return {
         "available": True,
         "grid": grid,
-        "hyperparams": _extract_hyperparams(gp, scale),
+        "hyperparams": _extract_hyperparams(gp),
         "n_points": int(n_total),
         "n_bands": len(groups),
         "folded": folded,
@@ -283,10 +289,12 @@ def fit_multiband_gp(
     }
 
 
-def _extract_hyperparams(gp: GaussianProcessRegressor, scale: float) -> dict[str, float]:
-    """Pull the fitted (ℓ_t, ℓ_λ, σ_f, jitter) out of the optimised kernel and
-    convert back to physical units (days, kÅ, nJy). Defensive against sklearn's
-    kernel-tree layout by reading the flat ``get_params`` dict."""
+def _extract_hyperparams(gp: GaussianProcessRegressor) -> dict[str, float]:
+    """Pull the fitted (ℓ_t, ℓ_λ, σ_f, jitter) out of the optimised kernel.
+    ℓ_t is in days (time fit) or cycles (folded); ℓ_λ in kilo-Ångström. σ_f and
+    jitter are in the per-band-standardized units the fit runs in — i.e. a
+    fraction of each band's own scatter — so they're dimensionless, not nJy.
+    Defensive against sklearn's kernel-tree layout via the flat get_params."""
     p = gp.kernel_.get_params()
     try:
         const = float(p["k1__k1__constant_value"])
@@ -299,6 +307,6 @@ def _extract_hyperparams(gp: GaussianProcessRegressor, scale: float) -> dict[str
     return {
         "l_t_days": l_t,
         "l_lambda_kA": l_lambda,  # kilo-Ångström
-        "sigma_f_njy": float(np.sqrt(max(const, 0.0)) * scale),
-        "jitter_njy": float(np.sqrt(max(noise, 0.0)) * scale),
+        "sigma_f": float(np.sqrt(max(const, 0.0))),    # × per-band scatter
+        "jitter": float(np.sqrt(max(noise, 0.0))),     # × per-band scatter
     }

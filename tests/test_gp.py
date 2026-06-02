@@ -71,13 +71,14 @@ def test_posterior_recovers_the_bump_peak():
     assert g["flux_mean"][peak_idx] > 3000.0
 
 
-def test_hyperparameters_are_reported_in_physical_units():
+def test_hyperparameters_are_reported():
     out = fit_multiband_gp(_synthetic_two_band(), n_grid=60)
     hp = out["hyperparams"]
     assert hp["l_t_days"] > 0
     assert hp["l_lambda_kA"] > 0
-    assert hp["sigma_f_njy"] > 0
-    assert hp["jitter_njy"] >= 0
+    # σ_f / jitter are dimensionless now (per-band-standardized units).
+    assert hp["sigma_f"] > 0
+    assert hp["jitter"] >= 0
 
 
 def test_too_few_points_is_unavailable():
@@ -167,3 +168,28 @@ def test_unfolded_fit_is_not_flagged_folded():
     assert out["period"] is None
     # x is MJD (the synthetic data spans MJD 0..60), not phase.
     assert max(out["grid"][0]["mjd"]) > 1.5
+
+
+def test_per_band_standardization_recovers_low_amplitude_band():
+    """A band whose flux varies orders of magnitude less than another must not
+    be over-smoothed away: with per-band standardization each band is fit at
+    its own scale, so the faint band still tracks its own signal."""
+    rng = np.random.default_rng(7)
+    t = np.sort(rng.uniform(0.0, 40.0, 30))
+
+    def bump(amp, base):
+        return base + amp * np.exp(-0.5 * ((t - 20.0) / 5.0) ** 2)
+
+    # g varies by ~20000 nJy; y by only ~200 nJy (100× smaller) on a big base.
+    big = {"survey": "lsst", "band": "g", "lambda_eff": 4827.0,
+           "mjd": t.tolist(), "flux": (bump(20000.0, 1000.0) + rng.normal(0, 300, t.size)).tolist(),
+           "eflux": np.full(t.size, 300.0).tolist()}
+    small = {"survey": "lsst", "band": "y", "lambda_eff": 9712.0,
+             "mjd": t.tolist(), "flux": (bump(200.0, 50000.0) + rng.normal(0, 5, t.size)).tolist(),
+             "eflux": np.full(t.size, 5.0).tolist()}
+    out = fit_multiband_gp([big, small], n_grid=100)
+    y_band = next(g for g in out["grid"] if g["band"] == "y")
+    span = max(y_band["flux_mean"]) - min(y_band["flux_mean"])
+    # The faint band's bump is ~200 nJy peak; the GP should recover a good
+    # fraction of it (a global scale would flatten it to far less).
+    assert span > 80.0
