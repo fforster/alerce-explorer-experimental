@@ -22,6 +22,40 @@
     #app-row {
       flex-direction: column;
     }
+    /*
+      The detail nav row (Back / OID dots / prev-next arrows + page picker)
+      shares the header line with the title on desktop, but on phone widths
+      there isn't room — the dots and page dropdown get squeezed off the
+      edge. Let the header wrap and force `#detail-nav-bar` onto its own
+      full-width line below the title (`flex-basis: 100%`), so the dots and
+      page picker get the whole width to lay out in. Header height drops to
+      auto so the extra row fits; the row-gap override keeps the two lines
+      tight rather than inheriting the header's 0.75rem column gap.
+    */
+    #app-header {
+      height: auto;
+      min-height: 3rem;
+      flex-wrap: wrap;
+      row-gap: 0.25rem;
+      padding-top: 0.25rem;
+      padding-bottom: 0.25rem;
+    }
+    #detail-nav-bar {
+      flex-basis: 100%;
+      order: 10;
+      /*
+        Let the arrows + page-picker unit drop onto a second line: Back +
+        OID dots fill line 1, `#object-nav` (prev/next + "N/M · page"
+        dropdown) wraps to line 2 below the dots.
+      */
+      flex-wrap: wrap;
+      row-gap: 0.25rem;
+    }
+    #object-nav {
+      flex-basis: 100%;
+      order: 10;
+      justify-content: center;
+    }
     #search-panel {
       width: 100%;
       flex-shrink: 0;
@@ -36,7 +70,7 @@
 </style>
 <div class="tw-flex tw-flex-col tw-h-full">
 
-  <header class="tw-h-12 tw-bg-bg-secondary tw-border-b tw-border-border tw-flex tw-items-center tw-px-4 tw-gap-3">
+  <header id="app-header" class="tw-h-12 tw-bg-bg-secondary tw-border-b tw-border-border tw-flex tw-items-center tw-px-4 tw-gap-3">
     {#
       Brand link. Plain `<a href="/">` does a full-page reload to the
       empty home: the form re-fetches its defaults via /htmx/search_objects

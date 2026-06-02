@@ -37,15 +37,39 @@
   }
 
   function detailUrl(oid) {
+    // Carry the *full* filter context (classifier, class_name, probability,
+    // ndet range, dates, conesearch, oids…) into the detail URL — not just
+    // survey + classifier. The detail route echoes every param into
+    // HX-Push-Url, so the address bar keeps the search context the user
+    // navigated from. Mirrors the row-click `filter_qs` in
+    // objects_table.html.jinja.
+    //
+    // Why it matters: `backToResults()` rebuilds the listing from
+    // window.location on a cache miss. If the detail URL had dropped
+    // class_name (as the old version did), Back would fire an *unfiltered*
+    // list_objects — on ZTF that's an enormous set that hangs. Preserving
+    // the filters keeps Back a cheap, correctly-scoped query.
+    const filters = currentFilters();
     const nav = window._resultsNav || {};
-    const survey = nav.survey || currentFilters().survey;
-    const classifier = nav.classifier || currentFilters().classifier;
-    const parts = [
-      `oid=${encodeURIComponent(oid)}`,
-      `survey_id=${encodeURIComponent(survey || "")}`,
-    ];
-    if (classifier) parts.push(`classifier=${encodeURIComponent(classifier)}`);
-    return `/htmx/detail?${parts.join("&")}`;
+    const survey = filters.survey || nav.survey || "";
+    const params = new URLSearchParams();
+    params.set("oid", oid);
+    params.set("survey_id", survey);
+    Object.entries(filters).forEach(([k, v]) => {
+      if (k === "survey") return; // sent above as survey_id
+      if (v === undefined || v === null || v === "") return;
+      params.set(k, String(v));
+    });
+    // classifier can live on the nav payload even if the form hasn't
+    // re-hydrated it yet; backfill so the link is never missing it.
+    if (!params.has("classifier") && nav.classifier) {
+      params.set("classifier", nav.classifier);
+    }
+    // Preserve the page the user is browsing so Back returns to it.
+    if (nav.current_page && nav.current_page > 1) {
+      params.set("page", String(nav.current_page));
+    }
+    return `/htmx/detail?${params.toString()}`;
   }
 
   function openDetail(oid) {
@@ -282,6 +306,62 @@
     navObject(ev.key === "ArrowRight" ? "next" : "prev");
   }
 
+  // Touch swipe nav (mobile): a horizontal swipe across the detail view
+  // walks between objects — swipe right → previous, swipe left → next,
+  // mirroring the ArrowLeft/ArrowRight key mapping above. Carousel
+  // convention: the content "follows" the finger, so dragging right
+  // pulls the previous object into view.
+  //
+  // Gated tightly so it never fights the interactive panels:
+  //   - only when a detail is on screen AND the viewport is mobile-width
+  //     (the desktop two-column layout has no use for swipe-to-nav);
+  //   - single-finger only (a second touch means pinch-zoom on a chart);
+  //   - the gesture must start outside any panel that owns horizontal
+  //     drag — Chart.js canvases (Hammer.js pan/zoom), the Aladin sky
+  //     viewer (`.aladin-host`), form controls, and the modal overlays.
+  // A swipe only fires when it's clearly horizontal, long enough, and
+  // quick enough to read as a flick rather than a slow scroll.
+  const SWIPE_MIN_PX = 70;       // minimum horizontal travel
+  const SWIPE_MAX_OFF_AXIS = 0.6; // |dy| must stay under this × |dx|
+  const SWIPE_MAX_MS = 800;      // slower than this reads as a scroll/drag
+  let swipe = null;
+
+  function swipeStartBlocked(target) {
+    if (!target || !target.closest) return false;
+    return !!target.closest(
+      "canvas, .aladin-host, select, input, textarea, "
+      + "[contenteditable], #features-modal, #avro-modal"
+    );
+  }
+
+  function isMobileViewport() {
+    return window.matchMedia("(max-width: 1023px)").matches;
+  }
+
+  function onTouchStart(ev) {
+    swipe = null;
+    if (ev.touches.length !== 1) return;          // pinch / multi-touch
+    if (!isMobileViewport()) return;
+    if (!document.getElementById("object-detail")) return;
+    const t = ev.touches[0];
+    if (swipeStartBlocked(t.target)) return;
+    swipe = { x: t.clientX, y: t.clientY, time: Date.now() };
+  }
+
+  function onTouchEnd(ev) {
+    const start = swipe;
+    swipe = null;
+    if (!start) return;
+    const t = ev.changedTouches && ev.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Date.now() - start.time > SWIPE_MAX_MS) return;
+    if (Math.abs(dx) < SWIPE_MIN_PX) return;
+    if (Math.abs(dy) > Math.abs(dx) * SWIPE_MAX_OFF_AXIS) return;
+    navObject(dx < 0 ? "next" : "prev");
+  }
+
   // Delegate chip clicks on the list container (survives htmx swaps because
   // we listen on document, and the list is re-populated in place).
   function onListClick(ev) {
@@ -295,6 +375,10 @@
     refreshNavState(document);
     document.addEventListener("keydown", onKeydown);
     document.addEventListener("click", onListClick);
+    // Passive: we never preventDefault (a swipe that turns out to be a
+    // scroll must still scroll), so the browser can keep scrolling smooth.
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("touchend", onTouchEnd, { passive: true });
   });
   document.addEventListener("htmx:afterSwap", (evt) => {
     refreshNavState(evt.detail.target);

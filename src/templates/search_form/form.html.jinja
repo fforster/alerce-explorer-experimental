@@ -323,8 +323,28 @@
     #search-btn.htmx-request .search-btn-idle { display: none; }
     #search-btn.htmx-request .search-btn-loading { display: inline-flex; }
     #search-btn.htmx-request { cursor: progress; opacity: 0.85; }
+    /*
+      Mobile (< Tailwind lg = 1024 px): the search panel is capped at 50vh
+      with internal scroll, so a long filter form pushes the Search button
+      below the panel's fold — easy to miss. Pin the action row to the
+      bottom of the scrolling panel so Search/Clear stay visible no matter
+      how far the form is scrolled. Negative margins cancel the form's
+      `tw-p-4` so the bar spans edge-to-edge and sits flush at the bottom;
+      the panel-matching background masks the rows scrolling underneath.
+    */
+    @media (max-width: 1023px) {
+      #search-action-row {
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+        background: #161b22;
+        margin: 0.25rem -1rem -1rem;
+        padding: 0.75rem 1rem;
+        border-top: 1px solid rgb(48 54 61);
+      }
+    }
   </style>
-  <div class="tw-flex tw-gap-2 tw-mt-1">
+  <div id="search-action-row" class="tw-flex tw-gap-2 tw-mt-1">
     <button
       type="button"
       id="search-btn"

@@ -44,6 +44,33 @@ templates.env.globals["API_URL"] = os.getenv("API_URL", "http://localhost:8000")
 # `tojson` filter produces JS-safe JSON for embedding in data-* attributes.
 templates.env.filters["tojson_compact"] = lambda v: json.dumps(v, separators=(",", ":"))
 
+STATIC_DIR = BASE_DIR / "static"
+
+
+def _asset_version() -> str:
+    """Cache-busting token = latest mtime across the JS/CSS we ship.
+
+    Appended as `?v=…` to local `<script>`/`<link>` includes in base.html so
+    the browser refetches our static assets the moment a file changes —
+    otherwise an edited helpers.js/object_nav.js keeps running from the
+    browser's disk cache and bug fixes appear not to take (the exact symptom
+    that made "Back to results" look broken after it was fixed server-side).
+    Cheap: a handful of files, and base.html only renders on full page loads.
+    """
+    latest = 0.0
+    for sub in ("js", "css"):
+        directory = STATIC_DIR / sub
+        if directory.is_dir():
+            for path in directory.glob("*"):
+                try:
+                    latest = max(latest, path.stat().st_mtime)
+                except OSError:
+                    pass
+    return str(int(latest))
+
+
+templates.env.globals["asset_v"] = _asset_version
+
 
 def _validate_survey(survey: str) -> None:
     if survey not in known_surveys():

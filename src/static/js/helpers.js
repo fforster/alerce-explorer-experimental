@@ -115,39 +115,129 @@ window.send_pagination_data = send_pagination_data;
 window.send_order_data = send_order_data;
 window.send_classes_data = send_classes_data;
 
-// Results cache. Every time #results-slot lands on a listing (i.e. contains
+// Results cache. Whenever #results-slot is showing a listing (i.e. contains
 // #objects_table), we snapshot the HTML + the URL that was pushed for it.
 // The "Back to results" button restores from this cache instead of re-firing
 // the upstream ALeRCE API query — which means no network call, no spinner,
 // and no perceptible delay.
+//
+// The snapshot is mirrored into sessionStorage so it also survives a full
+// page reload: refreshing while on a detail view (or following a deep-link
+// straight into one) wipes the in-memory copy, but the sessionStorage copy
+// still lets Back restore the prior listing instead of re-querying — which,
+// on an unfiltered/slow survey, is what made Back appear to hang.
 (function () {
+  const SS_HTML = "alerceLastResultsHtml";
+  const SS_URL = "alerceLastResultsUrl";
+
+  // Snapshot the listing with any transient htmx state stripped. htmx:afterSwap
+  // fires during the settle phase while htmx still has `.htmx-request` on the
+  // `hx-indicator` target (#results-loading) — it's removed a beat later. If we
+  // cache that raw innerHTML, the "Searching…" overlay class is baked in, and
+  // restoring it later shows a spinner that never stops (no real request is in
+  // flight to clear it). Clone + strip so the cached HTML is always inert.
+  function snapshotListing(slot) {
+    const clone = slot.cloneNode(true);
+    clone.querySelectorAll(".htmx-request").forEach((e) => e.classList.remove("htmx-request"));
+    // Don't persist the "you came from here" highlight into the cache — it's a
+    // per-return decoration, applied fresh on each Back, not a property of the
+    // listing.
+    clone.querySelectorAll(".row-return-highlight").forEach((e) => e.classList.remove("row-return-highlight"));
+    return clone.innerHTML;
+  }
+
+  function storeListing(html, url) {
+    window._lastResultsHtml = html;
+    window._lastResultsUrl = url;
+    try {
+      sessionStorage.setItem(SS_HTML, html);
+      sessionStorage.setItem(SS_URL, url || "");
+    } catch (_) { /* quota / private mode — the in-memory copy still works */ }
+  }
+  function cachedHtml() {
+    if (window._lastResultsHtml) return window._lastResultsHtml;
+    try { return sessionStorage.getItem(SS_HTML) || ""; } catch (_) { return ""; }
+  }
+  function cachedUrl() {
+    if (window._lastResultsUrl) return window._lastResultsUrl;
+    try { return sessionStorage.getItem(SS_URL) || ""; } catch (_) { return ""; }
+  }
+
   document.addEventListener("htmx:afterSwap", (evt) => {
     const t = evt.detail && evt.detail.target;
-    if (!t || t.id !== "results-slot") return;
-    // Auto-hide the search panel when drilling into a detail; auto-show it
-    // when returning to a listing. The toggle button remains the manual
-    // override — users can re-open the panel mid-detail if they want.
-    if (t.querySelector("#object-detail") && window.setSearchPanelVisible) {
-      window.setSearchPanelVisible(false);
-    } else if (t.querySelector("#objects_table") && window.setSearchPanelVisible) {
-      window.setSearchPanelVisible(true);
+    const slot = document.getElementById("results-slot");
+    const hasDetail = slot && slot.querySelector("#object-detail");
+    const hasTable = slot && slot.querySelector("#objects_table");
+    // Panel auto-hide/show: only react when the results-slot *itself* was
+    // swapped (a drill-in or a listing render), so inner detail-fragment
+    // loads don't keep re-hiding a panel the user opened mid-detail. The
+    // toggle button remains the manual override.
+    if (t && t.id === "results-slot" && window.setSearchPanelVisible) {
+      if (hasDetail) window.setSearchPanelVisible(false);
+      else if (hasTable) window.setSearchPanelVisible(true);
     }
-    if (!t.querySelector("#objects_table")) return;
-    window._lastResultsHtml = t.innerHTML;
-    window._lastResultsUrl = window.location.pathname + window.location.search;
+    // Drilling into a detail cancels any pending return-highlight intent.
+    if (hasDetail) window._returnHighlightOid = "";
+    // Caching: inspect the live results-slot directly rather than trusting
+    // evt.detail.target — that way a listing is captured no matter which
+    // element triggered the swap (Search button, pagination, row click).
+    if (slot && hasTable) {
+      storeListing(snapshotListing(slot), window.location.pathname + window.location.search);
+      // (Re)apply the "you came from here" highlight. Re-applying on every
+      // listing swap (not just once) makes it survive a late swap into
+      // results-slot — e.g. a slow detail request from the object we just
+      // left resolving ~1s after Back and re-rendering the table, which
+      // would otherwise wipe a one-shot highlight.
+      maybeApplyReturnHighlight();
+    }
   });
+
+  // The OID of the object we're returning from — read from the live detail
+  // container, falling back to the URL during the swap-out moment.
+  function currentDetailOid() {
+    const el = document.getElementById("object-detail");
+    if (el && el.dataset.oid) return el.dataset.oid;
+    return new URLSearchParams(window.location.search).get("oid") || "";
+  }
+
+  // Highlight the row of the object we returned from. Driven by
+  // window._returnHighlightOid (set on Back) within a short time window so a
+  // later, unrelated listing (a new search) isn't decorated. Idempotent: the
+  // class guard prevents re-scrolling once it's already on the right row.
+  function maybeApplyReturnHighlight() {
+    const oid = window._returnHighlightOid;
+    if (!oid) return;
+    if (window._returnHighlightUntil && Date.now() > window._returnHighlightUntil) return;
+    const slot = document.getElementById("results-slot");
+    if (!slot) return;
+    const sel = (window.CSS && CSS.escape) ? CSS.escape(oid) : oid;
+    const row = slot.querySelector(`#objects_table tr[data-oid="${sel}"]`);
+    if (!row || row.classList.contains("row-return-highlight")) return;
+    row.classList.add("row-return-highlight");
+    try { row.scrollIntoView({ block: "center", behavior: "smooth" }); }
+    catch (_) { row.scrollIntoView(); }
+  }
 
   function restoreFromCache() {
     const slot = document.getElementById("results-slot");
-    if (!slot || !window._lastResultsHtml) return false;
-    slot.innerHTML = window._lastResultsHtml;
+    const html = cachedHtml();
+    if (!slot || !html) return false;
+    slot.innerHTML = html;
+    // Belt-and-suspenders: clear any stuck `.htmx-request` (e.g. a stale
+    // snapshot from sessionStorage written before snapshotListing existed) so
+    // the "Searching…" overlay can't be restored in its mid-request state.
+    // Also drop any stale return-highlight so only the fresh one shows.
+    slot.querySelectorAll(".htmx-request, .row-return-highlight")
+      .forEach((e) => e.classList.remove("htmx-request", "row-return-highlight"));
     // Re-scan for hx-* attributes on rows/pagination so they become active.
     if (window.htmx && window.htmx.process) window.htmx.process(slot);
-    if (window._lastResultsUrl) {
-      window.history.pushState({}, "", window._lastResultsUrl);
+    const url = cachedUrl();
+    if (url) {
+      window.history.pushState({}, "", url);
     }
     // Synthetic afterSwap so object_nav.js (and anyone else listening) re-reads
-    // the table's data-nav and refreshes the chip row / arrow state.
+    // the table's data-nav and refreshes the chip row / arrow state — and so the
+    // caching listener (re)applies the return-highlight.
     document.dispatchEvent(new CustomEvent("htmx:afterSwap", {
       detail: { target: slot },
     }));
@@ -155,6 +245,11 @@ window.send_classes_data = send_classes_data;
   }
 
   function backToResults() {
+    // Remember which object we're returning from so the listing swap (cache
+    // restore *or* network fallback, plus any late re-render) highlights its
+    // row. Time-boxed so a later, unrelated search doesn't get decorated.
+    window._returnHighlightOid = currentDetailOid();
+    window._returnHighlightUntil = Date.now() + 5000;
     if (restoreFromCache()) return;
     // No cache (deep-linked straight into a detail view). Use the current
     // URL as the source of truth rather than the form state — the detail
@@ -180,6 +275,8 @@ window.send_classes_data = send_classes_data;
       }
     }
     const listUrl = `/htmx/list_objects?${url.searchParams.toString()}`;
+    // The return-highlight is applied by the afterSwap listener when this
+    // listing lands (window._returnHighlightOid was set above).
     if (window.htmx) window.htmx.ajax("GET", listUrl, "#results-slot");
   }
 

@@ -17,28 +17,31 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 
-<link rel="stylesheet" href="/static/css/main.css"/>
+{# `?v=` cache-buster (latest static mtime) so edited JS/CSS is refetched
+   instead of served from the browser's disk cache. See _asset_version. #}
+{%- set v = asset_v() %}
+<link rel="stylesheet" href="/static/css/main.css?v={{ v }}"/>
 
 <script src="/static/htmx/htmx.min.js"></script>
 <script src="https://unpkg.com/htmx-ext-response-targets@2.0.2" crossorigin="anonymous"></script>
 <script src="/static/chart-js/chart.umd.js"></script>
 <script src="/static/chart-js/hammer.min.js"></script>
 <script src="/static/chart-js/chartjs-plugin-zoom.min.js"></script>
-<script src="/static/js/helpers.js" defer></script>
-<script src="/static/js/panel_help.js" defer></script>
-<script src="/static/js/coords.js" defer></script>
-<script src="/static/js/object_nav.js" defer></script>
-<script src="/static/js/selection.js" defer></script>
-<script src="/static/js/cosmology.js" defer></script>
-<script src="/static/js/dust.js" defer></script>
-<script src="/static/js/lightcurve.js" defer></script>
-<script src="/static/js/periodogram.js" defer></script>
-<script src="/static/js/airmass.js" defer></script>
-<script src="/static/js/stamps.js" defer></script>
-<script src="/static/js/radar.js" defer></script>
-<script src="/static/js/coord_residuals.js" defer></script>
-<script src="/static/js/specz.js" defer></script>
-<script src="/static/js/aladin.js" defer></script>
+<script src="/static/js/helpers.js?v={{ v }}" defer></script>
+<script src="/static/js/panel_help.js?v={{ v }}" defer></script>
+<script src="/static/js/coords.js?v={{ v }}" defer></script>
+<script src="/static/js/object_nav.js?v={{ v }}" defer></script>
+<script src="/static/js/selection.js?v={{ v }}" defer></script>
+<script src="/static/js/cosmology.js?v={{ v }}" defer></script>
+<script src="/static/js/dust.js?v={{ v }}" defer></script>
+<script src="/static/js/lightcurve.js?v={{ v }}" defer></script>
+<script src="/static/js/periodogram.js?v={{ v }}" defer></script>
+<script src="/static/js/airmass.js?v={{ v }}" defer></script>
+<script src="/static/js/stamps.js?v={{ v }}" defer></script>
+<script src="/static/js/radar.js?v={{ v }}" defer></script>
+<script src="/static/js/coord_residuals.js?v={{ v }}" defer></script>
+<script src="/static/js/specz.js?v={{ v }}" defer></script>
+<script src="/static/js/aladin.js?v={{ v }}" defer></script>
 </head>
 <body class="tw-h-full tw-bg-bg-primary tw-text-text-primary">
 {% block body %}{% endblock %}

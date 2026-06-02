@@ -33,6 +33,22 @@
   @media (max-width: 1023px) {
     #objects_table .col-mobile-hide { display: none; }
   }
+  /*
+    "Back to results" highlights the row of the object you were just viewing
+    (helpers.js adds .row-return-highlight after restoring the listing): an
+    initial pulse to draw the eye, settling to a persistent accent bar +
+    faint tint so it stays findable. !important keeps the tint from being
+    overridden by the row's hover background.
+  */
+  @keyframes rowReturnPulse {
+    0%   { background-color: rgba(88, 166, 255, 0.40); }
+    100% { background-color: rgba(88, 166, 255, 0.12); }
+  }
+  #objects_table tr.row-return-highlight {
+    background-color: rgba(88, 166, 255, 0.12) !important;
+    box-shadow: inset 3px 0 0 0 #58a6ff;
+    animation: rowReturnPulse 1.2s ease-out;
+  }
 </style>
 <div
   id="objects_table"
@@ -93,6 +109,7 @@
         <tbody>
         {% for obj in objects_list['items'] %}
           <tr
+            data-oid="{{ obj.get('oid', '') }}"
             class="tw-border-b tw-border-border/50 hover:tw-bg-bg-tertiary tw-cursor-pointer"
             hx-get="{{ API_URL }}/htmx/detail?oid={{ obj.get('oid', '')|urlencode }}&survey_id={{ survey }}{{ filter_qs|trim }}"
             hx-target="#results-slot"
