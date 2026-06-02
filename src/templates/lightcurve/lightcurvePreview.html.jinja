@@ -236,15 +236,19 @@
           title="Click to fold the light curve at the multiband period from the feature table. Two cycles are shown side-by-side."
         >Fold</button>
         {#
-          Parametric-fit overlay picker — always rendered, hidden until
-          the deferred /htmx/lc_features fragment populates the per-overlay
-          disabled flags. `lcSetFeatures` toggles option[disabled] based on
-          which fits the object actually has (SPM / FLEET / TDE).
+          Overlay picker — always visible whenever the toolbar renders.
+          The GP option (a multi-band Gaussian-Process regression) is always
+          available because it fits the raw light curve directly, so it needs
+          no feature-extractor data; the deferred /htmx/lc_features fragment
+          later enables/disables the parametric options (SPM / FLEET / TDE)
+          via `lcSetFeatures` based on which fits the object actually has.
+          GP is fetched lazily by `lightcurve.js` when first selected, and
+          the spinner beside the picker shows while the fit runs.
         #}
         <label
           id="lc-overlay-wrap-{{ oid }}"
-          class="lc-overlay-wrap tw-inline-flex tw-items-center tw-gap-1 tw-text-[11px] tw-text-text-muted tw-hidden"
-          title="Overlay a parametric model fit (from the latest feature-extractor version) on top of the light curve. SPM is the Sánchez-Sáez+2021 Supernova Parametric Model; FLEET and TDE-tail are the ALeRCE transient-tail models."
+          class="lc-overlay-wrap tw-inline-flex tw-items-center tw-gap-1 tw-text-[11px] tw-text-text-muted"
+          title="Overlay a model on the light curve. GP is a non-parametric multi-band Gaussian-Process regression: it fits the difference-flux detections plus forced photometry within ±30 days of the detection span, jointly across all bands. The same band from different telescopes is pooled (ZTF g + LSST g → one g), and distinct bands are correlated by central wavelength — so well-sampled bands inform sparse ones. It draws each band's posterior mean and a shaded ±2σ uncertainty band, as its own per-band legend entry you can toggle. If the light curve is folded (in Sci flux mode only), the GP is re-fit on the folded (phase) science light curve. SPM is the Sánchez-Sáez+2021 Supernova Parametric Model; FLEET and TDE-tail are the ALeRCE transient-tail models (these three come from the latest feature-extractor version)."
         >
           Overlay
           <select
@@ -254,6 +258,7 @@
             data-lc-overlay="none"
           >
             <option value="none">none</option>
+            <option value="gp">GP (multi-band)</option>
             <option value="spm" disabled>SPM</option>
             <option value="fleet" disabled>FLEET</option>
             <option value="tde" disabled>TDE tail</option>
@@ -302,6 +307,17 @@
     data-target="lc-canvas-{{ oid }}"
   ></div>
 
+  {# Lazy GP fetch lands here — the deferred /htmx/lc_gp fragment is a
+     script-only call to `window.lcSetGp`; the slot itself stays empty/hidden.
+     `lightcurve.js` fires `htmx.ajax` into it (using data-gp-url) the first
+     time GP is picked. The URL is stamped server-side so the client needn't
+     reconstruct API_URL. #}
+  <div
+    id="lc-gp-slot-{{ oid }}"
+    class="tw-hidden"
+    data-gp-url="{{ API_URL }}/htmx/lc_gp?oid={{ oid }}&survey_id={{ survey_id }}"
+  ></div>
+
   {#
     Deferred-load status strip. Three independent fetches (FP, features,
     coords) fire on load and replace their own span via outerHTML; each
@@ -316,6 +332,16 @@
       id="lc-loading-status-{{ oid }}"
       class="tw-text-[10px] tw-text-text-muted tw-px-1 tw-pb-1 tw-flex tw-gap-3 tw-items-center tw-flex-wrap"
     >
+      {# GP fitting indicator — not an eager loader (no hx-trigger), so it
+         doesn't keep the strip open on its own. The lazy GP fetch reveals it
+         (and re-opens the strip if it had already collapsed) via setGpStatus;
+         `lcSetGp` clears it again. Lives here so it lines up with the other
+         loaders at the panel's top-left. #}
+      <span
+        id="lc-gp-status-{{ oid }}"
+        class="lc-gp-status tw-hidden"
+        title="Fitting the multi-band Gaussian process…"
+      ><span class="tw-inline-block tw-animate-spin">◐</span> fitting GP…</span>
       <span
         hx-get="{{ API_URL }}/htmx/lc_fp?oid={{ oid }}&survey_id={{ survey_id }}"
         hx-trigger="load"

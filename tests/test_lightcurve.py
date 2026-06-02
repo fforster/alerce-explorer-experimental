@@ -647,3 +647,97 @@ def test_get_lc_xsurvey_bundle_skips_empty_match(monkeypatch):
         lc_mod.get_lc_xsurvey_bundle(survey="lsst", oid="x")
     )
     assert out is None
+
+
+def test_assemble_gp_series_windows_forced_photometry():
+    """Detections are always kept; forced photometry only within
+    GP_FP_WINDOW_DAYS of the global detection span. Det + FP for the same band
+    merge into one group (the GP treats both as difference flux)."""
+    from src.services.lightcurve import _assemble_gp_series, GP_FP_WINDOW_DAYS
+
+    assert GP_FP_WINDOW_DAYS == 30.0
+    bundle = {
+        "survey": "ztf",
+        "bands": [{"name": "g", "points": [
+            {"mjd": 100.0, "flux": 500.0, "e_flux": 40.0},
+            {"mjd": 130.0, "flux": 900.0, "e_flux": 40.0},
+        ]}],
+        "forced_phot_bands": [{"name": "g", "points": [
+            {"mjd": 50.0, "flux": 5.0, "e_flux": 10.0},    # 50 d before first → out
+            {"mjd": 75.0, "flux": 8.0, "e_flux": 10.0},    # 25 d before → in
+            {"mjd": 115.0, "flux": 700.0, "e_flux": 30.0}, # between dets → in
+            {"mjd": 155.0, "flux": 50.0, "e_flux": 20.0},  # 25 d after last → in
+            {"mjd": 200.0, "flux": 2.0, "e_flux": 10.0},   # 70 d after → out
+        ]}],
+    }
+    series = _assemble_gp_series([("ztf", bundle)])
+    assert len(series) == 1
+    g = series[0]
+    assert g["band"] == "g" and g["surveys"] == ["ztf"]
+    assert sorted(g["mjd"]) == [75.0, 100.0, 115.0, 130.0, 155.0]
+
+
+def test_assemble_gp_series_skips_bands_without_wavelength():
+    """An `unknown` band has no central wavelength → it can't sit on the
+    kernel's wavelength axis and is dropped."""
+    from src.services.lightcurve import _assemble_gp_series
+
+    bundle = {
+        "survey": "ztf",
+        "bands": [
+            {"name": "g", "points": [{"mjd": 100.0, "flux": 500.0, "e_flux": 40.0}]},
+            {"name": "unknown", "points": [{"mjd": 100.0, "flux": 5.0, "e_flux": 1.0}]},
+        ],
+        "forced_phot_bands": [],
+    }
+    series = _assemble_gp_series([("ztf", bundle)])
+    assert [g["band"] for g in series] == ["g"]
+
+
+def test_assemble_gp_series_pools_same_band_across_telescopes():
+    """The same band letter from two telescopes is pooled into one group (ZTF g
+    + LSST g → a single `g`), recording both contributing surveys and averaging
+    their central wavelengths. Distinct letters would stay separate."""
+    from src.services.lightcurve import _assemble_gp_series
+    from src.services.survey_config import SC
+
+    lsst = {"survey": "lsst", "forced_phot_bands": [],
+            "bands": [{"name": "g", "points": [{"mjd": 100.0, "flux": 500.0, "e_flux": 40.0}]}]}
+    ztf = {"survey": "ztf", "forced_phot_bands": [],
+           "bands": [{"name": "g", "points": [{"mjd": 101.0, "flux": 480.0, "e_flux": 35.0}]}]}
+    series = _assemble_gp_series([("lsst", lsst), ("ztf", ztf)])
+
+    # One pooled group, both surveys, both points.
+    assert len(series) == 1
+    g = series[0]
+    assert g["band"] == "g"
+    assert g["surveys"] == ["lsst", "ztf"]
+    assert sorted(g["mjd"]) == [100.0, 101.0]
+    # Wavelength is the mean of the two telescopes' g central wavelengths.
+    expected = (SC("lsst").band_wavelengths["g"] + SC("ztf").band_wavelengths["g"]) / 2
+    assert g["lambda_eff"] == expected
+
+
+def test_assemble_gp_series_uses_science_flux_when_requested():
+    """A folded fit (science=True) reads sci_flux/e_sci_flux and drops epochs
+    that have only difference flux."""
+    from src.services.lightcurve import _assemble_gp_series
+
+    bundle = {
+        "survey": "ztf",
+        "bands": [{"name": "g", "points": [
+            {"mjd": 100.0, "flux": 500.0, "e_flux": 40.0, "sci_flux": 9000.0, "e_sci_flux": 60.0},
+            {"mjd": 101.0, "flux": 480.0, "e_flux": 35.0, "sci_flux": None, "e_sci_flux": None},
+        ]}],
+        "forced_phot_bands": [],
+    }
+    sci = _assemble_gp_series([("ztf", bundle)], science=True)
+    assert len(sci) == 1
+    g = sci[0]
+    # Only the epoch with sci_flux survives, and the value is the science flux.
+    assert g["mjd"] == [100.0]
+    assert g["flux"] == [9000.0]
+    assert g["eflux"] == [60.0]
+    # Difference-flux assembly (default) keeps both epochs at their diff flux.
+    diff = _assemble_gp_series([("ztf", bundle)])
+    assert sorted(diff[0]["flux"]) == [480.0, 500.0]

@@ -75,10 +75,12 @@
   // sky view; E(B-V) should only come from the IRSA dust proxy. Carrying
   // them in the URL would let an old query-string assume values for an
   // object that never had them confirmed.
+  // Overlay is deliberately NOT persisted (neither URL nor cross-object cache):
+  // it always starts "none" on each object so navigating through many objects
+  // never auto-triggers an expensive fit (e.g. the GP) per object.
   const LC_DEFAULTS = {
     mode: "flux", source: "diff", abs: "app", dered: "obs", fold: "off",
     drShown: false, drAlpha: 0.10,
-    overlay: "none",
   };
 
   function readLcStateFromUrl() {
@@ -95,7 +97,6 @@
       fold:  p.get("lc_fold")   || LC_DEFAULTS.fold,
       drShown: p.get("lc_dr") === "on",
       drAlpha: num("lc_dr_alpha") ?? LC_DEFAULTS.drAlpha,
-      overlay: p.get("lc_overlay") || LC_DEFAULTS.overlay,
     };
   }
 
@@ -113,8 +114,7 @@
       state.dered === LC_DEFAULTS.dered &&
       state.fold === LC_DEFAULTS.fold &&
       !state.drShown &&
-      Math.abs(state.drAlpha - LC_DEFAULTS.drAlpha) < 1e-6 &&
-      state.overlay === LC_DEFAULTS.overlay;
+      Math.abs(state.drAlpha - LC_DEFAULTS.drAlpha) < 1e-6;
     if (!isDefault) window._lcState = state;
   })();
 
@@ -137,7 +137,8 @@
       fold: chart.$lcFold || "off",
       drShown: chart.$lcDrShown,
       drAlpha: chart.$lcDrAlpha,
-      overlay: chart.$lcOverlay || "none",
+      // overlay intentionally omitted — see LC_DEFAULTS: it must not survive
+      // navigation, so each object starts with the overlay off.
     };
     window._lcState = state;
     const url = new URL(window.location.href);
@@ -160,7 +161,8 @@
     // round-trips to "absent" instead of "0.1".
     const alphaIsDefault = Math.abs((state.drAlpha ?? LC_DEFAULTS.drAlpha) - LC_DEFAULTS.drAlpha) < 1e-6;
     setOrDel("lc_dr_alpha", alphaIsDefault ? null : state.drAlpha, null);
-    setOrDel("lc_overlay", state.overlay, LC_DEFAULTS.overlay);
+    // Overlay is not a URL param; strip any stale lc_overlay from older links.
+    url.searchParams.delete("lc_overlay");
     // replaceState (not pushState) so the back button still walks results →
     // detail and isn't polluted with an entry per toggle click.
     window.history.replaceState(window.history.state, "", url.toString());
@@ -352,7 +354,7 @@
 
   // Per-band line style: each overlay gets a distinct dash pattern so three
   // overlays on the same chart would still read as distinct curves.
-  const OVERLAY_DASH = { spm: [6, 4], fleet: [2, 3], tde: [5, 2, 1, 2] };
+  const OVERLAY_DASH = { spm: [6, 4], fleet: [2, 3], tde: [5, 2, 1, 2], gp: [] };
 
   // Convert a model magnitude into whatever the axis expects, applying the
   // same distMod + extinction + band-offset corrections `projectPoint`
@@ -368,6 +370,24 @@
     const flux = Math.pow(10, (AB_ZP_NJY - mag) / 2.5);
     const scale = Math.pow(10, 0.4 * (A + mu - dMag));
     return flux * scale;
+  }
+
+  // Flux-input sibling of projectModel for the GP overlay, which carries its
+  // posterior in difference-flux (nJy) rather than as a magnitude. Applies the
+  // exact same A + μ + offset corrections as `projectPoint`'s flux/mag paths,
+  // so the GP curves track the detections through every toggle. Difference
+  // flux can be ≤ 0 (a fade below the reference); in mag mode such points have
+  // no magnitude and become gaps, while in flux mode they're kept as-is.
+  function projectFluxModel(flux, axisMode, distMod, extMag, offsetMag) {
+    if (!isFinite(flux)) return null;
+    const A = extMag || 0;
+    const mu = distMod || 0;
+    const dMag = offsetMag || 0;
+    if (axisMode === "mag") {
+      if (!(flux > 0)) return null;
+      return AB_ZP_NJY - 2.5 * Math.log10(flux) - A - mu + dMag;
+    }
+    return flux * Math.pow(10, 0.4 * (A + mu - dMag));
   }
 
   // Sánchez-Sáez+2021 Eq. A5 — exponential rise × plateau ratio β, joining to
@@ -573,10 +593,136 @@
     return traces;
   }
 
-  function buildOverlayDatasets(chart, axisMode, distMod, extByBand, foldPeriod, offsetMap) {
+  // ── Multi-band Gaussian-Process overlay ───────────────────────────────────
+  //
+  // The GP posterior comes from the server (/htmx/lc_gp → lcSetGp) as a per-
+  // band flux grid {survey, band, lambda_eff, mjd[], flux_mean[], flux_std[]}
+  // in difference-flux nJy. Here we re-project each band through the active
+  // Flux/Mag · App/Abs · Obs/Der · Fold state — exactly like the parametric
+  // overlays — and emit a solid mean line plus a translucent ±2σ band.
+  //
+  // Each GP band is its own legend entry ("GP g", "GP r", …) under the overlay
+  // header, so a specific band can be shown/hidden on its own — just like the
+  // per-band SPM/FLEET/TDE entries. The mean line carries `$gp` and appears in
+  // the legend; its ±2σ envelope edges also carry `$gpHelper` and are kept out
+  // of the legend (the legend's onClick toggles them together with the mean).
+  // Visibility survives mode toggles via the (survey, kind, label) snapshot,
+  // and GP bands are NOT coupled to the detection legend — they're independent.
+  const GP_BAND_ALPHA = "33"; // ~20% — appended to the 6-digit hex band color.
+
+  // Project a band's flux grid to chart-y, keeping x (MJD or phase) and index
+  // alignment — invalid points (e.g. a mag of non-positive flux) become null
+  // so the mean line and the two envelope edges stay the same length and
+  // Chart.js's fill-between lines up. `xArr` is already MJD (time fit) or
+  // phase ∈ [0,1] (folded fit); no client-side folding happens here.
+  function gpProjectFlux(fluxArr, xArr, axisMode, distMod, extMag, offsetMag) {
+    const pts = new Array(fluxArr.length);
+    for (let i = 0; i < fluxArr.length; i++) {
+      const y = projectFluxModel(fluxArr[i], axisMode, distMod, extMag, offsetMag);
+      pts[i] = { x: xArr[i], y: y == null || !isFinite(y) ? null : y };
+    }
+    return pts;
+  }
+
+  // For a folded (phase) fit, repeat the [0,1] grid at [1,2] so the curve
+  // spans the two cycles the folded chart shows. No-op for a time fit.
+  function gpCycles(pts, folded) {
+    if (!folded) return pts;
+    return pts.concat(pts.map((p) => ({ x: p.x + 1, y: p.y })));
+  }
+
+  function computeGPTraces(chart, axisMode, distMod, extByBand, foldPeriod, offsetFor) {
+    const gp = chart.$lcGp;
+    if (!gp || !gp.available || !Array.isArray(gp.grid)) return [];
+    // The live fit must match the chart's current fold state AND period: a
+    // phase fit only belongs on the folded axis, and a fit for an old period
+    // is stale once the user picks a new one. On a mismatch draw nothing and
+    // wait for ensureGpLoaded to fetch the right variant — spinner meanwhile.
+    if (chart.$lcGpKey !== gpDesiredKey(chart)) return [];
+    const folded = !!gp.folded;
+    // Group all GP curves under the primary survey's overlay header (a pooled
+    // band has no single survey), matching how SPM/FLEET/TDE present.
+    const survey = chart.$lcSurvey || "";
+    const traces = [];
+    for (const g of gp.grid) {
+      const band = g.band || "";
+      const extMag = (extByBand || {})[band] || 0;
+      const offsetMag = offsetFor(band);
+      const color = BAND_COLORS[band] || BAND_COLORS.unknown;
+      const mean = gpCycles(
+        gpProjectFlux(g.flux_mean, g.mjd, axisMode, distMod, extMag, offsetMag), folded);
+      if (!mean.some((p) => p.y != null)) continue;
+      // ±2σ envelope as a filled band between two edge datasets — shown folded
+      // too, since the phase-space fit makes it meaningful (not a smeared time
+      // curve).
+      const n = g.flux_mean.length;
+      const lo = new Array(n), hi = new Array(n);
+      for (let i = 0; i < n; i++) {
+        const s = (g.flux_std[i] || 0) * 2;
+        lo[i] = g.flux_mean[i] - s;
+        hi[i] = g.flux_mean[i] + s;
+      }
+      const loPts = gpCycles(
+        gpProjectFlux(lo, g.mjd, axisMode, distMod, extMag, offsetMag), folded);
+      const hiPts = gpCycles(
+        gpProjectFlux(hi, g.mjd, axisMode, distMod, extMag, offsetMag), folded);
+      // Order matters: the upper edge fills to the dataset immediately before
+      // it (fill: '-1'), which must be the lower edge.
+      traces.push(makeGpEdgeDataset(survey, band, loPts, color, false));
+      traces.push(makeGpEdgeDataset(survey, band, hiPts, color, true));
+      traces.push(makeGpMeanDataset(survey, band, mean, color));
+    }
+    return traces;
+  }
+
+  function makeGpMeanDataset(survey, band, points, color) {
+    return {
+      label: `GP ${band}`,
+      $survey: survey,
+      $kind: "overlay",
+      $band: band,
+      $gp: true,
+      data: points,
+      borderColor: color,
+      backgroundColor: "transparent",
+      borderWidth: 1.75,
+      borderDash: OVERLAY_DASH.gp,
+      showLine: true,
+      spanGaps: false,
+      pointRadius: 0,
+      pointHoverRadius: 0,
+      order: 2,
+    };
+  }
+
+  function makeGpEdgeDataset(survey, band, points, color, isUpper) {
+    return {
+      label: `GP ${band} ${isUpper ? "+2σ" : "−2σ"}`,
+      $survey: survey,
+      $kind: "overlay",
+      $band: band,
+      $gp: true,
+      $gpHelper: true,
+      data: points,
+      borderColor: "transparent",
+      backgroundColor: color + GP_BAND_ALPHA,
+      borderWidth: 0,
+      // Upper edge fills down to the lower edge (the dataset just before it);
+      // the lower edge fills nothing.
+      fill: isUpper ? "-1" : false,
+      showLine: true,
+      spanGaps: false,
+      pointRadius: 0,
+      pointHoverRadius: 0,
+      order: 3, // behind the mean line + detections
+    };
+  }
+
+  function buildOverlayDatasets(chart, axisMode, distMod, extByBand, foldPeriod, offsetMap, visibility) {
     const fits = chart.$lcFits;
     const key = chart.$lcOverlay;
-    if (!fits || !key || key === "none") return [];
+    if (!key || key === "none") return [];
+    if (key !== "gp" && !fits) return [];
     const bands = (chart.$lcRaw && chart.$lcRaw.bands) || [];
     const fpBands = (chart.$lcRaw && chart.$lcRaw.fpBands) || [];
     // Offset is keyed by band letter (a g overlay gets the same Δ as a g
@@ -588,12 +734,15 @@
     if (key === "spm") traces = computeSPMTraces(fits, bands, axisMode, distMod, extByBand, foldPeriod, offsetFor);
     else if (key === "fleet") traces = computeFleetTraces(fits, bands, fpBands, axisMode, distMod, extByBand, foldPeriod, offsetFor);
     else if (key === "tde") traces = computeTDETailTraces(fits, bands, axisMode, distMod, extByBand, foldPeriod, offsetFor);
+    else if (key === "gp") traces = computeGPTraces(chart, axisMode, distMod, extByBand, foldPeriod, offsetFor);
     // Stamp survey + kind so the legend grouper places overlays under the
-    // primary survey's header (overlays derive from the primary's features
-    // — LSST has no features endpoint today, so in practice they're ZTF).
+    // right survey's header. The parametric overlays derive from the primary
+    // survey's features; GP traces already carry their own $survey (cross-
+    // survey ZTF curves keep their survey under an LSST primary), so don't
+    // clobber it.
     for (const t of traces) {
-      t.$survey = survey;
-      t.$kind = "overlay";
+      if (!t.$survey) t.$survey = survey;
+      if (!t.$kind) t.$kind = "overlay";
     }
     return traces;
   }
@@ -619,6 +768,46 @@
     const strip = document.querySelector(`.lc-overlay-info[data-target="${chart.canvas.id}"]`);
     if (!strip) return;
     const key = chart.$lcOverlay;
+    // GP info comes from the fitted hyperparameters, not a per-band param
+    // table. Show the kernel's two length scales (time + wavelength), the
+    // amplitude, and the learned jitter, plus the data size that fed the fit.
+    if (key === "gp") {
+      // Folded GP is only defined in Sci mode (it fits the science light
+      // curve) — nudge the user there instead of showing a stale/empty strip.
+      if (chart.$lcFold === "fold" && chart.$lcPeriod > 0 && chart.$lcSource !== "sci") {
+        strip.innerHTML =
+          `GP&nbsp;&nbsp;<span style="color:#888">folding needs Sci flux mode — switch Diff→Sci</span>`;
+        strip.classList.remove("tw-hidden");
+        return;
+      }
+      const gp = chart.$lcGp;
+      const hp = gp && gp.hyperparams;
+      if (!gp || !gp.available || !hp || chart.$lcGpKey !== gpDesiredKey(chart)) {
+        strip.classList.add("tw-hidden");
+        strip.innerHTML = "";
+        return;
+      }
+      const fmt = (v, d) => (v != null && isFinite(v) ? Number(v).toPrecision(d) : "—");
+      // When folded the fit is in phase space: the time length scale is in
+      // cycles, not days.
+      const lt = gp.folded
+        ? `ℓ<sub>φ</sub>=<b>${fmt(hp.l_t_days, 3)}</b> cyc`
+        : `ℓ<sub>t</sub>=<b>${fmt(hp.l_t_days, 3)}</b> d`;
+      const parts = [
+        lt,
+        `ℓ<sub>λ</sub>=<b>${fmt(hp.l_lambda_kA, 3)}</b> kÅ`,
+        `σ<sub>f</sub>=<b>${fmt(hp.sigma_f_njy, 3)}</b> nJy`,
+        `jitter=<b>${fmt(hp.jitter_njy, 3)}</b> nJy`,
+      ];
+      const tag = gp.folded
+        ? `folded P=${fmt(gp.period, 6)} d, ${gp.n_points} det`
+        : `${gp.n_points} det, ${gp.n_bands} bands`;
+      strip.innerHTML =
+        `GP&nbsp;&nbsp;${parts.join("&nbsp;&nbsp;")}` +
+        `&nbsp;&nbsp;<span style="color:#888">(${tag})</span>`;
+      strip.classList.remove("tw-hidden");
+      return;
+    }
     const fits = chart.$lcFits;
     if (!key || key === "none" || !fits || !fits[key]) {
       strip.classList.add("tw-hidden");
@@ -953,25 +1142,21 @@
           distMod, extByBand, chart.$lcDrAlpha, foldPeriod, xRaw.survey, offsetMap,
         )
       : [];
-    const overlayDatasets = buildOverlayDatasets(chart, axisMode, distMod, extByBand, foldPeriod, offsetMap);
+    const overlayDatasets = buildOverlayDatasets(chart, axisMode, distMod, extByBand, foldPeriod, offsetMap, visibility);
     chart.data.datasets = [...baseDatasets, ...xDatasets, ...overlayDatasets];
     // New entries (e.g. just-arrived FP / xsurvey / freshly-armed overlay)
     // aren't in the snapshot and stay visible by default. Existing keys
     // restore whatever the legend toggled them to before the rebuild.
     applyVisibility(chart, visibility);
     renderOverlayInfo(chart);
-    // The parametric-fit overlays (SPM / FLEET / TDE) are functions of MJD,
-    // not phase, so they don't make sense in fold mode — hide the picker
-    // entirely while folded. Restore visibility on unfold IFF the object
-    // actually has at least one fit (mirrors the gate `lcSetFeatures` uses
-    // when first revealing the wrap).
+    // The overlay picker is always available: the GP option fits the raw light
+    // curve directly (no feature-extractor data) and re-projects through fold
+    // just like the detections, so — unlike the parametric SPM/FLEET/TDE fits,
+    // which the picker only enables once their feature rows arrive — the wrap
+    // stays visible in every mode, fold included.
     const foldOverlayOid = chart.canvas.id.replace(/^lc-canvas-/, "");
     const foldOverlayWrap = document.getElementById(`lc-overlay-wrap-${foldOverlayOid}`);
-    if (foldOverlayWrap) {
-      const fits = chart.$lcFits || {};
-      const hasAnyFit = !!(fits.spm || fits.fleet || fits.tde);
-      foldOverlayWrap.classList.toggle("tw-hidden", foldPeriod != null || !hasAnyFit);
-    }
+    if (foldOverlayWrap) foldOverlayWrap.classList.remove("tw-hidden");
     const x = chart.options.scales.x;
     if (foldPeriod) {
       x.title.text = `Phase (P = ${foldPeriod.toPrecision(6)} d)`;
@@ -1208,10 +1393,20 @@
                 emitVisibilityChanged(ci);
                 return;
               }
-              const meta = ci.getDatasetMeta(legendItem.datasetIndex);
-              meta.hidden = meta.hidden === null
-                ? !ci.data.datasets[legendItem.datasetIndex].hidden
-                : null;
+              const idx = legendItem.datasetIndex;
+              const ds0 = ci.data.datasets[idx];
+              const meta = ci.getDatasetMeta(idx);
+              meta.hidden = meta.hidden === null ? !ds0.hidden : null;
+              // A GP mean line owns a ±2σ envelope (kept out of the legend);
+              // toggle the envelope edges in lockstep so the band follows.
+              if (ds0 && ds0.$gp) {
+                const nowHidden = meta.hidden === null ? !!ds0.hidden : meta.hidden;
+                ci.data.datasets.forEach((d, j) => {
+                  if (d.$gpHelper && d.$survey === ds0.$survey && d.$band === ds0.$band) {
+                    ci.getDatasetMeta(j).hidden = nowHidden;
+                  }
+                });
+              }
               ci.update();
               emitVisibilityChanged(ci);
             },
@@ -1265,6 +1460,10 @@
                 // groups[survey][kind] → [item, …]
                 const groups = new Map();
                 ch.data.datasets.forEach((ds, i) => {
+                  // GP ±2σ envelope edges aren't their own legend rows — they
+                  // toggle together with their mean line (see the onClick
+                  // handler). The GP mean line itself IS a legend row.
+                  if (ds.$gpHelper) return;
                   const survey = ds.$survey || "";
                   const kind = ds.$kind || "other";
                   const realHidden = !ch.isDatasetVisible(i);
@@ -1326,8 +1525,13 @@
                         (_it, idx) => !ch.isDatasetVisible(items[idx].datasetIndex),
                       );
                       const headerLabel = KIND_LABEL[k] || k;
+                      // Overlay models (GP / SPM / FLEET / TDE) aren't tied to a
+                      // telescope — a GP band can even pool both — so their
+                      // header is just "overlay:", no survey prefix.
                       ordered.push({
-                        text: `${surveyLabel(s)} ${headerLabel}:`,
+                        text: k === "overlay"
+                          ? `${headerLabel}:`
+                          : `${surveyLabel(s)} ${headerLabel}:`,
                         fillStyle: "transparent",
                         strokeStyle: "transparent",
                         lineWidth: 0,
@@ -1398,13 +1602,14 @@
     // pre-disabled server-side for overlays this object has no data for.
     chart.$lcFits = (data.parametric_fits && typeof data.parametric_fits === "object")
       ? data.parametric_fits : {};
-    // Restore overlay only if the corresponding fit actually exists for this
-    // object. An old URL from a different object might carry lc_overlay=spm
-    // when this one only has fleet; demote to "none" rather than arming a
-    // dead overlay.
-    const restoredOverlay = restored.overlay && chart.$lcFits[restored.overlay]
-      ? restored.overlay : "none";
-    chart.$lcOverlay = restoredOverlay;
+    // Overlay always starts off on a fresh object — it isn't persisted (URL or
+    // cache), so navigating through many objects never auto-arms an expensive
+    // fit (GP) per object. The user re-picks it from the toolbar each time.
+    chart.$lcOverlay = "none";
+    chart.$lcGp = null;          // live GP fit (time- or phase-domain)
+    chart.$lcGpKey = null;       // which variant $lcGp holds ("time" / "fold:P")
+    chart.$lcGpCache = {};        // key → fitted bundle, so fold toggles are instant
+    chart.$lcGpInflight = null;   // Set of variant keys currently being fetched
     chart.$lcMode = initialAxisMode;
     chart.$lcSource = initialSourceMode;
     chart.$lcAbs = restored.abs === "abs" ? "abs" : "app";
@@ -1434,7 +1639,7 @@
     chart.$lcPeriod = isFinite(period) && period > 0 ? period : null;
     chart.$lcFold = restored.fold === "fold" && chart.$lcPeriod ? "fold" : "off";
     chart.$lcFoldRestoreIntent = restored.fold === "fold";
-    chart.$lcOverlayRestoreIntent = restored.overlay || null;
+    chart.$lcOverlayRestoreIntent = null;  // overlay is never restored
     // DR starts hidden + unfetched. The button loads on first click (or at
     // bind-time pre-fetch) and caches the result on the chart so re-toggling
     // doesn't refetch. drAlpha comes from restored state so the DR layer
@@ -1464,6 +1669,8 @@
     // the live state even after HX-Push-Url wiped lc_* on the swap.
     applyModes(chart);
     cacheAndPushLcState(chart);
+    // (Overlay starts "none" on every object, so there's nothing to fetch
+    // here — the user arms an overlay from the toolbar, which lazily fetches.)
     // First-paint signal for downstream panels (position residuals etc.)
     // that derive from $lcRaw / $lcXRaw — they listen on this and can
     // build their initial render against whatever bands the server sent.
@@ -1533,6 +1740,11 @@
       if (c.resetZoom) c.resetZoom("none");
       applyModes(c);
       cacheAndPushLcState(c);
+      // Folding on/off — and, while folded, Diff↔Sci — change which GP variant
+      // is needed (folded GP fits the folded *science* light curve, allowed
+      // only in Sci mode). Swap to the matching fit.
+      if ((spec.chartProp === "$lcFold" || spec.chartProp === "$lcSource")
+          && c.$lcOverlay === "gp") ensureGpLoaded(c);
     });
   }
 
@@ -1803,6 +2015,17 @@
       const c = cv && charts.get(cv);
       if (!c) return;
       const next = sel.value;
+      // GP isn't a feature-extractor fit — it's computed on demand from the
+      // raw LC — so it bypasses the $lcFits guard and instead lazily fetches
+      // its posterior the first time it's picked (the spinner shows meanwhile;
+      // lcSetGp re-renders when it lands).
+      if (next === "gp") {
+        c.$lcOverlay = "gp";
+        ensureGpLoaded(c);
+        applyModes(c);
+        cacheAndPushLcState(c);
+        return;
+      }
       // Guard against a user picking a disabled option via keyboard (all
       // major browsers block this already, but belt-and-braces):
       if (next !== "none" && !(c.$lcFits && c.$lcFits[next])) {
@@ -2246,7 +2469,9 @@
       const sel = overlayWrap.querySelector(".lc-overlay-select");
       if (sel) {
         for (const opt of sel.options) {
-          if (opt.value === "none") continue;
+          // "none" and "gp" are always selectable — GP fits the raw LC, so
+          // it doesn't depend on the feature-extractor fits this loop gates.
+          if (opt.value === "none" || opt.value === "gp") continue;
           opt.disabled = !fits[opt.value];
         }
         // Restore overlay choice from URL if the corresponding fit now
@@ -2260,6 +2485,129 @@
       }
     }
     applyModes(chart);
+  };
+
+  // Toggle the "fitting GP…" spinner. It lives in the LC loading strip
+  // (alongside FP / features / coords / xsurvey), which self-collapses once
+  // the eager loaders finish — so we re-show the strip while the fit runs and
+  // re-collapse it after, unless an eager loader is still pending.
+  function setGpStatus(oid, on) {
+    const status = document.getElementById(`lc-gp-status-${oid}`);
+    if (status) status.classList.toggle("tw-hidden", !on);
+    const strip = document.getElementById("lc-loading-status-" + oid);
+    if (!strip) return;
+    if (on) {
+      strip.style.display = ""; // reopen if lcMaybeHideLoadingStrip collapsed it
+    } else if (!strip.querySelector('[hx-trigger~="load"]')) {
+      strip.style.display = "none";
+    }
+  }
+
+  // Which GP variant the chart currently needs:
+  //   "time"        — unfolded: time-domain fit of the difference flux.
+  //   "fold:P"      — folded *and* in Sci mode: phase-domain fit of the
+  //                   science flux at period P (folding only makes sense on
+  //                   the science light curve, so it's gated to Sci mode).
+  //   null          — folded but not in Sci mode: no valid GP to show.
+  // ensureGpLoaded fetches/caches per key so folding, switching to Sci, or
+  // picking a new period swaps the fit. Keys derive from the same chart.$lcPeriod
+  // Number on both request and response, so they round-trip-match exactly.
+  function gpDesiredKey(chart) {
+    if (chart.$lcFold === "fold" && chart.$lcPeriod > 0) {
+      return chart.$lcSource === "sci" ? "fold:" + chart.$lcPeriod : null;
+    }
+    return "time";
+  }
+
+  // The key a returned bundle represents — derived from its OWN folded/period
+  // (NOT a shared loading flag), so overlapping fetches can't be misattributed.
+  function gpBundleKey(bundle) {
+    return bundle && bundle.folded ? "fold:" + bundle.period : "time";
+  }
+
+  // Spinner reflects "the desired variant isn't here yet and is being fetched".
+  function refreshGpSpinner(chart) {
+    const oid = chart.canvas.id.replace(/^lc-canvas-/, "");
+    const want = gpDesiredKey(chart);
+    const have = chart.$lcGp && chart.$lcGpKey === want;
+    const loading = want != null && chart.$lcGpInflight && chart.$lcGpInflight.has(want);
+    setGpStatus(oid, chart.$lcOverlay === "gp" && !have && !!loading);
+  }
+
+  // Lazily fetch the GP posterior for the chart's current state. Cached per key
+  // so toggling fold/Sci or re-selecting a period reuses an earlier fit
+  // instantly; otherwise fires the deferred /htmx/lc_gp fragment (with
+  // &fold_period when folded) into the hidden slot — the fragment is a
+  // script-only call to lcSetGp. GP is the priciest overlay, so it's never
+  // fetched eagerly. A null desired key (folded + not Sci) fetches nothing.
+  function ensureGpLoaded(chart) {
+    if (!chart) return;
+    const want = gpDesiredKey(chart);
+    if (want == null) { refreshGpSpinner(chart); return; }   // folded needs Sci
+    if (chart.$lcGpKey === want && chart.$lcGp) return;       // already showing it
+    const cache = chart.$lcGpCache || (chart.$lcGpCache = {});
+    if (cache[want]) {                                        // fitted before — reuse
+      chart.$lcGp = cache[want];
+      chart.$lcGpKey = want;
+      applyModes(chart);
+      refreshGpSpinner(chart);
+      return;
+    }
+    const inflight = chart.$lcGpInflight || (chart.$lcGpInflight = new Set());
+    if (inflight.has(want)) { refreshGpSpinner(chart); return; }  // already in flight
+    const oid = chart.canvas.id.replace(/^lc-canvas-/, "");
+    const slot = document.getElementById(`lc-gp-slot-${oid}`);
+    const base = slot && slot.dataset.gpUrl;
+    if (!base || !(window.htmx && typeof window.htmx.ajax === "function")) return;
+    const url = want.startsWith("fold:")
+      ? base + "&fold_period=" + encodeURIComponent(chart.$lcPeriod)
+      : base;
+    inflight.add(want);
+    refreshGpSpinner(chart);
+    // Each fetch clears its OWN key on completion (the response identifies its
+    // variant in lcSetGp); done() is the safety net for hard network failures.
+    const done = () => { inflight.delete(want); refreshGpSpinner(chart); };
+    Promise.resolve(window.htmx.ajax("GET", url, "#lc-gp-slot-" + oid)).then(done, done);
+  }
+
+  // Receive the GP posterior from the deferred /htmx/lc_gp fragment. The
+  // response is attributed to its OWN variant (gpBundleKey) — never a shared
+  // loading flag — so a fold fit that lands after the user has unfolded can't
+  // be mistaken for the time fit (the bug that put folded curves on the time
+  // axis). Caches by that key and adopts it only if the chart still wants it.
+  window.lcSetGp = function (canvasId, bundle) {
+    const canvas = document.getElementById(canvasId);
+    const chart = canvas && charts.get(canvas);
+    const oid = canvasId.replace(/^lc-canvas-/, "");
+    if (!chart) return;
+    const ok = bundle && bundle.available && Array.isArray(bundle.grid) && bundle.grid.length;
+    if (!ok) {
+      chart.$lcOverlay = "none";
+      const sel = document.getElementById(`lc-overlay-${oid}`);
+      if (sel) sel.value = "none";
+      setGpStatus(oid, false);
+      applyModes(chart);
+      cacheAndPushLcState(chart);
+      // Surface the reason after applyModes (which would otherwise clear the
+      // strip when it sees overlay = "none").
+      const info = document.querySelector(`.lc-overlay-info[data-target="${canvasId}"]`);
+      if (info) {
+        info.textContent = (bundle && bundle.message) || "GP overlay unavailable.";
+        info.classList.remove("tw-hidden");
+      }
+      return;
+    }
+    const key = gpBundleKey(bundle);
+    (chart.$lcGpCache || (chart.$lcGpCache = {}))[key] = bundle;
+    // Adopt as the live fit only if the chart still wants this exact variant;
+    // otherwise keep it cached and reconcile to whatever's wanted now.
+    if (gpDesiredKey(chart) === key) {
+      chart.$lcGp = bundle;
+      chart.$lcGpKey = key;
+      applyModes(chart); // draws the GP curves + the hyperparameter strip
+    }
+    ensureGpLoaded(chart); // fetch/adopt the now-wanted variant if state moved on
+    refreshGpSpinner(chart);
   };
 
   // Apply ra/dec from the deferred /htmx/lc_info response: stamp them on
@@ -2339,6 +2687,9 @@
       foldBtn.dataset.lcFold = chart.$lcFold;
       if (period && period > 0) foldBtn.dataset.lcPeriod = String(period);
     }
+    // A new fold period means a new phase-domain GP — swap to (or fetch) the
+    // fit for this period.
+    if (chart.$lcOverlay === "gp") ensureGpLoaded(chart);
   };
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));

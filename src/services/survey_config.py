@@ -41,6 +41,13 @@ class SurveyConfig:
     # doesn't publish features via the REST API.
     features_url_template: str | None = None
     extinction_r: dict[str, float] = field(default_factory=dict)
+    # Per-band effective wavelength (Ångström). Drives the multi-band Gaussian
+    # Process overlay: the GP kernel correlates bands by how close their central
+    # wavelengths are (an RBF over wavelength), so a band's shape can inform a
+    # poorly-sampled neighbour. Shared across surveys by wavelength, so ZTF g
+    # (~4746 Å) and LSST g (~4827 Å) come out strongly coupled in a cross-survey
+    # joint fit. Approximate effective wavelengths from the survey filter curves.
+    band_wavelengths: dict[str, float] = field(default_factory=dict)
     extra_params: Callable[[dict[str, object]], dict[str, object]] = lambda p: p
     # Time scale of MJDs returned by this survey's API. LSST alerts carry
     # `midpointMjdTai` (atomic time, currently UTC + 37 s); ZTF MJDs are UTC.
@@ -152,6 +159,10 @@ SURVEY_CONFIG: dict[str, SurveyConfig] = {
             "u": 4.145, "g": 3.237, "r": 2.273,
             "i": 1.684, "z": 1.323, "y": 1.088,
         },
+        band_wavelengths={
+            "u": 3671.0, "g": 4827.0, "r": 6223.0,
+            "i": 7546.0, "z": 8691.0, "y": 9712.0,
+        },
         extra_params=_lsst_extra_params,
         mjd_scale="tai",
     ),
@@ -179,6 +190,7 @@ SURVEY_CONFIG: dict[str, SurveyConfig] = {
         has_forced_phot=True,
         has_science_flux=True,
         extinction_r={"g": 3.237, "r": 2.273, "i": 1.684},
+        band_wavelengths={"g": 4746.0, "r": 6366.0, "i": 7829.0},
         extra_params=_ztf_extra_params,
     ),
 }

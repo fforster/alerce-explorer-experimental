@@ -1,0 +1,19 @@
+{#
+  Deferred GP fragment — returned by /htmx/lc_gp.
+
+  Hands the multi-band Gaussian-Process posterior (per-band flux grid +
+  fitted hyperparameters) to `window.lcSetGp`, which stores it on the chart,
+  hides the "fitting…" spinner, renders the hyperparameter strip, and
+  re-projects the curves through the active LC modes.
+
+  Unlike the four eager loaders (FP / features / coords / xsurvey) this
+  fragment is fetched lazily on demand — only when the user selects the GP
+  overlay — so it does NOT touch the loading strip.
+#}
+<script>
+(function () {
+  if (window.lcSetGp) {
+    window.lcSetGp("lc-canvas-{{ oid }}", {{ bundle|tojson_compact|safe }});
+  }
+})();
+</script>

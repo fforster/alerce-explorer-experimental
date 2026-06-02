@@ -19,6 +19,7 @@ import logging
 from typing import Any
 
 from . import alerce_client
+from . import gp as gp_service
 from .features import extract_parametric_fits, pick_default_version
 from .normalize import normalize_dets
 from .survey_config import SC
@@ -403,3 +404,141 @@ async def get_lc_features_bundle(
         return {"multiband_period": None, "parametric_fits": {}}
     period, fits = await _fetch_features_bundle(url, survey=survey)
     return {"multiband_period": period, "parametric_fits": fits}
+
+
+# Forced photometry is included in the GP fit only within this many days
+# either side of the detection span. Detections pin where the source is real;
+# the FP margins give the GP pre-explosion baseline and post-peak decay
+# context, while the window keeps the O(N³) solve bounded (a transient's full
+# FP history can run to thousands of epochs that would swamp the fit).
+GP_FP_WINDOW_DAYS = 30.0
+
+
+def _iter_band_points(
+    bundle: dict[str, Any], survey: str, key: str, flux_key: str, eflux_key: str
+):
+    """Yield (band_name, lambda_eff, mjd, flux, eflux) for every usable row
+    under `bundle[key]` (`"bands"` = detections, `"forced_phot_bands"` = FP),
+    reading `flux_key` (`"flux"` for difference flux, `"sci_flux"` for science
+    flux). Rows missing the chosen flux are skipped — so a science-flux fit
+    naturally drops difference-only epochs. Bands without a configured central
+    wavelength (an `unknown` bucket) are skipped too."""
+    wl = SC(survey).band_wavelengths
+    for band in bundle.get(key) or []:
+        lam = wl.get(band.get("name"))
+        if lam is None:
+            continue
+        for p in band.get("points") or []:
+            mjd = p.get("mjd")
+            flux = p.get(flux_key)
+            if mjd is None or flux is None:
+                continue
+            yield band.get("name"), lam, mjd, flux, p.get(eflux_key)
+
+
+def _assemble_gp_series(
+    sources: list[tuple[str, dict[str, Any]]], *, science: bool = False
+) -> list[dict[str, Any]]:
+    """Build the per-band {band, surveys, lambda_eff, mjd[], flux[], eflux[]}
+    groups the GP consumes from one or more `shape_lightcurve` payloads.
+
+    `science=True` fits the science flux (used for the folded fit, which only
+    makes sense on the science light curve); otherwise the difference flux.
+
+    The same band from different telescopes is pooled — ZTF g and LSST g trace
+    the same part of the SED, so they become a single `g` group rather than two
+    near-identical wavelength channels. This gives the GP more points per band
+    directly; distinct band letters (g vs r vs i …) stay coupled through the
+    kernel's wavelength axis. The group's `lambda_eff` is the mean of the
+    contributing surveys' central wavelengths, and `surveys` records which
+    telescopes fed it so the client can keep the curve tied to the legend.
+
+    Detections are always kept; forced photometry only within
+    GP_FP_WINDOW_DAYS of the global detection span."""
+    flux_key, eflux_key = ("sci_flux", "e_sci_flux") if science else ("flux", "e_flux")
+
+    # Detection MJD envelope across every source, both surveys.
+    det_mjds = [
+        mjd
+        for survey, bundle in sources
+        for _n, _l, mjd, _f, _e in _iter_band_points(bundle, survey, "bands", flux_key, eflux_key)
+    ]
+    if det_mjds:
+        lo, hi = min(det_mjds) - GP_FP_WINDOW_DAYS, max(det_mjds) + GP_FP_WINDOW_DAYS
+    else:
+        # No detections to anchor the window — fall back to FP as-is (the GP's
+        # own guards will bail if there still aren't enough points).
+        lo, hi = float("-inf"), float("inf")
+
+    groups: dict[str, dict[str, Any]] = {}
+
+    def add(survey: str, name: str, lam: float, mjd: float, flux: float, eflux) -> None:
+        g = groups.get(name)
+        if g is None:
+            g = groups[name] = {
+                "band": name, "_wl": {}, "mjd": [], "flux": [], "eflux": [],
+            }
+        g["_wl"][survey] = lam  # one central wavelength per contributing survey
+        g["mjd"].append(mjd)
+        g["flux"].append(flux)
+        g["eflux"].append(eflux)
+
+    for survey, bundle in sources:
+        for name, lam, mjd, flux, eflux in _iter_band_points(
+            bundle, survey, "bands", flux_key, eflux_key
+        ):
+            add(survey, name, lam, mjd, flux, eflux)
+        for name, lam, mjd, flux, eflux in _iter_band_points(
+            bundle, survey, "forced_phot_bands", flux_key, eflux_key
+        ):
+            if lo <= mjd <= hi:
+                add(survey, name, lam, mjd, flux, eflux)
+
+    series: list[dict[str, Any]] = []
+    for g in groups.values():
+        wl = g.pop("_wl")
+        g["surveys"] = sorted(wl)
+        g["lambda_eff"] = sum(wl.values()) / len(wl)
+        series.append(g)
+    return series
+
+
+async def get_lc_gp_bundle(
+    *, survey: str, oid: str, fold_period: float | None = None
+) -> dict[str, Any]:
+    """Deferred multi-band Gaussian-Process overlay fetch.
+
+    Assembles difference-flux detections + forced photometry (the latter capped
+    to GP_FP_WINDOW_DAYS around the detection span) from this object *and*
+    (best-effort) its cross-survey counterpart, maps each band to its central
+    wavelength, and fits one joint GP over (time, wavelength) — see
+    `services/gp.py`. When `fold_period` is given the fit is done in phase space
+    (the folded light curve). The cross-survey lookup is wrapped so a failure
+    there still yields a single-survey fit. Returns `{oid, available, grid,
+    hyperparams, folded, period, ...}`; on any fatal error the caller renders an
+    `available=false` fragment.
+    """
+    # get_lightcurve is detections-only; get_lc_fp_bundle returns the same
+    # payload *with* forced_phot_bands populated (and the ZTF v2 mag_corr
+    # merge). Fall back to detections-only if the survey has no FP endpoint.
+    primary = await get_lc_fp_bundle(survey=survey, oid=oid)
+    if primary is None:
+        primary = await get_lightcurve(survey=survey, oid=oid)
+    sources: list[tuple[str, dict[str, Any]]] = [(survey, primary)]
+
+    try:
+        xbundle = await get_lc_xsurvey_bundle(survey=survey, oid=oid)
+    except Exception as e:  # pragma: no cover - network/lookup tolerance
+        log.warning("lc_gp: xsurvey lookup failed (%s/%s): %s", survey, oid, e)
+        xbundle = None
+    if isinstance(xbundle, dict) and xbundle.get("survey"):
+        sources.append((xbundle["survey"], xbundle))
+
+    # The folded fit is on the science light curve (folding only makes sense
+    # there); the unfolded fit uses difference flux, the alert-native value.
+    folding = fold_period is not None and fold_period > 0
+    result = gp_service.fit_multiband_gp(
+        _assemble_gp_series(sources, science=folding), fold_period=fold_period
+    )
+    result["oid"] = oid
+    return result

@@ -609,6 +609,34 @@ async def lc_xsurvey(request: Request, oid: str, survey_id: str) -> HTMLResponse
     )
 
 
+@router.get("/htmx/lc_gp", response_class=HTMLResponse)
+async def lc_gp(
+    request: Request, oid: str, survey_id: str, fold_period: float | None = None
+) -> HTMLResponse:
+    """Deferred multi-band Gaussian-Process overlay fetch — fired lazily when
+    the user picks "GP" in the LC overlay <select> (not on load: a GP fit is
+    the most expensive overlay). Assembles detections from this object + its
+    cross-survey counterpart, fits one joint GP over (time, wavelength), and
+    hands the per-band flux grid to `window.lcSetGp(canvasId, bundle)`. When
+    `fold_period` is supplied the fit is done on the folded (phase) light
+    curve. On any failure returns an `available=false` bundle so the client
+    clears the spinner and reverts the picker."""
+    _validate_survey(survey_id)
+    try:
+        bundle = await lightcurve_service.get_lc_gp_bundle(
+            survey=survey_id, oid=oid, fold_period=fold_period
+        )
+    except Exception:
+        log.exception("lc_gp failed")
+        bundle = {"available": False, "grid": [], "hyperparams": {},
+                  "message": "Gaussian process fit failed.", "oid": oid}
+    return templates.TemplateResponse(
+        request,
+        "lightcurve/lcGpFragment.html.jinja",
+        {"oid": oid, "bundle": bundle},
+    )
+
+
 @router.get("/htmx/tns_lookup", response_class=HTMLResponse)
 async def tns_lookup(
     request: Request, oid: str, ra: float | None = None, dec: float | None = None
