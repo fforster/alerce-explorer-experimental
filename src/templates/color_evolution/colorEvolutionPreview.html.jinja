@@ -1,0 +1,85 @@
+{#
+  Color-evolution panel — static shell. The curves are computed entirely
+  client-side from the live light-curve chart's GP bundle (`color_evolution.js`
+  reads `$lcGp` — the per-band posterior flux grid + `cov_offdiag` band-band
+  covariances — on the canvas referenced by `data-lc-target`). Adjacent-band
+  colors (u−g, g−r, …) are formed in magnitudes and their errors propagated
+  with the FULL band-band covariance (not the marginal per-band σ).
+
+  This slot shares the residuals grid cell and is auto-shown over Position
+  Residuals whenever the GP overlay is active (see lightcurve.js `lc:gpChanged`
+  + `window.lcGpState`), reverting when GP is deselected.
+#}
+<div
+  data-color-panel
+  data-lc-target="lc-canvas-{{ oid }}"
+  data-ce-mode="time"
+  class="tw-h-full tw-flex tw-flex-col tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4"
+>
+  <div class="tw-flex tw-items-center tw-justify-between tw-mb-2 tw-gap-3">
+    {% from "_panel_help.html.jinja" import panel_help %}
+    {% call panel_help("Color evolution", side="right") %}
+      <div class="tw-font-semibold tw-mb-1">What's plotted</div>
+      <p class="tw-mb-3 tw-text-text-secondary">Adjacent-band colors (u−g, g−r, r−i, i−z, z−Y) derived from the Gaussian-Process light-curve fit, in magnitudes. <span class="mono">vs Time</span> shows each color's evolution with a shaded ±1σ band; <span class="mono">Color–color</span> plots one color against another, points colored by time.</p>
+      <div class="tw-font-semibold tw-mb-1">Why the GP</div>
+      <p class="tw-mb-3 tw-text-text-secondary">The colors come from the joint multi-band GP posterior, so even bands sampled at different epochs give a color at every time. A color is <span class="mono">−2.5·log₁₀(F<sub>blue</sub>/F<sub>red</sub>)</span> from the posterior mean fluxes.</p>
+      <div class="tw-font-semibold tw-mb-1">Errors use the GP covariance</div>
+      <p class="tw-mb-3 tw-text-text-secondary">Two bands fit by one GP are correlated; the color error uses the proper band-band covariance <span class="mono">Σ<sub>br</sub></span>, not the marginal per-band σ — <span class="mono">Var(C)=a²[V<sub>b</sub>/F<sub>b</sub>²+V<sub>r</sub>/F<sub>r</sub>²−2Σ<sub>br</sub>/(F<sub>b</sub>F<sub>r</sub>)]</span>. In color–color view the points carry proper 1σ <em>ellipses</em>: a shared band (e.g. r in g−r vs r−i) tilts the ellipse.</p>
+      <div class="tw-font-semibold tw-mb-1">Notes</div>
+      <ul class="tw-space-y-0.5 tw-mb-3 tw-list-disc tw-list-inside tw-text-text-secondary">
+        <li>Dereddening (Der) shifts each color by −(R<sub>blue</sub>−R<sub>red</sub>)·E(B−V); the distance modulus cancels in a color.</li>
+        <li>Points where a band's flux isn't significantly positive (SNR&lt;2) are dropped — a color needs a real magnitude.</li>
+        <li>Bands hidden in the Light-curve legend drop out here too; fold the LC (Sci) to get colors over phase.</li>
+      </ul>
+      <div class="tw-font-semibold tw-mb-1">Navigation</div>
+      <ul class="tw-space-y-0.5 tw-list-disc tw-list-inside tw-text-text-secondary">
+        <li>Zoom: mouse wheel · Box-zoom: drag · Pan: <span class="mono">Ctrl</span>+drag · Reset: double-click</li>
+      </ul>
+    {% endcall %}
+    <div class="tw-flex tw-items-center tw-gap-3">
+      <div
+        data-ce-status
+        class="tw-text-text-muted tw-text-xs"
+        title="Live summary of the colors currently plotted."
+      ></div>
+      <div data-ce-cc-controls class="tw-hidden tw-flex tw-items-center tw-gap-1 tw-text-xs">
+        <select
+          data-ce-xpair
+          class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-text-text-primary tw-text-xs tw-px-1 tw-py-0.5"
+          title="Color on the X axis"
+        ></select>
+        <span class="tw-text-text-muted">vs</span>
+        <select
+          data-ce-ypair
+          class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-text-text-primary tw-text-xs tw-px-1 tw-py-0.5"
+          title="Color on the Y axis"
+        ></select>
+      </div>
+      <button
+        type="button"
+        data-ce-mode-btn
+        class="tw-px-2 tw-py-0.5 tw-text-xs tw-border tw-border-border tw-rounded tw-bg-bg-card tw-text-text-muted hover:tw-text-text-primary"
+        title="Switch between color-vs-time and color-color views."
+      >vs Time</button>
+    </div>
+  </div>
+
+  <div class="tw-relative tw-flex-1 tw-min-h-0">
+    <canvas
+      id="color-evolution-canvas-{{ oid }}"
+      class="color-evolution-canvas"
+    ></canvas>
+  </div>
+  <div data-ce-colorbar class="tw-mt-2 tw-hidden">
+    {# Time/phase colorbar — only meaningful in color-color view (points are
+       colored by time). #}
+    <div
+      data-ce-range
+      class="tw-flex tw-items-center tw-justify-between tw-text-[10px] tw-text-text-muted tw-mb-1"
+    ></div>
+    <div
+      class="tw-h-2 tw-rounded"
+      style="background: linear-gradient(to right, #440154, #3b528b, #21908c, #5dc863, #fde725);"
+    ></div>
+  </div>
+</div>

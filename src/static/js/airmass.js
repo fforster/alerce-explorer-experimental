@@ -474,13 +474,28 @@
     if (closeBtn) closeBtn.addEventListener("click", () => closePanel());
   }
 
+  // Is the GP overlay active on this detail view's LC chart? (Determines
+  // whether closing this panel should restore Color Evolution or Position
+  // Residuals into the shared cell.)
+  function gpActiveInCell() {
+    const slot = document.getElementById("color-evolution-slot");
+    const panel = slot && slot.querySelector("[data-color-panel]");
+    const lcId = panel && panel.dataset.lcTarget;
+    return !!(lcId && window.lcGpActive && window.lcGpActive(lcId));
+  }
+
   function closePanel() {
     const cr = document.getElementById("coord-residuals-slot");
+    const ce = document.getElementById("color-evolution-slot");
     const am = document.getElementById("airmass-slot");
     if (!am) return;
     am.classList.add("tw-hidden");
-    if (cr) cr.classList.remove("tw-hidden");
+    // Restore Color Evolution if GP is active, else Position Residuals.
+    if (ce && gpActiveInCell()) ce.classList.remove("tw-hidden");
+    else if (cr) cr.classList.remove("tw-hidden");
     syncAirmassButton(false);
+    window.dispatchEvent(new Event("resize"));
+    document.dispatchEvent(new Event("lc:gpChanged")); // rebuild a restored CE chart
   }
 
   // Highlights the basic-info "Airmass" button while the panel is on screen.
@@ -504,10 +519,12 @@
     const pg = document.getElementById("periodogram-slot");
     const am = document.getElementById("airmass-slot");
     if (!am) return;
+    const ce = document.getElementById("color-evolution-slot");
     const showAm = am.classList.contains("tw-hidden");
     if (showAm) {
       if (cr) cr.classList.add("tw-hidden");
       if (pg) pg.classList.add("tw-hidden");
+      if (ce) ce.classList.add("tw-hidden");
       am.classList.remove("tw-hidden");
       const panel = am.querySelector("[data-airmass-panel]");
       if (panel) {

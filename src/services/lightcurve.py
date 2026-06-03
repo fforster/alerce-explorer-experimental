@@ -541,8 +541,15 @@ async def get_lc_gp_bundle(
     # flux, the alert-native value.
     folding = fold_period is not None and fold_period > 0
     use_science = bool(science) or folding
+    # Difference flux is anchored at zero (a faded transient → 0 flux in every
+    # band), so we standardize all bands by one global scale rather than per
+    # band — otherwise a band with no data near an epoch reverts to its own
+    # mean instead of following the bands that have gone to zero. Science flux
+    # (and the folded fit) keeps per-band standardization. See gp.fit_multiband_gp.
     result = gp_service.fit_multiband_gp(
-        _assemble_gp_series(sources, science=use_science), fold_period=fold_period
+        _assemble_gp_series(sources, science=use_science),
+        fold_period=fold_period,
+        per_band_scale=use_science,
     )
     result["oid"] = oid
     result["science"] = use_science

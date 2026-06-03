@@ -729,15 +729,24 @@
     // Airmass shares the same cell — keep all three mutually exclusive
     // so opening periodogram never leaves airmass on screen behind it.
     const am = document.getElementById("airmass-slot");
+    // Color evolution also shares the cell (shown while the GP overlay is
+    // active). Keep all four mutually exclusive.
+    const ce = document.getElementById("color-evolution-slot");
     if (!cr || !pg) return;
     const showPg = pg.classList.contains("tw-hidden");
     if (showPg) {
       cr.classList.add("tw-hidden");
       if (am) am.classList.add("tw-hidden");
+      if (ce) ce.classList.add("tw-hidden");
       pg.classList.remove("tw-hidden");
     } else {
       pg.classList.add("tw-hidden");
-      cr.classList.remove("tw-hidden");
+      // Restore color evolution if GP is the active overlay, else the residuals.
+      if (ce && window.lcGpActive && window.lcGpActive(lcCanvasId)) {
+        ce.classList.remove("tw-hidden");
+      } else {
+        cr.classList.remove("tw-hidden");
+      }
     }
     // Highlight the toolbar button while the panel is active.
     const btn = document.querySelector(`.lc-periodogram-btn[data-target="${lcCanvasId}"]`);
@@ -748,7 +757,10 @@
     }
     // Force a resize so Chart.js rebuilds the periodogram axes after the
     // display: none → block transition (it can't measure a hidden canvas).
-    if (showPg) window.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new Event("resize"));
+    // Nudge the color-evolution panel so it rebuilds its chart if it was just
+    // restored (it skips rendering while hidden).
+    if (!showPg) document.dispatchEvent(new Event("lc:gpChanged"));
   };
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));

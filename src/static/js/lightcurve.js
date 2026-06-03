@@ -789,9 +789,10 @@
       }
       const fmt = (v, d) => (v != null && isFinite(v) ? Number(v).toPrecision(d) : "—");
       // When folded the fit is in phase space: the time length scale is in
-      // cycles, not days. σ_f / jitter are dimensionless (per-band-standardized
-      // units: a fraction of each band's own scatter), since bands are now
-      // standardized individually before the fit.
+      // cycles, not days. σ_f / jitter are dimensionless (standardized units):
+      // a fraction of each band's own scatter in sci/folded mode (per-band
+      // standardization), or of the pooled global scale in diff mode (all bands
+      // zero-anchored and divided by one scale — see services/gp.py).
       const lt = gp.folded
         ? `ℓ<sub>φ</sub>=<b>${fmt(hp.l_t_days, 3)}</b> cyc`
         : `ℓ<sub>t</sub>=<b>${fmt(hp.l_t_days, 3)}</b> d`;
@@ -1074,6 +1075,39 @@
     }));
   }
 
+  // "GP is selected as the overlay AND the live bundle matches the desired
+  // variant" — the signal the color-evolution panel uses to decide whether to
+  // draw colors. overlaySelected alone (GP picked, fetch maybe in flight) drives
+  // whether the panel seizes the residuals cell, so the panel stays put during
+  // a Diff↔Sci / fold variant swap instead of flickering back to residuals.
+  function gpReadyFor(chart) {
+    return !!(chart && chart.$lcOverlay === "gp" && chart.$lcGp &&
+              chart.$lcGpKey === gpDesiredKey(chart));
+  }
+
+  function emitGpChanged(chart) {
+    const id = chart && chart.canvas ? chart.canvas.id : null;
+    document.dispatchEvent(new CustomEvent("lc:gpChanged", {
+      detail: {
+        canvasId: id,
+        overlaySelected: !!(chart && chart.$lcOverlay === "gp"),
+        gpReady: gpReadyFor(chart),
+      },
+    }));
+  }
+
+  // Read GP overlay state for a chart by id — consumed by the color-evolution
+  // panel and by the periodogram/airmass toggles (to pick the right slot to
+  // restore when they close).
+  window.lcGpState = function (canvasOrId) {
+    const chart = window.lcGetChart ? window.lcGetChart(canvasOrId) : null;
+    if (!chart) return { overlaySelected: false, gpReady: false };
+    return { overlaySelected: chart.$lcOverlay === "gp", gpReady: gpReadyFor(chart) };
+  };
+  window.lcGpActive = function (canvasOrId) {
+    return window.lcGpState(canvasOrId).overlaySelected;
+  };
+
   // Stable per-dataset key used to remember legend visibility across
   // dataset rebuilds. (survey, kind, label) is invariant under every
   // projection toggle (Flux/Mag, Diff/Sci, App/Abs, Obs/Der, Fold) and
@@ -1184,6 +1218,10 @@
       y.reverse = false;
     }
     chart.update();
+    // Notify the color-evolution panel: a re-projection can change the GP
+    // variant (Diff↔Sci, fold) or the dereddening shift the panel applies.
+    // Idempotent — the panel only rebuilds when it's the visible cell.
+    emitGpChanged(chart);
   }
 
   function initCanvas(canvas) {
@@ -2618,6 +2656,7 @@
     }
     ensureGpLoaded(chart); // fetch/adopt the now-wanted variant if state moved on
     refreshGpSpinner(chart);
+    emitGpChanged(chart);  // the GP bundle (incl. cov_offdiag) just landed
   };
 
   // Apply ra/dec from the deferred /htmx/lc_info response: stamp them on

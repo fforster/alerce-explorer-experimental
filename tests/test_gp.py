@@ -193,3 +193,137 @@ def test_per_band_standardization_recovers_low_amplitude_band():
     # The faint band's bump is ~200 nJy peak; the GP should recover a good
     # fraction of it (a global scale would flatten it to far less).
     assert span > 80.0
+
+
+def _bright_and_sparse_bands() -> list[dict]:
+    """A difference-flux transient (baseline 0, fades to 0) shared by two bands.
+    `g` is densely sampled across the whole event — including late times where it
+    has returned to ~0. `r` is sampled *only* near the peak, so it carries no
+    late-time data and its own data mean is a large positive number. This is the
+    case the user flagged: at late epochs `r` should follow `g` to zero."""
+    rng = np.random.default_rng(5)
+
+    def bump(t, amp):
+        return amp * np.exp(-0.5 * ((t - 30.0) / 6.0) ** 2)
+
+    tg = np.sort(rng.uniform(0.0, 60.0, 40))
+    g = {"survey": "lsst", "band": "g", "lambda_eff": 4827.0, "mjd": tg.tolist(),
+         "flux": (bump(tg, 5000.0) + rng.normal(0, 60, tg.size)).tolist(),
+         "eflux": np.full(tg.size, 60.0).tolist()}
+    tr = np.sort(rng.uniform(22.0, 38.0, 12))
+    r = {"survey": "lsst", "band": "r", "lambda_eff": 6223.0, "mjd": tr.tolist(),
+         "flux": (bump(tr, 4500.0) + rng.normal(0, 60, tr.size)).tolist(),
+         "eflux": np.full(tr.size, 60.0).tolist()}
+    return [g, r]
+
+
+def test_difference_mode_sparse_band_follows_others_to_zero():
+    """In difference-flux mode the bands share one global scale and are anchored
+    at zero, so a sparsely-sampled band follows the well-sampled bands to zero
+    where it has no data of its own. Per-band standardization instead reverts
+    that band to its own (large, positive) mean — the behaviour the user wants
+    suppressed in diff mode."""
+    series = _bright_and_sparse_bands()
+
+    def r_at_late_time(per_band_scale):
+        grid = fit_multiband_gp(series, n_grid=121, per_band_scale=per_band_scale)["grid"]
+        r = next(x for x in grid if x["band"] == "r")
+        # Late epoch (~MJD 55) where g has returned to ~0 and r has no data.
+        i = min(range(len(r["mjd"])), key=lambda k: abs(r["mjd"][k] - 55.0))
+        return r["flux_mean"][i]
+
+    per_band = r_at_late_time(True)
+    global_scale = r_at_late_time(False)
+    # Per-band: r reverts to its own ~thousands-nJy mean. Global: r tracks g → ~0.
+    assert per_band > 1000.0
+    assert abs(global_scale) < 500.0
+
+
+# ── Off-diagonal band covariances (color-evolution panel) ────────────────────
+
+def _synthetic_three_band(seed: int = 0) -> list[dict]:
+    """A correlated bump shared by g, r, i at three wavelengths — exercises the
+    full set of unordered band pairs the covariance ships."""
+    rng = np.random.default_rng(seed)
+
+    def bump(t, amp, base):
+        return base + amp * np.exp(-0.5 * ((t - 30.0) / 8.0) ** 2)
+
+    series = []
+    for band, lam, amp, base in [
+        ("g", 4827.0, 5000.0, 300.0),
+        ("r", 6223.0, 4200.0, 350.0),
+        ("i", 7546.0, 3600.0, 400.0),
+    ]:
+        t = np.sort(rng.uniform(0.0, 60.0, 25))
+        flux = bump(t, amp, base) + rng.normal(0.0, 120.0, t.size)
+        series.append({
+            "survey": "lsst", "band": band, "lambda_eff": lam,
+            "mjd": t.tolist(), "flux": flux.tolist(),
+            "eflux": np.full(t.size, 120.0).tolist(),
+        })
+    return series
+
+
+def test_cov_offdiag_has_every_band_pair():
+    out = fit_multiband_gp(_synthetic_three_band(), n_grid=100)
+    cov = out["cov_offdiag"]
+    assert set(cov.keys()) == {"g|r", "g|i", "i|r"}
+    for arr in cov.values():
+        assert len(arr) == 100
+        assert all(math.isfinite(v) for v in arr)
+
+
+def test_cov_offdiag_satisfies_cauchy_schwarz():
+    """|Cov(F_b,F_c)| ≤ sqrt(V_b·V_c) at every grid point (V from flux_std)."""
+    out = fit_multiband_gp(_synthetic_three_band(), n_grid=80)
+    grid = {x["band"]: x for x in out["grid"]}
+    for key, arr in out["cov_offdiag"].items():
+        b, c = key.split("|")
+        Vb = np.array(grid[b]["flux_std"]) ** 2
+        Vc = np.array(grid[c]["flux_std"]) ** 2
+        bound = np.sqrt(Vb * Vc)
+        cov = np.array(arr)
+        # Tiny tolerance for float roundoff at the saturating bound.
+        assert np.all(np.abs(cov) <= bound + 1e-6 * bound + 1e-9)
+
+
+def test_cov_offdiag_positive_for_correlated_bands():
+    """The wavelength kernel correlates the bands, so the same-time flux
+    covariance is positive where both bands are well-measured (near the bump)."""
+    out = fit_multiband_gp(_synthetic_two_band(), n_grid=120)
+    g = next(x for x in out["grid"] if x["band"] == "g")
+    arr = np.array(out["cov_offdiag"]["g|r"])
+    # Index nearest the bump centre (MJD 30) — both bands strongly measured.
+    k = min(range(len(g["mjd"])), key=lambda i: abs(g["mjd"][i] - 30.0))
+    assert arr[k] > 0
+
+
+def test_covariance_reduces_color_error_vs_naive():
+    """Validates the documented color-error formula: at a well-positive grid
+    point the variance computed WITH the cross-covariance term is finite, ≥0,
+    and strictly smaller than the naive (cov=0) variance — exactly the
+    over-estimate the panel avoids."""
+    out = fit_multiband_gp(_synthetic_two_band(), n_grid=120)
+    g = next(x for x in out["grid"] if x["band"] == "g")
+    r = next(x for x in out["grid"] if x["band"] == "r")
+    cov = np.array(out["cov_offdiag"]["g|r"])
+    Fg, Fr = np.array(g["flux_mean"]), np.array(r["flux_mean"])
+    Vg, Vr = np.array(g["flux_std"]) ** 2, np.array(r["flux_std"]) ** 2
+    k = min(range(len(g["mjd"])), key=lambda i: abs(g["mjd"][i] - 30.0))
+    a = 2.5 / math.log(10)
+    var_naive = a * a * (Vg[k] / Fg[k] ** 2 + Vr[k] / Fr[k] ** 2)
+    var_cov = var_naive - a * a * 2 * cov[k] / (Fg[k] * Fr[k])
+    assert math.isfinite(var_cov)
+    assert var_cov >= 0
+    assert var_cov < var_naive  # positive Cov(F_g,F_r) shrinks the color error
+
+
+def test_folded_bundle_has_cov_offdiag_on_phase_grid():
+    """The covariance ships for the folded (phase) fit too, length-matched to the
+    phase grid so colors-over-phase get the same proper errors."""
+    series = _synthetic_two_band()
+    out = fit_multiband_gp(series, n_grid=60, fold_period=3.5)
+    assert out["folded"] is True
+    assert "g|r" in out["cov_offdiag"]
+    assert len(out["cov_offdiag"]["g|r"]) == 60

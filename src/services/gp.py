@@ -139,6 +139,57 @@ def _unavailable(message: str) -> dict[str, Any]:
 _PHASE_LS_BOUNDS = (0.02, 0.3)
 
 
+def _band_cross_covariances(
+    gp: GaussianProcessRegressor,
+    groups: list[dict[str, Any]],
+    band_stats: dict[tuple[str, str], tuple[float, float]],
+    grid_t: np.ndarray,
+    n_grid: int,
+) -> dict[str, list[float]]:
+    """Same-time posterior flux covariance between every *pair* of bands, on the
+    prediction grid. The diagonal (per-band variance) already ships as the grid's
+    ``flux_std``²; this adds the off-diagonal terms the client needs to propagate
+    color errors with the proper band-band correlation (a joint GP makes bands
+    correlated, and ignoring that mis-estimates a color's error).
+
+    For bands b, c the joint posterior over (F_b(t_k), F_c(t_k)) comes from one
+    ``gp.predict(return_cov=True)`` over the stacked [b grid; c grid] points; the
+    same-time cross terms are C[k, n+k]. The fit runs in standardized units, so
+    we rescale to flux space by s_b·s_c — the affine map F = s·y + m leaves the
+    covariance scaled by s_b·s_c and drops the mean offset.
+
+    Returns ``{"<band>|<band>": [cov_k, ...]}`` keyed by the two band names sorted
+    lexicographically (an unordered lookup; the client picks blue/red by
+    wavelength). Best-effort: a failing pair is skipped so the mean curves ship.
+    """
+    out: dict[str, list[float]] = {}
+    idx = np.arange(n_grid)
+    for a in range(len(groups)):
+        for b in range(a + 1, len(groups)):
+            ga, gb = groups[a], groups[b]
+            lam_a = ga["lambda_eff"] / _LAMBDA_UNIT_ANGSTROM
+            lam_b = gb["lambda_eff"] / _LAMBDA_UNIT_ANGSTROM
+            X_pair = np.vstack(
+                [
+                    np.column_stack([grid_t, np.full(n_grid, lam_a)]),
+                    np.column_stack([grid_t, np.full(n_grid, lam_b)]),
+                ]
+            )
+            try:
+                _, cov = gp.predict(X_pair, return_cov=True)
+            except Exception:  # pragma: no cover - sklearn linalg edge cases
+                log.exception("GP cross-covariance predict failed")
+                continue
+            cov_std = np.asarray(cov)[idx, idx + n_grid]
+            scale_a = band_stats[(ga["survey"], ga["band"])][1]
+            scale_b = band_stats[(gb["survey"], gb["band"])][1]
+            cov_flux = cov_std * scale_a * scale_b
+            cov_flux = np.where(np.isfinite(cov_flux), cov_flux, 0.0)
+            key = "|".join(sorted([ga["band"], gb["band"]]))
+            out[key] = cov_flux.astype(float).tolist()
+    return out
+
+
 def fit_multiband_gp(
     series: list[dict[str, Any]],
     *,
@@ -146,6 +197,7 @@ def fit_multiband_gp(
     max_points: int = _MAX_POINTS,
     random_state: int = 0,
     fold_period: float | None = None,
+    per_band_scale: bool = True,
 ) -> dict[str, Any]:
     """Fit one joint GP over (time, wavelength) and return per-band flux grids.
 
@@ -177,25 +229,48 @@ def fit_multiband_gp(
             f"Too few detections for a GP fit ({n_total} < {_MIN_POINTS})."
         )
 
-    # Per-band standardization: subtract each band's mean and divide by its own
-    # scatter, so every band enters the kernel at ~unit variance. Without this
-    # a band whose flux varies orders of magnitude more than another would
-    # dominate the single shared amplitude σ_f, and the lower-amplitude bands
-    # would be over-smoothed (their signal lost under the shared jitter). This
-    # is acute for science flux, where per-band amplitudes differ widely. With
-    # it, the wavelength coregionalization couples band *shapes*, not their
-    # amplitudes — exactly "a well-sampled band informs a sparse one". The fit
-    # runs in these standardized units; predictions are de-standardized per
-    # band (× scale_b + mean_b) on the way out, and σ_f/jitter are reported
-    # dimensionless (a fraction of each band's own scatter).
+    # Standardization. Two regimes, selected by `per_band_scale`:
+    #
+    # Per-band (science flux, and the folded fit): subtract each band's mean and
+    # divide by its own scatter, so every band enters the kernel at ~unit
+    # variance. Without this a band whose flux varies orders of magnitude more
+    # than another would dominate the single shared amplitude σ_f, and the
+    # lower-amplitude bands would be over-smoothed (their signal lost under the
+    # shared jitter). This is acute for science flux, where per-band amplitudes
+    # differ widely. With it, the wavelength coregionalization couples band
+    # *shapes*, not their amplitudes — exactly "a well-sampled band informs a
+    # sparse one".
+    #
+    # Global, zero-anchored (difference flux, per_band_scale=False): the
+    # physical baseline is zero — a faded transient has zero difference flux in
+    # *every* band. A per-band mean/scale would erase that shared zero: each
+    # band would revert to its own mean and be rescaled independently, so a band
+    # with no data near an epoch would relax to its own baseline instead of
+    # following the bands that have gone to zero. Instead we pin every band's
+    # mean at 0 and divide all bands by a single global scale (the pooled RMS
+    # about zero), so the coregionalization couples real flux *amplitudes* and
+    # "all other bands → 0" pulls the target band → 0 too.
+    #
+    # Either way the fit runs in standardized units; predictions are
+    # de-standardized per band (× scale_b + mean_b) on the way out, and
+    # σ_f/jitter are reported dimensionless (a fraction of the band scatter,
+    # resp. the global scale).
     t_all = np.concatenate([g["mjd"] for g in groups])
     band_stats: dict[tuple[str, str], tuple[float, float]] = {}
-    for g in groups:
-        m = float(np.mean(g["flux"]))
-        s = float(np.std(g["flux"]))
-        if not np.isfinite(s) or s <= 0:
-            s = 1.0  # single-point / zero-variance band → its y collapses to 0
-        band_stats[(g["survey"], g["band"])] = (m, s)
+    if per_band_scale:
+        for g in groups:
+            m = float(np.mean(g["flux"]))
+            s = float(np.std(g["flux"]))
+            if not np.isfinite(s) or s <= 0:
+                s = 1.0  # single-point / zero-variance band → its y collapses to 0
+            band_stats[(g["survey"], g["band"])] = (m, s)
+    else:
+        flux_all = np.concatenate([g["flux"] for g in groups])
+        gscale = float(np.sqrt(np.mean(flux_all ** 2)))
+        if not np.isfinite(gscale) or gscale <= 0:
+            gscale = 1.0  # all-zero data → unit scale, predictions stay at 0
+        for g in groups:
+            band_stats[(g["survey"], g["band"])] = (0.0, gscale)
 
     def _stats(g):
         return band_stats[(g["survey"], g["band"])]
@@ -277,9 +352,19 @@ def fit_multiband_gp(
             }
         )
 
+    # Off-diagonal band-band flux covariances for the client's color-error
+    # propagation (the diagonal is the grid's flux_std²). Best-effort: a failure
+    # here must not sink the mean curves, so default to {}.
+    try:
+        cov_offdiag = _band_cross_covariances(gp, groups, band_stats, grid_t, n_grid)
+    except Exception:  # pragma: no cover - defensive
+        log.exception("GP cross-covariance computation failed")
+        cov_offdiag = {}
+
     return {
         "available": True,
         "grid": grid,
+        "cov_offdiag": cov_offdiag,
         "hyperparams": _extract_hyperparams(gp),
         "n_points": int(n_total),
         "n_bands": len(groups),
@@ -292,8 +377,9 @@ def fit_multiband_gp(
 def _extract_hyperparams(gp: GaussianProcessRegressor) -> dict[str, float]:
     """Pull the fitted (ℓ_t, ℓ_λ, σ_f, jitter) out of the optimised kernel.
     ℓ_t is in days (time fit) or cycles (folded); ℓ_λ in kilo-Ångström. σ_f and
-    jitter are in the per-band-standardized units the fit runs in — i.e. a
-    fraction of each band's own scatter — so they're dimensionless, not nJy.
+    jitter are in the standardized units the fit runs in — a fraction of each
+    band's own scatter (per-band mode) or of the pooled global scale (difference
+    mode) — so they're dimensionless, not nJy.
     Defensive against sklearn's kernel-tree layout via the flat get_params."""
     p = gp.kernel_.get_params()
     try:

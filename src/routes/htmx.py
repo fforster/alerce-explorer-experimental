@@ -657,7 +657,8 @@ async def lc_gp(
         )
     except Exception:
         log.exception("lc_gp failed")
-        bundle = {"available": False, "grid": [], "hyperparams": {},
+        bundle = {"available": False, "grid": [], "cov_offdiag": {},
+                  "hyperparams": {},
                   "message": "Gaussian process fit failed.", "oid": oid}
     return templates.TemplateResponse(
         request,

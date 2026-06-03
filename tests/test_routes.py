@@ -1179,6 +1179,36 @@ def test_lc_gp_endpoint_returns_inline_setGp(client, monkeypatch):
     assert '"available":true' in r.text
 
 
+def test_lc_gp_endpoint_serializes_cov_offdiag(client, monkeypatch):
+    """The off-diagonal band covariances ride inside the GP bundle so the
+    color-evolution panel can propagate color errors with the proper
+    band-band correlation."""
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
+        return {
+            "available": True,
+            "grid": [
+                {"survey": "", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
+                 "mjd": [60000.0, 60001.0], "flux_mean": [1000.0, 1100.0],
+                 "flux_std": [50.0, 55.0]},
+                {"survey": "", "surveys": ["ztf"], "band": "r", "lambda_eff": 6366.0,
+                 "mjd": [60000.0, 60001.0], "flux_mean": [800.0, 820.0],
+                 "flux_std": [40.0, 42.0]},
+            ],
+            "cov_offdiag": {"g|r": [1234.5, 1300.0]},
+            "hyperparams": {}, "n_points": 30, "n_bands": 2,
+            "folded": False, "period": None, "message": "", "oid": oid,
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.lightcurve_service.get_lc_gp_bundle", fake_bundle,
+    )
+    r = client.get("/htmx/lc_gp?oid=ZTF21abc&survey_id=ztf")
+    assert r.status_code == 200
+    assert "window.lcSetGp" in r.text
+    assert '"cov_offdiag"' in r.text
+    assert "1234.5" in r.text
+
+
 def test_lc_gp_endpoint_handles_fit_failure(client, monkeypatch):
     """A raised error from the service still yields a 200 fragment carrying an
     `available:false` bundle so the client clears the spinner + reverts."""
