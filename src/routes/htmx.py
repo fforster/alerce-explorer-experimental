@@ -106,6 +106,8 @@ def _share_url(
     n_det_max: int | None = None,
     firstmjd_min: float | None = None,
     firstmjd_max: float | None = None,
+    lastmjd_min: float | None = None,
+    lastmjd_max: float | None = None,
     ra: float | None = None,
     dec: float | None = None,
     radius: float | None = None,
@@ -149,6 +151,11 @@ def _share_url(
         params.append(("firstmjd_min", str(firstmjd_min)))
     if firstmjd_max is not None:
         params.append(("firstmjd_max", str(firstmjd_max)))
+    # Last-detection-date range (MJD): same numeric round-trip as firstmjd.
+    if lastmjd_min is not None:
+        params.append(("lastmjd_min", str(lastmjd_min)))
+    if lastmjd_max is not None:
+        params.append(("lastmjd_max", str(lastmjd_max)))
     # Conesearch — only meaningful when ra+dec are both present; radius
     # rides along but defaults upstream when omitted.
     if ra is not None and dec is not None:
@@ -211,6 +218,8 @@ async def index(
     n_det_max: int | None = None,
     firstmjd_min: float | None = None,
     firstmjd_max: float | None = None,
+    lastmjd_min: float | None = None,
+    lastmjd_max: float | None = None,
     ra: float | None = None,
     dec: float | None = None,
     radius: float | None = None,
@@ -241,6 +250,8 @@ async def index(
             "initial_n_det_max": n_det_max,
             "initial_firstmjd_min": firstmjd_min,
             "initial_firstmjd_max": firstmjd_max,
+            "initial_lastmjd_min": lastmjd_min,
+            "initial_lastmjd_max": lastmjd_max,
             "initial_ra": ra,
             "initial_dec": dec,
             "initial_radius": radius,
@@ -262,6 +273,8 @@ async def search_form(
     n_det_max: int | None = None,
     firstmjd_min: float | None = None,
     firstmjd_max: float | None = None,
+    lastmjd_min: float | None = None,
+    lastmjd_max: float | None = None,
     ra: float | None = None,
     dec: float | None = None,
     radius: float | None = None,
@@ -295,6 +308,8 @@ async def search_form(
             "selected_n_det_max": n_det_max,
             "selected_firstmjd_min": firstmjd_min,
             "selected_firstmjd_max": firstmjd_max,
+            "selected_lastmjd_min": lastmjd_min,
+            "selected_lastmjd_max": lastmjd_max,
             "selected_ra": ra,
             "selected_dec": dec,
             "selected_radius": radius,
@@ -327,6 +342,8 @@ async def list_objects(
     n_det_max: int | None = None,
     firstmjd_min: float | None = None,
     firstmjd_max: float | None = None,
+    lastmjd_min: float | None = None,
+    lastmjd_max: float | None = None,
     ra: float | None = None,
     dec: float | None = None,
     radius: float | None = None,
@@ -358,6 +375,8 @@ async def list_objects(
             n_det_max=n_det_max,
             firstmjd_min=firstmjd_min,
             firstmjd_max=firstmjd_max,
+            lastmjd_min=lastmjd_min,
+            lastmjd_max=lastmjd_max,
             ra=ra,
             dec=dec,
             radius=radius,
@@ -395,6 +414,8 @@ async def list_objects(
             "n_det_max": n_det_max,
             "firstmjd_min": firstmjd_min,
             "firstmjd_max": firstmjd_max,
+            "lastmjd_min": lastmjd_min,
+            "lastmjd_max": lastmjd_max,
             "ra": ra,
             "dec": dec,
             "radius": radius,
@@ -417,6 +438,8 @@ async def list_objects(
         n_det_max=n_det_max,
         firstmjd_min=firstmjd_min,
         firstmjd_max=firstmjd_max,
+        lastmjd_min=lastmjd_min,
+        lastmjd_max=lastmjd_max,
         ra=ra,
         dec=dec,
         radius=radius,
@@ -440,6 +463,8 @@ async def detail(
     n_det_max: int | None = None,
     firstmjd_min: float | None = None,
     firstmjd_max: float | None = None,
+    lastmjd_min: float | None = None,
+    lastmjd_max: float | None = None,
     ra: float | None = None,
     dec: float | None = None,
     radius: float | None = None,
@@ -472,6 +497,8 @@ async def detail(
         n_det_max=n_det_max,
         firstmjd_min=firstmjd_min,
         firstmjd_max=firstmjd_max,
+        lastmjd_min=lastmjd_min,
+        lastmjd_max=lastmjd_max,
         ra=ra,
         dec=dec,
         radius=radius,

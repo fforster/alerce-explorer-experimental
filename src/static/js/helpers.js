@@ -68,6 +68,21 @@ function send_form_Data() {
     }
   }
 
+  // Last-detection-date filter: twin of the discovery-date pair above, but
+  // feeds `lastmjd_min/max` (constrains the object's most recent detection).
+  const lastDateFromRaw = _val("filter-lastdate-from");
+  const lastDateToRaw = _val("filter-lastdate-to");
+  if (window.smartDateToMJD) {
+    if (lastDateFromRaw) {
+      const m = window.smartDateToMJD(lastDateFromRaw);
+      if (m != null) payload.lastmjd_min = m;
+    }
+    if (lastDateToRaw) {
+      const m = window.smartDateToMJD(lastDateToRaw);
+      if (m != null) payload.lastmjd_max = m;
+    }
+  }
+
   // Cone-search filter: parse the "ra dec" free-text field into degrees
   // (any format: plain, comma-separated, sexagesimal). Radius is taken as
   // arcsec; only attached when coords actually parsed so the upstream call

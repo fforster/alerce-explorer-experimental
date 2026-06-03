@@ -239,6 +239,7 @@ def test_list_objects_pushes_full_filter_url(client, stub_services):
         "&classifier_version=2.1.0&class_name=SN&probability=0.5"
         "&n_det_min=5&n_det_max=50"
         "&firstmjd_min=60000.0&firstmjd_max=60100.0"
+        "&lastmjd_min=60050.0&lastmjd_max=60200.0"
         "&ra=150.0&dec=2.0&radius=30.0"
         "&oids=ZTF1,ZTF2&page=3"
     )
@@ -247,6 +248,7 @@ def test_list_objects_pushes_full_filter_url(client, stub_services):
         "/?survey=ztf&classifier=lc_classifier_top&classifier_version=2.1.0"
         "&class_name=SN&probability=0.5"
         "&n_det_min=5&n_det_max=50&firstmjd_min=60000.0&firstmjd_max=60100.0"
+        "&lastmjd_min=60050.0&lastmjd_max=60200.0"
         "&ra=150.0&dec=2.0&radius=30.0&oids=ZTF1%2CZTF2&page=3"
     )
 

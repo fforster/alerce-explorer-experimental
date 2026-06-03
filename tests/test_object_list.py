@@ -76,6 +76,30 @@ def test_build_search_params_firstmjd_min_only_singleton():
     assert p["firstmjd"] == [60000.0]
 
 
+def test_build_search_params_lastmjd_range_as_list():
+    """Last-detection-date range mirrors firstmjd: `lastmjd: list[float]`."""
+    p = build_search_params(
+        survey="lsst",
+        classifier=None, class_name=None,
+        probability=None, n_det_min=None, n_det_max=None,
+        lastmjd_min=60000.0, lastmjd_max=60100.0,
+        oid=None, page=1, page_size=20,
+    )
+    assert p["lastmjd"] == [60000.0, 60100.0]
+
+
+def test_build_search_params_lastmjd_max_only_zero_floor():
+    """Max-only collapses to `[0.0, max]` so the filter stays one-ended."""
+    p = build_search_params(
+        survey="ztf",
+        classifier=None, class_name=None,
+        probability=None, n_det_min=None, n_det_max=None,
+        lastmjd_min=None, lastmjd_max=60100.0,
+        oid=None, page=1, page_size=20,
+    )
+    assert p["lastmjd"] == [0.0, 60100.0]
+
+
 def test_build_search_params_conesearch_attaches_radius_with_default():
     """ra+dec without explicit radius → 30" default (matches the prototype's
     UI default and the placeholder in the form input)."""

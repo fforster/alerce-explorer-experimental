@@ -86,6 +86,8 @@ def build_search_params(
     n_det_max: int | None,
     firstmjd_min: float | None = None,
     firstmjd_max: float | None = None,
+    lastmjd_min: float | None = None,
+    lastmjd_max: float | None = None,
     ra: float | None = None,
     dec: float | None = None,
     radius: float | None = None,
@@ -134,6 +136,15 @@ def build_search_params(
         p["firstmjd"] = [firstmjd_min]
     elif firstmjd_max is not None:
         p["firstmjd"] = [0.0, firstmjd_max]
+    # Last-detection-date range — same `lastmjd: list[float]` encoding as
+    # firstmjd (the production Filters model carries both). Constrains the
+    # time of the object's most recent detection.
+    if lastmjd_min is not None and lastmjd_max is not None:
+        p["lastmjd"] = [lastmjd_min, lastmjd_max]
+    elif lastmjd_min is not None:
+        p["lastmjd"] = [lastmjd_min]
+    elif lastmjd_max is not None:
+        p["lastmjd"] = [0.0, lastmjd_max]
     # Conesearch — only meaningful when ra+dec are both present. Radius
     # defaults to 30 arcsec to match the prototype's UI default; the
     # upstream API accepts arcsec.
@@ -204,6 +215,8 @@ async def get_objects_list(
     n_det_max: int | None = None,
     firstmjd_min: float | None = None,
     firstmjd_max: float | None = None,
+    lastmjd_min: float | None = None,
+    lastmjd_max: float | None = None,
     ra: float | None = None,
     dec: float | None = None,
     radius: float | None = None,
@@ -221,6 +234,8 @@ async def get_objects_list(
         n_det_max=n_det_max,
         firstmjd_min=firstmjd_min,
         firstmjd_max=firstmjd_max,
+        lastmjd_min=lastmjd_min,
+        lastmjd_max=lastmjd_max,
         ra=ra,
         dec=dec,
         radius=radius,

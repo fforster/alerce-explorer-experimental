@@ -17,6 +17,8 @@
   {%- if n_det_max is not none %}&n_det_max={{ n_det_max }}{% endif %}
   {%- if firstmjd_min is not none %}&firstmjd_min={{ firstmjd_min }}{% endif %}
   {%- if firstmjd_max is not none %}&firstmjd_max={{ firstmjd_max }}{% endif %}
+  {%- if lastmjd_min is not none %}&lastmjd_min={{ lastmjd_min }}{% endif %}
+  {%- if lastmjd_max is not none %}&lastmjd_max={{ lastmjd_max }}{% endif %}
   {%- if ra is not none and dec is not none %}&ra={{ ra }}&dec={{ dec }}{% if radius is not none %}&radius={{ radius }}{% endif %}{% endif %}
   {%- if oids %}&oids={{ oids|urlencode }}{% endif %}
   {%- if page and page > 1 %}&page={{ page }}{% endif %}

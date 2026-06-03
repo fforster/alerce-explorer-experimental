@@ -176,6 +176,8 @@
       {%- if initial_n_det_max is not none %}&n_det_max={{ initial_n_det_max }}{% endif %}
       {%- if initial_firstmjd_min is not none %}&firstmjd_min={{ initial_firstmjd_min }}{% endif %}
       {%- if initial_firstmjd_max is not none %}&firstmjd_max={{ initial_firstmjd_max }}{% endif %}
+      {%- if initial_lastmjd_min is not none %}&lastmjd_min={{ initial_lastmjd_min }}{% endif %}
+      {%- if initial_lastmjd_max is not none %}&lastmjd_max={{ initial_lastmjd_max }}{% endif %}
       {%- if initial_ra is not none and initial_dec is not none %}&ra={{ initial_ra }}&dec={{ initial_dec }}{% if initial_radius is not none %}&radius={{ initial_radius }}{% endif %}{% endif %}
       {%- if initial_oids %}&oids={{ initial_oids|urlencode }}{% endif %}
       {%- if initial_page and initial_page > 1 %}&page={{ initial_page }}{% endif %}
@@ -219,7 +221,7 @@
           hx-trigger="load"
           hx-swap="innerHTML"
         ></div>
-      {% elif initial_classifier or initial_classifier_version or initial_class_name or initial_probability or initial_n_det_min is not none or initial_n_det_max is not none or initial_firstmjd_min is not none or initial_firstmjd_max is not none or (initial_ra is not none and initial_dec is not none) or initial_oids or initial_page %}
+      {% elif initial_classifier or initial_classifier_version or initial_class_name or initial_probability or initial_n_det_min is not none or initial_n_det_max is not none or initial_firstmjd_min is not none or initial_firstmjd_max is not none or initial_lastmjd_min is not none or initial_lastmjd_max is not none or (initial_ra is not none and initial_dec is not none) or initial_oids or initial_page %}
         <div
           id="results-slot"
           hx-get="{{ API_URL }}/htmx/list_objects?survey={{ initial_survey }}{{ filter_qs|trim }}"
