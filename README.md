@@ -122,10 +122,19 @@ npm run test:js:watch
 ```
 
 The JS tests load each IIFE script into a jsdom `window` and assert on the
-globals it exposes (see `tests-js/`). Currently covers the pure numerics:
-`cosmology.js` (distance modulus), `coords.js` (RA/Dec + date parsing),
-`dust.js` (galactic latitude). Both suites run in CI via
-`.github/workflows/tests.yml`.
+globals it exposes (see `tests-js/`). Coverage:
+
+- `cosmology.js` — Planck-18 distance modulus
+- `coords.js` — RA/Dec + date→MJD parsing
+- `dust.js` — galactic latitude
+- `lightcurve.js` — `projectPoint` (the Flux/Mag × Diff/Sci × App/Abs ×
+  Obs/Der × offset projection), `foldDataset`, per-survey `mjdToUtcString`
+  (incl. the LSST TAI offset), marker/label helpers — reached via the
+  `window.__lcTest` hook the script exposes for tests
+- `selection.js` — cross-panel `setSelectedIdentifier` (state, survey-routed
+  stamps dispatch, URL mirroring)
+
+Both suites run in CI via `.github/workflows/tests.yml`.
 
 ## Layout
 

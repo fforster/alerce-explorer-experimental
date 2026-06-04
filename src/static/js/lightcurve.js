@@ -2743,4 +2743,11 @@
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));
   document.addEventListener("htmx:afterSwap", (evt) => initAll(evt.detail.target));
+
+  // Test-only surface: the pure projection helpers that carry the toggle
+  // math (Flux/Mag, Diff/Sci, App/Abs, Obs/Der, per-band offset, fold) and
+  // the per-survey marker / MJD→UTC conversions. Exposed so the Vitest suite
+  // (tests-js/lightcurve.test.js) can exercise them without standing up a
+  // Chart.js canvas. Not used by any runtime code path.
+  window.__lcTest = { projectPoint, foldDataset, mjdToUtcString, pointStyleFor, surveyLabel, withAlpha };
 })();

@@ -1,0 +1,144 @@
+/* Unit tests for the pure projection helpers in src/static/js/lightcurve.js.
+ *
+ * projectPoint is the single function every light-curve toggle funnels
+ * through (Flux/Mag x Diff/Sci x App/Abs x Obs/Der x per-band offset), so it
+ * is the highest-value client-side logic to pin down. The helpers are reached
+ * via the window.__lcTest hook the script exposes for tests; loading the full
+ * module under jsdom is fine because Chart.js is only referenced inside
+ * functions, never at load time.
+ */
+import { beforeAll, describe, expect, test } from "vitest";
+import { loadScript } from "./helpers/load.js";
+
+let T;
+// A representative detection: 1000 nJy diff flux, brighter 1200 nJy science
+// flux, with symmetric flux errors.
+const P = {
+  flux: 1000, e_flux: 50,
+  sci_flux: 1200, e_sci_flux: 60,
+  mjd: 59000, identifier: "cand-1", has_stamp: true,
+};
+
+beforeAll(() => {
+  loadScript("src/static/js/lightcurve.js");
+  T = window.__lcTest;
+});
+
+describe("projectPoint — Flux/Mag axis", () => {
+  test("flux mode passes nJy through with symmetric error bars", () => {
+    const r = T.projectPoint(P, "flux", "diff", null, 0, 0);
+    expect(r.y).toBeCloseTo(1000, 6);
+    expect(r.yLo).toBeCloseTo(950, 6);
+    expect(r.yHi).toBeCloseTo(1050, 6);
+    // Identity metadata rides along for cross-panel selection.
+    expect(r.identifier).toBe("cand-1");
+    expect(r.has_stamp).toBe(true);
+    expect(r.mjd).toBe(59000);
+  });
+
+  test("mag mode uses AB ZP 31.4 (1000 nJy → 23.9 mag)", () => {
+    const r = T.projectPoint(P, "mag", "diff", null, 0, 0);
+    expect(r.y).toBeCloseTo(23.9, 6);
+  });
+
+  test("mag error bars are asymmetric (faint side larger)", () => {
+    const r = T.projectPoint(P, "mag", "diff", null, 0, 0);
+    expect(r.yLo).toBeCloseTo(23.847027, 5); // bright side (flux+e)
+    expect(r.yHi).toBeCloseTo(23.955691, 5); // faint side (flux−e)
+    expect(r.yHi - r.y).toBeGreaterThan(r.y - r.yLo);
+  });
+
+  test("faint side goes to +Infinity when flux − e ≤ 0", () => {
+    const r = T.projectPoint({ flux: 50, e_flux: 80, mjd: 1 }, "mag", "diff", null, 0, 0);
+    expect(r.yHi).toBe(Infinity);
+    expect(Number.isFinite(r.yLo)).toBe(true);
+  });
+});
+
+describe("projectPoint — Diff/Sci source", () => {
+  test("sci mode reads sci_flux (1200 nJy → 23.702 mag)", () => {
+    const r = T.projectPoint(P, "mag", "sci", null, 0, 0);
+    expect(r.y).toBeCloseTo(23.702047, 5);
+  });
+});
+
+describe("projectPoint — extinction (Obs/Der)", () => {
+  test("mag: extinction is an additive shift (m − A)", () => {
+    const r = T.projectPoint(P, "mag", "diff", null, 0.5, 0);
+    expect(r.y).toBeCloseTo(23.4, 6); // 23.9 − 0.5
+  });
+
+  test("flux: extinction is multiplicative 10^(0.4·A), errors scale too", () => {
+    const r = T.projectPoint(P, "flux", "diff", null, 0.5, 0);
+    expect(r.y).toBeCloseTo(1584.8932, 3); // 1000 · 10^0.2
+    expect(r.e).toBeCloseTo(79.2447, 3); // SNR preserved
+  });
+});
+
+describe("projectPoint — distance modulus (App/Abs)", () => {
+  test("mag: μ is subtracted (M = m − μ)", () => {
+    const r = T.projectPoint(P, "mag", "diff", 35, 0, 0);
+    expect(r.y).toBeCloseTo(-11.1, 6); // 23.9 − 35
+  });
+});
+
+describe("projectPoint — per-band offset", () => {
+  test("mag: offset is added (m + Δ)", () => {
+    const r = T.projectPoint(P, "mag", "diff", null, 0, 1);
+    expect(r.y).toBeCloseTo(24.9, 6);
+  });
+});
+
+describe("projectPoint — null guards", () => {
+  test("non-positive flux in mag mode → null (log undefined)", () => {
+    expect(T.projectPoint({ flux: -5, mjd: 1 }, "mag", "diff", null, 0, 0)).toBeNull();
+  });
+  test("missing flux → null", () => {
+    expect(T.projectPoint({ flux: null, mjd: 1 }, "flux", "diff", null, 0, 0)).toBeNull();
+  });
+});
+
+describe("mjdToUtcString — per-survey time scale", () => {
+  test("ZTF MJD is treated as UTC", () => {
+    expect(T.mjdToUtcString(59000, "ztf")).toBe("2020-05-31 00:00:00 UTC");
+  });
+  test("LSST MJD is TAI → 37 s earlier in UTC", () => {
+    expect(T.mjdToUtcString(59000, "lsst")).toBe("2020-05-30 23:59:23 UTC");
+  });
+  test("non-finite MJD → empty string", () => {
+    expect(T.mjdToUtcString(Infinity, "ztf")).toBe("");
+    expect(T.mjdToUtcString(NaN, "lsst")).toBe("");
+  });
+});
+
+describe("foldDataset", () => {
+  test("emits each point twice, at phase and phase+1", () => {
+    const out = T.foldDataset([{ x: 59000, y: 1 }], 10);
+    expect(out).toHaveLength(2);
+    expect(out[0].x).toBeCloseTo(0, 9);
+    expect(out[1].x).toBeCloseTo(1, 9);
+    expect(out[0].y).toBe(1);
+  });
+  test("non-positive period is a no-op", () => {
+    const pts = [{ x: 1, y: 2 }];
+    expect(T.foldDataset(pts, 0)).toBe(pts);
+    expect(T.foldDataset(pts, -5)).toBe(pts);
+  });
+});
+
+describe("marker / label helpers", () => {
+  test("pointStyleFor: LSST=circle, ZTF=rect, unknown→circle", () => {
+    expect(T.pointStyleFor("lsst")).toBe("circle");
+    expect(T.pointStyleFor("ztf")).toBe("rect");
+    expect(T.pointStyleFor("kmtnet")).toBe("circle");
+  });
+  test("surveyLabel maps known surveys, passes through empty", () => {
+    expect(T.surveyLabel("lsst")).toBe("LSST");
+    expect(T.surveyLabel("ztf")).toBe("ZTF");
+    expect(T.surveyLabel("")).toBe("");
+  });
+  test("withAlpha appends an alpha byte to #RRGGBB, leaves other colors", () => {
+    expect(T.withAlpha("#aabbcc", 0.1)).toBe("#aabbcc1a");
+    expect(T.withAlpha("rgb(1,2,3)", 0.5)).toBe("rgb(1,2,3)");
+  });
+});
