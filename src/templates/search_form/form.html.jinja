@@ -1,5 +1,19 @@
 {% from "input.html.jinja" import input as customInput %}
 {#
+  Inline hover-help for the filter labels. Renders a small ⓘ icon; the
+  explanation appears on hover (or keyboard focus) in a self-contained
+  tooltip styled by the `.filter-tip` block below — so it needs no Tailwind
+  rebuild, matching the other inline <style> blocks in this file. The body is
+  position:fixed and placed by the script at the foot of this fragment, which
+  clamps it inside the viewport so the overflow-y-auto sidebar never clips it.
+#}
+{% macro tip(text) %}
+<span class="filter-tip" tabindex="0" role="note" aria-label="{{ text }}" onclick="event.preventDefault(); event.stopPropagation();">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+  <span class="filter-tip-body">{{ text }}</span>
+</span>
+{% endmacro %}
+{#
   Search filter form. Sized down (~one Tailwind step) from the previous
   pass: section title is `tw-text-sm`, labels and controls land on
   `tw-text-xs`, and the customInput macro is invoked with
@@ -12,10 +26,59 @@
   hx-ext="response-targets"
   class="tw-p-4 tw-flex tw-flex-col tw-gap-3"
 >
+  <style>
+    /*
+      Filter-label hover help. Self-contained (no Tailwind utilities) so it
+      renders correctly without a CSS rebuild — same approach as the
+      search-button and mobile-sticky <style> blocks further down. Colors
+      mirror the Tailwind theme tokens (bg/border/text/accent).
+    */
+    .filter-tip { position: relative; display: inline-flex; align-items: center; color: #6e7681; cursor: help; outline: none; }
+    .filter-tip:hover, .filter-tip:focus-visible { color: #58a6ff; }
+    /*
+      position: fixed takes the body out of the overflow-y-auto sidebar's
+      clip box (a higher z-index can't escape an overflow clip), so it can
+      render over the results pane. The actual top/left are set per-hover by
+      the placement script below, which also clamps the body inside the
+      viewport on every edge — so no tooltip hides behind the panel border.
+    */
+    .filter-tip .filter-tip-body {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 1000;
+      width: 230px;
+      padding: 8px 10px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      background: #0d1117;
+      color: #c9d1d9;
+      font-size: 11px;
+      font-weight: 400;
+      line-height: 1.45;
+      letter-spacing: normal;
+      text-transform: none;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity .12s ease;
+      pointer-events: none;
+      white-space: normal;
+    }
+    .filter-tip:hover .filter-tip-body,
+    .filter-tip:focus-visible .filter-tip-body,
+    .filter-tip:focus-within .filter-tip-body {
+      opacity: 1; visibility: visible;
+    }
+  </style>
+
   <div class="tw-text-sm tw-font-medium">Search Filters</div>
 
   <div>
-    <p class="tw-text-xs tw-text-text-secondary tw-mb-1">Survey</p>
+    <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
+      <p class="tw-text-xs tw-text-text-secondary">Survey</p>
+      {{ tip("Choose the data source. LSST (Vera C. Rubin Observatory) and ZTF (Zwicky Transient Facility) use different fields, photometric bands, and classifiers. Switching reloads the form with that survey's options.") }}
+    </div>
     <div id="survey-toggle" class="tw-flex tw-gap-2">
       <button
         type="button"
@@ -39,12 +102,18 @@
   </div>
 
   <div>
-    <label class="tw-text-xs tw-text-text-secondary tw-block tw-mb-1" for="objectIds">Object ID</label>
+    <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
+      <label class="tw-text-xs tw-text-text-secondary" for="objectIds">Object ID</label>
+      {{ tip("Look up specific objects by their identifier (OID), e.g. ZTF18aabttph or an LSST integer ID. Enter several at once separated by commas or spaces. When set, this targets exactly those objects.") }}
+    </div>
     {{ customInput(id="objectIds", type="text", placeholder="comma-separated OIDs", value=selected_oids or "", text_size="tw-text-xs") }}
   </div>
 
   <div>
-    <label class="tw-text-xs tw-text-text-secondary tw-block tw-mb-1" for="classifier">Classifier</label>
+    <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
+      <label class="tw-text-xs tw-text-text-secondary" for="classifier">Classifier</label>
+      {{ tip("The machine-learning model whose predictions you want to filter by — e.g. the light-curve classifier (uses the full photometric history) or the stamp classifier (uses the first-detection image). Picking one populates its Class and Version lists below.") }}
+    </div>
     <select
       id="classifier"
       class="tw-w-full tw-bg-bg-tertiary tw-border tw-border-border tw-rounded tw-py-1 tw-px-2 tw-text-xs"
@@ -86,7 +155,10 @@
   #}
   <div class="tw-grid tw-grid-cols-2 tw-gap-2">
     <div>
-      <label class="tw-text-xs tw-text-text-secondary tw-block tw-mb-1" for="class_name">Class</label>
+      <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
+        <label class="tw-text-xs tw-text-text-secondary" for="class_name">Class</label>
+        {{ tip("The predicted class to filter on — e.g. SNIa, AGN, RRL. The list of available classes depends on the classifier you selected.") }}
+      </div>
       <select
         id="class_name"
         class="tw-w-full tw-bg-bg-tertiary tw-border tw-border-border tw-rounded tw-py-1 tw-px-2 tw-text-xs"
@@ -109,7 +181,10 @@
       </select>
     </div>
     <div>
-      <label class="tw-text-xs tw-text-text-secondary tw-block tw-mb-1" for="classifier_version">Version</label>
+      <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
+        <label class="tw-text-xs tw-text-text-secondary" for="classifier_version">Version</label>
+        {{ tip("Which trained version of the classifier to use. 'Latest' resolves to the newest version on submit; 'Any' ignores the version (matches classifications from every version); or pin a specific version to reproduce an older run.") }}
+      </div>
       {#
         Three modes:
           - "latest" (default): helpers.js resolves to the classifier's
@@ -172,12 +247,18 @@
   </script>
 
   <div>
-    <label class="tw-text-xs tw-text-text-secondary tw-block tw-mb-1" for="min_probability">Min probability</label>
+    <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
+      <label class="tw-text-xs tw-text-text-secondary" for="min_probability">Min probability</label>
+      {{ tip("Keep only objects whose probability for the selected class (from the chosen classifier) is at least this value. Range 0–1; higher means a more confident, more selective cut.") }}
+    </div>
     {{ customInput(id="min_probability", type="number", placeholder="0–1", value=selected_probability if (selected_probability is not none and selected_probability > 0) else "", text_size="tw-text-xs") }}
   </div>
 
   <div>
-    <p class="tw-text-xs tw-text-text-secondary tw-mb-1">Number of detections</p>
+    <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
+      <p class="tw-text-xs tw-text-text-secondary">Number of detections</p>
+      {{ tip("Filter by how many times the object has been detected (alerts above threshold). Set a minimum, a maximum, or both to bound the count — useful to exclude one-off detections or pick well-sampled light curves.") }}
+    </div>
     <div class="tw-flex tw-gap-2">
       {{ customInput(id="min_detections", type="number", placeholder="Min", width="tw-w-1/2", value=selected_n_det_min if selected_n_det_min is not none else "", text_size="tw-text-xs") }}
       {{ customInput(id="max_detections", type="number", placeholder="Max", width="tw-w-1/2", value=selected_n_det_max if selected_n_det_max is not none else "", text_size="tw-text-xs") }}
@@ -209,6 +290,7 @@
     <summary class="tw-text-xs tw-text-text-secondary tw-mb-1 tw-cursor-pointer tw-flex tw-items-center tw-gap-1 marker:tw-hidden tw-list-none">
       <span class="tw-text-text-muted tw-transition-transform group-open:tw-rotate-90">▸</span>
       Discovery date (UTC)
+      {{ tip("Constrain the date of the object's first detection (firstmjd). Enter a From/To range as MJD, JD (> 2 400 000), or a UTC calendar date — or use the calendar button. Useful to select newly discovered or historical transients.") }}
     </summary>
     <div class="tw-grid tw-grid-cols-2 tw-gap-2">
       <div class="tw-flex tw-items-center tw-gap-1">
@@ -266,6 +348,7 @@
     <summary class="tw-text-xs tw-text-text-secondary tw-mb-1 tw-cursor-pointer tw-flex tw-items-center tw-gap-1 marker:tw-hidden tw-list-none">
       <span class="tw-text-text-muted tw-transition-transform group-open:tw-rotate-90">▸</span>
       Last detection date (UTC)
+      {{ tip("Constrain the date of the object's most recent detection (lastmjd). Same From/To formats as Discovery date (MJD, JD, or UTC date). Useful to find currently-active objects or filter out stale ones.") }}
     </summary>
     <div class="tw-grid tw-grid-cols-2 tw-gap-2">
       <div class="tw-flex tw-items-center tw-gap-1">
@@ -324,6 +407,7 @@
     <summary class="tw-text-xs tw-text-text-secondary tw-mb-1 tw-cursor-pointer tw-flex tw-items-center tw-gap-1 marker:tw-hidden tw-list-none">
       <span class="tw-text-text-muted tw-transition-transform group-open:tw-rotate-90">▸</span>
       Conesearch
+      {{ tip("Find objects within a circular region of sky. Enter RA/Dec (decimal degrees or sexagesimal), or type a name and press Resolve to look it up via CDS Sesame. Set the search radius in arcseconds (default 30).") }}
     </summary>
     <div class="tw-flex tw-gap-1">
       <input
@@ -442,4 +526,41 @@
     Classifier list is empty — upstream API may be unreachable.
   </div>
   {% endif %}
+
+  <script>
+    // Positions each filter-help tooltip on hover/focus. The body is
+    // position:fixed (so the overflow-y-auto sidebar can't clip it) which
+    // means it carries no CSS anchor of its own — we set its top/left from
+    // the icon's live rect and clamp it inside the viewport on every edge,
+    // flipping above the icon when there isn't room below. Runs on each htmx
+    // swap of this fragment (same pattern as refillClassifierVersions); the
+    // previous form's tip nodes are discarded with it, so no listener leak.
+    (function () {
+      var form = document.getElementById("form-search");
+      if (!form) return;
+      var MARGIN = 6, EDGE = 8;
+      form.querySelectorAll(".filter-tip").forEach(function (tip) {
+        var body = tip.querySelector(".filter-tip-body");
+        if (!body) return;
+        function place() {
+          var r = tip.getBoundingClientRect();
+          // offsetWidth/Height are valid while visibility:hidden (the body
+          // still occupies layout), so we can measure before it's shown.
+          var bw = body.offsetWidth, bh = body.offsetHeight;
+          var vw = document.documentElement.clientWidth;
+          var vh = document.documentElement.clientHeight;
+          var left = r.left;
+          if (left + bw > vw - EDGE) left = vw - EDGE - bw;
+          if (left < EDGE) left = EDGE;
+          var top = r.bottom + MARGIN;
+          if (top + bh > vh - EDGE) top = r.top - MARGIN - bh; // flip above
+          if (top < EDGE) top = EDGE;
+          body.style.left = left + "px";
+          body.style.top = top + "px";
+        }
+        tip.addEventListener("mouseenter", place);
+        tip.addEventListener("focusin", place);
+      });
+    })();
+  </script>
 </div>
