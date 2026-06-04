@@ -84,15 +84,18 @@
     return !!(canvas && canvas.offsetParent !== null);
   }
 
-  // A pooled GP band ("g") is visible if any LC det dataset with that label is
-  // visible (the band may be fed by LSST g and/or ZTF g). Mirrors the residuals
-  // panel's lcDetVisible, generalised to the cross-survey-pooled band.
+  // The colors derive from the GP fit, so a band is gated on its GP-curve
+  // visibility — NOT the detection visibility. Hiding the raw detections in the
+  // LC legend leaves the GP curves (and hence the colors) on screen; hiding a
+  // band's GP curve ("GP g") drops that band here too. A band is visible if any
+  // GP mean dataset (`$gp`, not an envelope `$gpHelper`) for it is shown.
   function lcBandVisible(lcChart, bandName) {
     if (!lcChart || !lcChart.data) return true;
     const ds = lcChart.data.datasets;
     let found = false, anyVisible = false;
     for (let i = 0; i < ds.length; i++) {
-      if (ds[i].$kind === "det" && ds[i].label === bandName) {
+      const d = ds[i];
+      if (d.$gp && !d.$gpHelper && d.$band === bandName) {
         found = true;
         if (lcChart.isDatasetVisible(i)) anyVisible = true;
       }
@@ -220,22 +223,114 @@
     if (el) el.textContent = text || "";
   }
 
-  function setRange(canvas, model) {
+  // Show/hide the time/phase colorbar and label its endpoints with the
+  // currently selected window (the slider sub-range), so the colorbar's
+  // min/max track what's plotted. `win` defaults to the full extent.
+  function setRange(canvas, model, win) {
     const p = panelFor(canvas);
     if (!p) return;
     const range = p.querySelector("[data-ce-range]");
     const wrap = p.querySelector("[data-ce-colorbar]");
+    const bar = p.querySelector("[data-ce-bar]");
     const show = model && isFinite(model.xmin) && isFinite(model.xmax);
+    const fMin = win ? win.fMin : 0;
+    const fMax = win ? win.fMax : 1;
     if (range) {
       if (show) {
+        const lo = win ? win.selMin : model.xmin;
+        const hi = win ? win.selMax : model.xmax;
         const unit = model.folded ? "φ" : "MJD";
         const fmt = (v) => model.folded ? v.toFixed(2) : v.toFixed(1);
-        range.innerHTML = `<span>${unit} ${fmt(model.xmin)}</span><span>${unit} ${fmt(model.xmax)}</span>`;
+        range.innerHTML = `<span>${unit} ${fmt(lo)}</span><span>${unit} ${fmt(hi)}</span>`;
+        // Sit the endpoint labels under the colored band (which spans the
+        // window's horizontal extent), not the full bar.
+        range.style.marginLeft = `${(fMin * 100).toFixed(2)}%`;
+        range.style.width = `${((fMax - fMin) * 100).toFixed(2)}%`;
       } else {
         range.innerHTML = "";
       }
     }
+    // Repaint the colorbar: full viridis drawn across the window's width, dimmed
+    // outside it — so the colormap range stays complete and the colored part
+    // narrows/moves with the limits.
+    if (bar && show) bar.style.background = windowGradient(fMin, fMax);
     if (wrap) wrap.classList.toggle("tw-hidden", !show);
+  }
+
+  // The selected time window from the dual-range slider, as fractions of the
+  // model's full extent and the corresponding absolute (time/phase) bounds.
+  // Defaults to the full extent when the sliders are absent or untouched.
+  function timeWindow(canvas, model) {
+    const p = panelFor(canvas);
+    const tmin = p && p.querySelector("[data-ce-tmin]");
+    const tmax = p && p.querySelector("[data-ce-tmax]");
+    let fMin = tmin ? (+tmin.value) / 1000 : 0;
+    let fMax = tmax ? (+tmax.value) / 1000 : 1;
+    if (fMin > fMax) { const t = fMin; fMin = fMax; fMax = t; }
+    const ext = model.xmax - model.xmin;
+    return {
+      fMin, fMax,
+      selMin: model.xmin + fMin * ext,
+      selMax: model.xmin + fMax * ext,
+    };
+  }
+
+  // Color-color points + per-point 1σ ellipses for the visible time window.
+  // Points outside [selMin, selMax] are dropped; viridis spans the WINDOW so the
+  // selection always uses the full color scale. The colorbar mirrors this: its
+  // colored band is the full viridis drawn over the window's width (see
+  // windowGradient), so points and bar stay matched as the handles move.
+  function computeCC(model, xPair, yPair, win) {
+    const span = win.selMax > win.selMin ? win.selMax - win.selMin : 1;
+    const pts = [], colors = [], ellipses = [];
+    for (let k = 0; k < model.n; k++) {
+      const cx = xPair.color[k], cy = yPair.color[k];
+      if (cx == null || cy == null) continue;
+      const x = model.x[k];
+      if (x < win.selMin || x > win.selMax) continue;
+      const col = viridisColor((x - win.selMin) / span);
+      pts.push({ x: cx, y: cy, mjd: x });
+      colors.push(col);
+      const cov = model.colorCov(xPair, yPair, k);
+      const geo = ellipseGeometry(xPair.sigma[k] * xPair.sigma[k],
+        yPair.sigma[k] * yPair.sigma[k], cov == null ? 0 : cov);
+      ellipses.push({ cx, cy, a1: geo.a1, a2: geo.a2, theta: geo.theta, color: col });
+    }
+    return { pts, colors, ellipses };
+  }
+
+  // Colorbar background: the FULL viridis colormap (purple→yellow) drawn only
+  // across the window's horizontal extent [fMin, fMax]; the rest of the bar is
+  // dimmed grey to show the full time extent. So the colormap range is always
+  // complete, but the colored part narrows/moves with the window, and a point
+  // at window-fraction q sits under the bar colour viridis(q).
+  function windowGradient(fMin, fMax) {
+    const N = 8;
+    const grey = "#30363d";
+    const lo = (fMin * 100).toFixed(2), hi = (fMax * 100).toFixed(2);
+    const stops = [`${grey} 0%`, `${grey} ${lo}%`];
+    for (let i = 0; i <= N; i++) {
+      const pos = (fMin + (fMax - fMin) * (i / N)) * 100;
+      stops.push(`${viridisColor(i / N)} ${pos.toFixed(2)}%`);
+    }
+    stops.push(`${grey} ${hi}%`, `${grey} 100%`);
+    return `linear-gradient(to right, ${stops.join(", ")})`;
+  }
+
+  // Light re-window of an existing color-color chart on slider drag — mutates
+  // the dataset + ellipses in place (no destroy/recreate) so dragging is smooth.
+  function applyTimeWindow(canvas) {
+    const chart = charts.get(canvas);
+    if (!chart || !chart.$ceModel || !chart.$ceXPair) return; // cc charts only
+    const model = chart.$ceModel;
+    const win = timeWindow(canvas, model);
+    const { pts, colors, ellipses } = computeCC(model, chart.$ceXPair, chart.$ceYPair, win);
+    const ds = chart.data.datasets[0];
+    ds.data = pts; ds.backgroundColor = colors; ds.borderColor = colors;
+    chart.$ceEllipses = ellipses;
+    chart.update("none");
+    setStatus(canvas, `${pts.length} pts · ${chart.$ceXPair.label} vs ${chart.$ceYPair.label} · 1σ ellipses`);
+    setRange(canvas, model, win);
   }
 
   // Populate / sync the two color-color pair <select>s from the present pairs,
@@ -314,7 +409,7 @@
           y: {
             type: "linear",
             title: { display: true, text: "Color [mag]", color: "#8b949e" },
-            grid: { color: "rgba(139,148,158,0.12)" }, border: { color: "#8b949e" },
+            grid: { display: false }, border: { color: "#8b949e" },
             ticks: { color: "#8b949e" },
           },
         },
@@ -368,14 +463,17 @@
 
   // Custom plugin: stroke a 1σ error ellipse around each color-color point.
   // The ellipse is sampled in DATA space and mapped to pixels, so anisotropic
-  // axis scaling and the tilt (shared-band correlation) render correctly.
-  function ellipsePlugin(ellipses) {
+  // axis scaling and the tilt (shared-band correlation) render correctly. Reads
+  // the live `chart.$ceEllipses` so a slider re-window updates in place.
+  function ellipsePlugin() {
     return {
       id: "ceEllipses",
-      afterDatasetsDraw(chart) {
+      // Draw BEFORE the dataset so the ellipses sit behind the points (the
+      // points must stay readable on top of their uncertainty regions).
+      beforeDatasetsDraw(chart) {
         const { ctx, scales: { x: xs, y: ys } } = chart;
         ctx.save();
-        for (const e of ellipses) {
+        for (const e of (chart.$ceEllipses || [])) {
           if (!isFinite(e.cx) || !isFinite(e.cy)) continue;
           ctx.beginPath();
           for (let t = 0; t <= ELLIPSE_SAMPLES; t++) {
@@ -420,20 +518,12 @@
     const xPair = model.pairs.find((p) => p.label === picks.x);
     const yPair = model.pairs.find((p) => p.label === picks.y);
     if (!xPair || !yPair) { renderEmpty(canvas, "Pick two colors."); return; }
-    const span = model.xmax > model.xmin ? model.xmax - model.xmin : 1;
-    const pts = [], colors = [], ellipses = [];
-    for (let k = 0; k < model.n; k++) {
-      const cx = xPair.color[k], cy = yPair.color[k];
-      if (cx == null || cy == null) continue;
-      const col = viridisColor((model.x[k] - model.xmin) / span);
-      pts.push({ x: cx, y: cy, mjd: model.x[k] });
-      colors.push(col);
-      const cov = model.colorCov(xPair, yPair, k);
-      const geo = ellipseGeometry(xPair.sigma[k] * xPair.sigma[k], yPair.sigma[k] * yPair.sigma[k],
-        cov == null ? 0 : cov);
-      ellipses.push({ cx, cy, a1: geo.a1, a2: geo.a2, theta: geo.theta, color: col });
+    const win = timeWindow(canvas, model);
+    const { pts, colors, ellipses } = computeCC(model, xPair, yPair, win);
+    if (!pts.length) {
+      renderEmpty(canvas, "No valid color-color points in this time window.");
+      return;
     }
-    if (!pts.length) { renderEmpty(canvas, "No valid color-color points (all flux ≤ 0 / low SNR)."); return; }
 
     const chart = new Chart(canvas.getContext("2d"), {
       type: "scatter",
@@ -450,13 +540,13 @@
           x: {
             type: "linear",
             title: { display: true, text: `${xPair.label} [mag]`, color: "#8b949e" },
-            grid: { color: "rgba(139,148,158,0.12)" }, border: { color: "#8b949e" },
+            grid: { display: false }, border: { color: "#8b949e" },
             ticks: { color: "#8b949e" },
           },
           y: {
             type: "linear",
             title: { display: true, text: `${yPair.label} [mag]`, color: "#8b949e" },
-            grid: { color: "rgba(139,148,158,0.12)" }, border: { color: "#8b949e" },
+            grid: { display: false }, border: { color: "#8b949e" },
             ticks: { color: "#8b949e" },
           },
         },
@@ -477,12 +567,18 @@
           },
         },
       },
-      plugins: [ellipsePlugin(ellipses)],
+      plugins: [ellipsePlugin()],
     });
     canvas.addEventListener("dblclick", () => chart.resetZoom && chart.resetZoom());
+    // Stash the model + active pairs + ellipses so the time-window slider can
+    // re-window in place without a full rebuild.
+    chart.$ceModel = model;
+    chart.$ceXPair = xPair;
+    chart.$ceYPair = yPair;
+    chart.$ceEllipses = ellipses;
     charts.set(canvas, chart);
     setStatus(canvas, `${pts.length} pts · ${xPair.label} vs ${yPair.label} · 1σ ellipses`);
-    setRange(canvas, model);
+    setRange(canvas, model, win);
   }
 
   function renderEmpty(canvas, text) {
@@ -586,6 +682,18 @@
       });
       p.querySelectorAll("[data-ce-xpair], [data-ce-ypair]").forEach((sel) =>
         sel.addEventListener("change", () => rebuildFor(canvas)));
+      // Dual-handle time-window slider (color-color view). Clamp so the min
+      // handle can't pass the max handle, then re-window the scatter in place.
+      const tmin = p.querySelector("[data-ce-tmin]");
+      const tmax = p.querySelector("[data-ce-tmax]");
+      if (tmin) tmin.addEventListener("input", () => {
+        if (tmax && +tmin.value > +tmax.value) tmin.value = tmax.value;
+        applyTimeWindow(canvas);
+      });
+      if (tmax) tmax.addEventListener("input", () => {
+        if (tmin && +tmax.value < +tmin.value) tmax.value = tmin.value;
+        applyTimeWindow(canvas);
+      });
     }
     // Reflect the current GP state on mount (e.g. after a detail-view swap with
     // GP already armed on the new chart — rare, but harmless).

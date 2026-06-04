@@ -30,6 +30,7 @@
         <li>Dereddening (Der) shifts each color by −(R<sub>blue</sub>−R<sub>red</sub>)·E(B−V); the distance modulus cancels in a color.</li>
         <li>Points where a band's flux isn't significantly positive (SNR&lt;2) are dropped — a color needs a real magnitude.</li>
         <li>Bands hidden in the Light-curve legend drop out here too; fold the LC (Sci) to get colors over phase.</li>
+        <li>Color–color view: drag the two handles on the time colorbar to restrict the epochs shown — useful to cut a noisy early/late phase. The colorbar min/max and the point colors follow the selected window.</li>
       </ul>
       <div class="tw-font-semibold tw-mb-1">Navigation</div>
       <ul class="tw-space-y-0.5 tw-list-disc tw-list-inside tw-text-text-secondary">
@@ -71,15 +72,52 @@
     ></canvas>
   </div>
   <div data-ce-colorbar class="tw-mt-2 tw-hidden">
-    {# Time/phase colorbar — only meaningful in color-color view (points are
-       colored by time). #}
+    {# Dual-handle window slider (neutral track) sits ABOVE the colorbar. The
+       colorbar (data-ce-bar) always shows the FULL viridis colormap, but drawn
+       only across the window's width (the rest dimmed grey); points are colored
+       over the same window so they use the full colour scale. As the handles
+       move, the colored band narrows/moves and the points recolor to match. The
+       endpoint labels sit under the colored band. #}
+    <div class="ce-slider tw-relative" style="height: 14px;">
+      <div
+        class="tw-absolute tw-left-0 tw-right-0 tw-rounded"
+        style="top: 50%; transform: translateY(-50%); height: 4px; background: #30363d;"
+      ></div>
+      <input data-ce-tmin class="ce-range" type="range" min="0" max="1000" value="0"
+             aria-label="Minimum time shown" />
+      <input data-ce-tmax class="ce-range" type="range" min="0" max="1000" value="1000"
+             aria-label="Maximum time shown" />
+    </div>
     <div
-      data-ce-range
-      class="tw-flex tw-items-center tw-justify-between tw-text-[10px] tw-text-text-muted tw-mb-1"
+      data-ce-bar
+      class="tw-mt-1 tw-rounded"
+      style="height: 8px; background: linear-gradient(to right, #440154, #3b528b, #21908c, #5dc863, #fde725);"
     ></div>
     <div
-      class="tw-h-2 tw-rounded"
-      style="background: linear-gradient(to right, #440154, #3b528b, #21908c, #5dc863, #fde725);"
+      data-ce-range
+      class="tw-flex tw-items-center tw-justify-between tw-text-[10px] tw-text-text-muted tw-mt-1"
     ></div>
   </div>
 </div>
+<style>
+  /* Two overlapping range inputs forming a dual-handle window slider over a
+     neutral track. Transparent input tracks; only the thumbs capture pointer
+     events so either handle stays grabbable even when they overlap. */
+  [data-color-panel] .ce-slider .ce-range {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%; margin: 0;
+    background: transparent; pointer-events: none;
+    -webkit-appearance: none; appearance: none;
+  }
+  [data-color-panel] .ce-slider .ce-range::-webkit-slider-runnable-track { background: transparent; height: 100%; }
+  [data-color-panel] .ce-slider .ce-range::-moz-range-track { background: transparent; height: 100%; }
+  [data-color-panel] .ce-slider .ce-range::-webkit-slider-thumb {
+    -webkit-appearance: none; pointer-events: auto; cursor: ew-resize;
+    height: 14px; width: 14px; margin-top: 0; border-radius: 9999px;
+    background: #f0f6fc; border: 2px solid #1f6feb; box-shadow: 0 0 2px rgba(0,0,0,.6);
+  }
+  [data-color-panel] .ce-slider .ce-range::-moz-range-thumb {
+    pointer-events: auto; cursor: ew-resize;
+    height: 14px; width: 14px; border-radius: 9999px;
+    background: #f0f6fc; border: 2px solid #1f6feb; box-shadow: 0 0 2px rgba(0,0,0,.6);
+  }
+</style>
