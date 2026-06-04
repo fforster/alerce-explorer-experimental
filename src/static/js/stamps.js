@@ -766,4 +766,13 @@
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));
   document.addEventListener("htmx:afterSwap", (evt) => initAll(evt.detail.target));
+
+  // Test-only surface: the pure FITS-pipeline + WCS math (no canvas, no
+  // network). parseFitsHeader / readFitsImageData take an ArrayBuffer; the
+  // rest take plain header objects. Exercised by tests-js/stamps.test.js
+  // against a hand-built synthetic FITS buffer.
+  window.__stampsTest = {
+    parseFitsHeader, readFitsImageData, effectiveCDMatrix, pixelToWorldTAN,
+    computeStampFootprint, computeNorthAngle, zscaleStretch, detectSurveyFromStampUrl,
+  };
 })();

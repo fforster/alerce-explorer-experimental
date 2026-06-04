@@ -144,6 +144,11 @@ globals it exposes (see `tests-js/`). Coverage:
   Pickering `_airmass`, `_angSep`, low-precision Sun/Moon ephemerides,
   `_moonPhase`) checked against textbook physics, via `window.__amTest`
 - `specz.js` — the VizieR `parseVOTable` parser, via `window.__speczTest`
+- `stamps.js` — the in-browser FITS pipeline + WCS math (`parseFitsHeader`,
+  `readFitsImageData` with BZERO/BSCALE, `effectiveCDMatrix` across the CD /
+  PC+CDELT / CROTA2 conventions, gnomonic `pixelToWorldTAN`,
+  `computeStampFootprint`, `computeNorthAngle`, `zscaleStretch`), exercised
+  against a hand-built synthetic FITS buffer, via `window.__stampsTest`
 
 Both suites run in CI via `.github/workflows/tests.yml`.
 
