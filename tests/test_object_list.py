@@ -182,6 +182,25 @@ def test_shape_response_empty_items_yields_info_message():
     assert out["has_next"] is False
 
 
+def test_shape_response_single_page_has_no_next():
+    """Regression: a non-empty last page (upstream `next: null`) must NOT
+    advertise a next page. The old `len(items) > 0` fallback ignored the
+    explicit null and showed a phantom Next button → clicking it loaded an
+    empty page 2."""
+    raw = {"items": [{"oid": "A"}, {"oid": "B"}], "next": None}
+    out = shape_response(raw, survey="lsst", page=1, page_size=20)
+    assert out["has_next"] is False
+    assert out["next"] is False
+
+
+def test_shape_response_full_page_array_assumes_next():
+    """Plain-array response carries no pagination metadata, so we fall back
+    to page fullness: exactly page_size items means there may be more."""
+    raw = [{"oid": str(i)} for i in range(3)]
+    assert shape_response(raw, survey="lsst", page=1, page_size=3)["has_next"] is True
+    assert shape_response(raw, survey="lsst", page=1, page_size=5)["has_next"] is False
+
+
 def test_shape_response_accepts_plain_array():
     raw = [{"oid": "X"}]
     out = shape_response(raw, survey="lsst", page=1)

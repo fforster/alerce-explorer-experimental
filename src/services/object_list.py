@@ -164,21 +164,34 @@ def build_search_params(
 
 
 def shape_response(
-    raw: Any, *, survey: str, page: int
+    raw: Any, *, survey: str, page: int, page_size: int = DEFAULT_PAGE_SIZE
 ) -> dict[str, Any]:
     """Convert the upstream response to the dict the template expects."""
+    # `has_next_signal` is the upstream's authoritative answer when present:
+    # the paginated dict always carries a `next` pointer (a page number on
+    # non-last pages, null on the last page) and often a `has_next` boolean.
+    # We must trust an explicit null here — it means "no next page". Falling
+    # back to an item-count heuristic in that case is the bug that made a
+    # single-page result still show a "Next" button (→ empty page 2). `None`
+    # below means "upstream gave no pagination metadata at all" (plain-array
+    # responses), the only case where we heuristically guess.
     if isinstance(raw, dict) and "items" in raw:
         items = raw.get("items") or []
         total = raw.get("total")
-        has_next_raw = raw.get("next")
+        if "has_next" in raw:
+            has_next_signal: bool | None = bool(raw.get("has_next"))
+        elif "next" in raw:
+            has_next_signal = bool(raw.get("next"))
+        else:
+            has_next_signal = None
     elif isinstance(raw, list):
         items = raw
         total = None
-        has_next_raw = None
+        has_next_signal = None
     else:
         items = []
         total = None
-        has_next_raw = None
+        has_next_signal = None
 
     if survey == "ztf":
         items = [_normalize_ztf_row(dict(r)) for r in items]
@@ -190,7 +203,10 @@ def shape_response(
     # the upstream's probability-DESC ordering.
     items = _dedupe_by_oid(items)
 
-    has_next = bool(has_next_raw) if has_next_raw is not None else len(items) > 0
+    # No upstream metadata → guess from page fullness. A partial page can't
+    # have a successor, so this never invents a phantom next page the way the
+    # old `len(items) > 0` test did.
+    has_next = has_next_signal if has_next_signal is not None else len(items) >= page_size
     has_prev = page > 1
     return {
         "items": items,
@@ -244,4 +260,4 @@ async def get_objects_list(
         page_size=page_size,
     )
     raw = await alerce_client.list_objects(survey, params)
-    return shape_response(raw, survey=survey, page=page)
+    return shape_response(raw, survey=survey, page=page, page_size=page_size)
