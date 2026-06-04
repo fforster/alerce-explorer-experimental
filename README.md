@@ -105,11 +105,27 @@ Then open http://localhost:8000.
 
 ## Test
 
+Python (service layer + route fragments; upstream ALeRCE calls monkeypatched):
+
 ```bash
 poetry run pytest
 # or without poetry
 PYTHONPATH=. pytest
 ```
+
+Client-side JS (pure helpers under `src/static/js/`, run with Vitest + jsdom):
+
+```bash
+npm install        # first time, pulls vitest + jsdom
+npm run test:js    # one-shot
+npm run test:js:watch
+```
+
+The JS tests load each IIFE script into a jsdom `window` and assert on the
+globals it exposes (see `tests-js/`). Currently covers the pure numerics:
+`cosmology.js` (distance modulus), `coords.js` (RA/Dec + date parsing),
+`dust.js` (galactic latitude). Both suites run in CI via
+`.github/workflows/tests.yml`.
 
 ## Layout
 
