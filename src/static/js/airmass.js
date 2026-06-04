@@ -542,4 +542,12 @@
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));
   document.addEventListener("htmx:afterSwap", (evt) => initAll(evt.detail.target));
+
+  // Test-only surface: the pure astronomy kit (Julian date, sidereal time,
+  // altitude, Pickering airmass, angular separation, low-precision Sun/Moon
+  // ephemerides, Moon phase). No DOM, no Chart.
+  window.__amTest = {
+    _jd, _gmst, _lst, _altitude, _airmass, _angSep,
+    _sunRaDec, _moonRaDec, _moonPhase, _twilightColor, OBSERVATORIES,
+  };
 })();

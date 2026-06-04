@@ -194,4 +194,7 @@
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));
   document.addEventListener("htmx:afterSwap", (evt) => initAll(evt.detail.target));
+
+  // Test-only surface: the pure data-shaping helpers for the radar (no Chart).
+  window.__radarTest = { findGroup, buildData, scaleForGroup, formatTick };
 })();

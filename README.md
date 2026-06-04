@@ -138,6 +138,12 @@ globals it exposes (see `tests-js/`). Coverage:
   test injects a sinusoid of known period and confirms it is recovered
 - `selection.js` — cross-panel `setSelectedIdentifier` (state, survey-routed
   stamps dispatch, URL mirroring)
+- `radar.js` — probability radar data shaping (`buildData`, `scaleForGroup`
+  auto-zoom, `formatTick`, `findGroup`), via `window.__radarTest`
+- `airmass.js` — the pure astronomy kit (`_jd`, `_lst`, `_altitude`,
+  Pickering `_airmass`, `_angSep`, low-precision Sun/Moon ephemerides,
+  `_moonPhase`) checked against textbook physics, via `window.__amTest`
+- `specz.js` — the VizieR `parseVOTable` parser, via `window.__speczTest`
 
 Both suites run in CI via `.github/workflows/tests.yml`.
 

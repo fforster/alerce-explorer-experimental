@@ -198,4 +198,7 @@
       SPEC_Z_CATALOGS.map((cfg) => loadCatalog(aladin, cfg, ra, dec, onLoad)),
     );
   };
+
+  // Test-only surface: the pure VOTable parser (DOMParser-based, no network).
+  window.__speczTest = { parseVOTable };
 })();
