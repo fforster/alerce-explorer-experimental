@@ -446,8 +446,8 @@
     const len = 14;
     ctx.save();
     ctx.translate(cx, cy);
-    ctx.strokeStyle = "#58a6ff";
-    ctx.fillStyle = "#58a6ff";
+    ctx.strokeStyle = "#1976d2";
+    ctx.fillStyle = "#1976d2";
     ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -len); ctx.stroke();
     ctx.beginPath();

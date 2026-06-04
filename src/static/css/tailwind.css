@@ -4,8 +4,8 @@
 
 @layer base {
   html, body {
-    background-color: #0d1117;
-    color: #e6edf3;
+    background-color: #121212;
+    color: #ededed;
     font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
     height: 100%;
   }
@@ -43,22 +43,22 @@
      cover Chromium/Safari. */
   [role="tooltip"] {
     scrollbar-width: thin;
-    scrollbar-color: #6e7681 #161b22;
+    scrollbar-color: #6e6e6e #1e1e1e;
   }
   [role="tooltip"]::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
   [role="tooltip"]::-webkit-scrollbar-track {
-    background: #161b22;
+    background: #1e1e1e;
     border-radius: 4px;
   }
   [role="tooltip"]::-webkit-scrollbar-thumb {
-    background-color: #6e7681;
+    background-color: #6e6e6e;
     border-radius: 4px;
-    border: 2px solid #161b22;
+    border: 2px solid #1e1e1e;
   }
   [role="tooltip"]::-webkit-scrollbar-thumb:hover {
-    background-color: #8b949e;
+    background-color: #a6a6a6;
   }
 }

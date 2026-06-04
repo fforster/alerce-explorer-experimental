@@ -306,7 +306,7 @@
   // at window-fraction q sits under the bar colour viridis(q).
   function windowGradient(fMin, fMax) {
     const N = 8;
-    const grey = "#30363d";
+    const grey = "#333333";
     const lo = (fMin * 100).toFixed(2), hi = (fMax * 100).toFixed(2);
     const stops = [`${grey} 0%`, `${grey} ${lo}%`];
     for (let i = 0; i <= N; i++) {
@@ -402,22 +402,22 @@
         scales: {
           x: {
             type: "linear",
-            title: { display: true, text: xTitle, color: "#8b949e" },
-            grid: { display: false }, border: { color: "#8b949e" },
-            ticks: { color: "#8b949e" },
+            title: { display: true, text: xTitle, color: "#a6a6a6" },
+            grid: { display: false }, border: { color: "#a6a6a6" },
+            ticks: { color: "#a6a6a6" },
           },
           y: {
             type: "linear",
-            title: { display: true, text: "Color [mag]", color: "#8b949e" },
-            grid: { display: false }, border: { color: "#8b949e" },
-            ticks: { color: "#8b949e" },
+            title: { display: true, text: "Color [mag]", color: "#a6a6a6" },
+            grid: { display: false }, border: { color: "#a6a6a6" },
+            ticks: { color: "#a6a6a6" },
           },
         },
         plugins: {
           legend: {
             display: true,
             labels: {
-              color: "#c9d1d9", boxWidth: 12, usePointStyle: true,
+              color: "#ededed", boxWidth: 12, usePointStyle: true,
               filter: (item, data) => !data.datasets[item.datasetIndex].$ceHelper,
             },
             // Toggle the pair's mean line + its ±1σ band together.
@@ -547,15 +547,15 @@
         scales: {
           x: {
             type: "linear",
-            title: { display: true, text: `${xPair.label} [mag]`, color: "#8b949e" },
-            grid: { display: false }, border: { color: "#8b949e" },
-            ticks: { color: "#8b949e" },
+            title: { display: true, text: `${xPair.label} [mag]`, color: "#a6a6a6" },
+            grid: { display: false }, border: { color: "#a6a6a6" },
+            ticks: { color: "#a6a6a6" },
           },
           y: {
             type: "linear",
-            title: { display: true, text: `${yPair.label} [mag]`, color: "#8b949e" },
-            grid: { display: false }, border: { color: "#8b949e" },
-            ticks: { color: "#8b949e" },
+            title: { display: true, text: `${yPair.label} [mag]`, color: "#a6a6a6" },
+            grid: { display: false }, border: { color: "#a6a6a6" },
+            ticks: { color: "#a6a6a6" },
           },
         },
         plugins: {

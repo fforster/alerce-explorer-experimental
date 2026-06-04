@@ -316,7 +316,7 @@
       afterDatasetsDraw(chart) {
         const { ctx, scales: { x, y } } = chart;
         const refs = [
-          [1.5, "#58a6ff44", "1.5"],
+          [1.5, "#1976d244", "1.5"],
           [2.0, "#d2992244", "2.0"],
           [3.0, "#f8514944", "3.0"],
         ];
@@ -344,8 +344,8 @@
       datasets.push({
         label: "Object",
         data: xHours.map((h, i) => ({ x: h, y: amObj[i] })),
-        borderColor: "#58a6ff",
-        backgroundColor: "#58a6ff",
+        borderColor: "#1976d2",
+        backgroundColor: "#1976d2",
         pointRadius: 1.5,
         showLine: true,
         tension: 0.3,
@@ -385,26 +385,26 @@
             min: 0, max: 24,
             ticks: {
               stepSize: 2,
-              color: "#6e7681",
+              color: "#6e6e6e",
               font: { size: 9 },
               callback: (v) => {
                 const idx = Math.round(v / 0.25);
                 return (labels[Math.min(idx, labels.length - 1)] || "").slice(0, 5);
               },
             },
-            grid: { color: "#21262d" },
-            title: { display: true, text: "UTC Time", color: "#6e7681", font: { size: 10 } },
+            grid: { color: "#2c2c2c" },
+            title: { display: true, text: "UTC Time", color: "#6e6e6e", font: { size: 10 } },
           },
           y: {
             reverse: true,
             min: 1, max: 4,
-            ticks: { color: "#6e7681", font: { size: 9 }, stepSize: 0.5 },
-            grid: { color: "#21262d" },
-            title: { display: true, text: "Airmass (low = better)", color: "#6e7681", font: { size: 10 } },
+            ticks: { color: "#6e6e6e", font: { size: 9 }, stepSize: 0.5 },
+            grid: { color: "#2c2c2c" },
+            title: { display: true, text: "Airmass (low = better)", color: "#6e6e6e", font: { size: 10 } },
           },
         },
         plugins: {
-          legend: { display: true, labels: { color: "#8b949e", font: { size: 10 }, boxWidth: 12 } },
+          legend: { display: true, labels: { color: "#a6a6a6", font: { size: 10 }, boxWidth: 12 } },
           tooltip: {
             mode: "index",
             intersect: false,

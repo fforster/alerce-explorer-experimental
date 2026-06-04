@@ -18,7 +18,7 @@
  *     change is a discrete user action where a single redraw is expected.
  */
 (function () {
-  const NORMAL_COLOR = "#58a6ff";
+  const NORMAL_COLOR = "#1976d2";
   const MAX_COLOR = "#f85149";
   const FILL_COLOR = "rgba(88, 166, 255, 0.2)";
 
@@ -105,13 +105,13 @@
             max,
             ticks: {
               stepSize,
-              color: "#8b949e",
+              color: "#a6a6a6",
               backdropColor: "transparent",
               callback: (value) => formatTick(value),
             },
             grid: { color: "rgba(139,148,158,0.25)" },
             angleLines: { color: "rgba(139,148,158,0.25)" },
-            pointLabels: { color: "#c9d1d9", font: { size: 11 } },
+            pointLabels: { color: "#ededed", font: { size: 11 } },
           },
         },
         plugins: {

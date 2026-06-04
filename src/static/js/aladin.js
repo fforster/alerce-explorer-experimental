@@ -159,7 +159,7 @@
         showLayersControl: true,
       });
 
-      const cat = A.catalog({ name: "Object", sourceSize: 14, color: "#58a6ff" });
+      const cat = A.catalog({ name: "Object", sourceSize: 14, color: "#1976d2" });
       aladin.addCatalog(cat);
       cat.addSources([A.source(ra, dec, { name: String(oid) })]);
 

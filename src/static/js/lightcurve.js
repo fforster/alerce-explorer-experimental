@@ -1305,17 +1305,17 @@
         scales: {
           x: {
             type: "linear",
-            title: { display: true, text: "MJD", color: "#8b949e" },
-            grid: { drawOnChartArea: false, drawTicks: true, tickColor: "#8b949e" },
-            border: { display: true, color: "#8b949e" },
-            ticks: { color: "#8b949e" },
+            title: { display: true, text: "MJD", color: "#a6a6a6" },
+            grid: { drawOnChartArea: false, drawTicks: true, tickColor: "#a6a6a6" },
+            border: { display: true, color: "#a6a6a6" },
+            ticks: { color: "#a6a6a6" },
           },
           y: {
-            title: { display: true, text: "Flux (nJy, diff)", color: "#8b949e" },
-            grid: { drawOnChartArea: false, drawTicks: true, tickColor: "#8b949e" },
-            border: { display: true, color: "#8b949e" },
+            title: { display: true, text: "Flux (nJy, diff)", color: "#a6a6a6" },
+            grid: { drawOnChartArea: false, drawTicks: true, tickColor: "#a6a6a6" },
+            border: { display: true, color: "#a6a6a6" },
             ticks: {
-              color: "#8b949e",
+              color: "#a6a6a6",
               // Default Chart.js tick formatter rounds the mantissa to a
               // single significant figure for very large / small values
               // (e.g. "1e20" for an absolute flux of 1.18e20 nJy), which
@@ -1452,7 +1452,7 @@
               emitVisibilityChanged(ci);
             },
             labels: {
-              color: "#c9d1d9",
+              color: "#ededed",
               usePointStyle: true,
               boxWidth: 10,
               generateLabels: (ch) => {
@@ -1475,8 +1475,8 @@
                 // (Chart.js only inherits when it generates the labels
                 // itself); without it the survey headers and band names
                 // render in the dataset's own color rather than whitish.
-                const TEXT = "#c9d1d9";
-                const DIMMED = "#484f58";
+                const TEXT = "#ededed";
+                const DIMMED = "#555555";
                 const KIND_LABEL = { det: "det", fp: "FP", dr: "DR", overlay: "overlay" };
                 const KIND_ORDER = ["det", "fp", "dr", "overlay"];
                 // Strip the kind suffix from the dataset label since the

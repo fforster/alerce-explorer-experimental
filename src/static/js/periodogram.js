@@ -262,8 +262,8 @@
           {
             label: "Multi-harmonic GLS",
             data,
-            borderColor: "#58a6ff",
-            backgroundColor: "#58a6ff22",
+            borderColor: "#1976d2",
+            backgroundColor: "#1976d222",
             pointRadius: 0,
             pointHitRadius: 0,
             showLine: true,
@@ -295,15 +295,15 @@
         scales: {
           x: {
             type: "logarithmic",
-            title: { display: true, text: "Period (days)", color: "#8b949e", font: { size: 10 } },
-            ticks: { color: "#6e7681", font: { size: 9 } },
-            grid: { color: "#21262d" },
+            title: { display: true, text: "Period (days)", color: "#a6a6a6", font: { size: 10 } },
+            ticks: { color: "#6e6e6e", font: { size: 9 } },
+            grid: { color: "#2c2c2c" },
           },
           y: {
             min: 0, max: 1.1,
-            title: { display: true, text: "MH-GLS score", color: "#8b949e", font: { size: 10 } },
-            ticks: { color: "#6e7681", font: { size: 9 } },
-            grid: { color: "#21262d" },
+            title: { display: true, text: "MH-GLS score", color: "#a6a6a6", font: { size: 10 } },
+            ticks: { color: "#6e6e6e", font: { size: 9 } },
+            grid: { color: "#2c2c2c" },
           },
         },
         plugins: {
