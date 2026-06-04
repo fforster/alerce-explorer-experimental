@@ -327,7 +327,7 @@
     const { pts, colors, ellipses } = computeCC(model, chart.$ceXPair, chart.$ceYPair, win);
     const ds = chart.data.datasets[0];
     ds.data = pts; ds.backgroundColor = colors; ds.borderColor = colors;
-    chart.$ceEllipses = ellipses;
+    if (chart.$ceEllHolder) chart.$ceEllHolder.ellipses = ellipses;
     chart.update("none");
     setStatus(canvas, `${pts.length} pts · ${chart.$ceXPair.label} vs ${chart.$ceYPair.label} · 1σ ellipses`);
     setRange(canvas, model, win);
@@ -464,8 +464,13 @@
   // Custom plugin: stroke a 1σ error ellipse around each color-color point.
   // The ellipse is sampled in DATA space and mapped to pixels, so anisotropic
   // axis scaling and the tilt (shared-band correlation) render correctly. Reads
-  // the live `chart.$ceEllipses` so a slider re-window updates in place.
-  function ellipsePlugin() {
+  // `holder.ellipses` — a mutable object captured in the closure BEFORE the
+  // chart is constructed, so the very first (synchronous, animation-off) draw
+  // already has the ellipses. (Stashing them on the chart only AFTER `new
+  // Chart()` meant the first draw saw none, and on a legend toggle no resize
+  // redraw followed, so they intermittently went missing.) The slider re-window
+  // mutates `holder.ellipses` in place.
+  function ellipsePlugin(holder) {
     return {
       id: "ceEllipses",
       // Draw BEFORE the dataset so the ellipses sit behind the points (the
@@ -473,7 +478,7 @@
       beforeDatasetsDraw(chart) {
         const { ctx, scales: { x: xs, y: ys } } = chart;
         ctx.save();
-        for (const e of (chart.$ceEllipses || [])) {
+        for (const e of (holder.ellipses || [])) {
           if (!isFinite(e.cx) || !isFinite(e.cy)) continue;
           ctx.beginPath();
           for (let t = 0; t <= ELLIPSE_SAMPLES; t++) {
@@ -525,6 +530,9 @@
       return;
     }
 
+    // Mutable holder the ellipse plugin reads — created BEFORE the chart so the
+    // first draw already has the ellipses (see ellipsePlugin).
+    const ellHolder = { ellipses };
     const chart = new Chart(canvas.getContext("2d"), {
       type: "scatter",
       data: {
@@ -567,15 +575,15 @@
           },
         },
       },
-      plugins: [ellipsePlugin()],
+      plugins: [ellipsePlugin(ellHolder)],
     });
     canvas.addEventListener("dblclick", () => chart.resetZoom && chart.resetZoom());
-    // Stash the model + active pairs + ellipses so the time-window slider can
-    // re-window in place without a full rebuild.
+    // Stash the model + active pairs + ellipse holder so the time-window slider
+    // can re-window in place without a full rebuild.
     chart.$ceModel = model;
     chart.$ceXPair = xPair;
     chart.$ceYPair = yPair;
-    chart.$ceEllipses = ellipses;
+    chart.$ceEllHolder = ellHolder;
     charts.set(canvas, chart);
     setStatus(canvas, `${pts.length} pts · ${xPair.label} vs ${yPair.label} · 1σ ellipses`);
     setRange(canvas, model, win);
