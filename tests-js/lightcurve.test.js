@@ -142,3 +142,71 @@ describe("marker / label helpers", () => {
     expect(T.withAlpha("rgb(1,2,3)", 0.5)).toBe("rgb(1,2,3)");
   });
 });
+
+describe("projectModel — parametric overlay (magnitude input)", () => {
+  test("mag axis: additive A + μ + offset, mirroring projectPoint", () => {
+    expect(T.projectModel(20, "mag", null, 0, 0)).toBeCloseTo(20, 9);
+    // 20 − A(0.3) − μ(35) + offset(0.1)
+    expect(T.projectModel(20, "mag", 35, 0.3, 0.1)).toBeCloseTo(-15.2, 9);
+  });
+
+  test("flux axis: mag → nJy via AB ZP 31.4", () => {
+    expect(T.projectModel(20, "flux", null, 0, 0)).toBeCloseTo(36307.8055, 3);
+  });
+
+  test("non-finite magnitude → null", () => {
+    expect(T.projectModel(Infinity, "mag", null, 0, 0)).toBeNull();
+    expect(T.projectModel(NaN, "flux", null, 0, 0)).toBeNull();
+  });
+});
+
+describe("projectFluxModel — parametric overlay (flux input, e.g. GP)", () => {
+  test("flux axis passes nJy through", () => {
+    expect(T.projectFluxModel(5000, "flux", null, 0, 0)).toBeCloseTo(5000, 9);
+  });
+
+  test("mag axis converts via AB ZP 31.4", () => {
+    expect(T.projectFluxModel(5000, "mag", null, 0, 0)).toBeCloseTo(22.152575, 5);
+  });
+
+  test("non-positive flux is a gap in mag mode but kept in flux mode", () => {
+    expect(T.projectFluxModel(-3, "mag", null, 0, 0)).toBeNull();
+    expect(T.projectFluxModel(-3, "flux", null, 0, 0)).toBe(-3);
+  });
+});
+
+describe("spmFlux_mJy — Sánchez-Sáez+2021 model", () => {
+  test("rise term vanishes exactly at t0 (only the plateau/fall remains)", () => {
+    // At t = t0 the (1 − β^0) rise factor is 0; flux is the fall branch only.
+    expect(T.spmFlux_mJy(5, 1.0, 0.5, 5, 20, 3, 15)).toBeCloseTo(0.000318, 5);
+  });
+  test("produces a finite positive flux past the rise", () => {
+    const f = T.spmFlux_mJy(10, 1.0, 0.5, 5, 20, 3, 15);
+    expect(Number.isFinite(f)).toBe(true);
+    expect(f).toBeGreaterThan(0);
+  });
+});
+
+describe("fleetMag — polynomial-rise model", () => {
+  test("at dt = 0 reduces to m0 (exp(0) − 0 + m0)", () => {
+    expect(T.fleetMag(0, 2, 0.1, 18, 0)).toBeCloseTo(19, 9); // 1 + 18
+  });
+  test("matches closed form away from t0", () => {
+    // exp(0.5) − 2·0.1·5 + 18
+    expect(T.fleetMag(5, 2, 0.1, 18, 0)).toBeCloseTo(18.648721, 5);
+  });
+});
+
+describe("mjdEnvelope", () => {
+  test("returns the global min/max MJD across bands, ignoring NaN", () => {
+    const env = T.mjdEnvelope([
+      { points: [{ mjd: 100 }, { mjd: 50 }] },
+      { points: [{ mjd: 200 }, { mjd: NaN }] },
+    ]);
+    expect(env.min).toBe(50);
+    expect(env.max).toBe(200);
+  });
+  test("empty input → null", () => {
+    expect(T.mjdEnvelope([])).toBeNull();
+  });
+});

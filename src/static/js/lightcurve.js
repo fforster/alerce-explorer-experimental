@@ -2749,5 +2749,10 @@
   // the per-survey marker / MJD→UTC conversions. Exposed so the Vitest suite
   // (tests-js/lightcurve.test.js) can exercise them without standing up a
   // Chart.js canvas. Not used by any runtime code path.
-  window.__lcTest = { projectPoint, foldDataset, mjdToUtcString, pointStyleFor, surveyLabel, withAlpha };
+  window.__lcTest = {
+    projectPoint, foldDataset, mjdToUtcString, pointStyleFor, surveyLabel, withAlpha,
+    // Parametric-overlay math (SPM / FLEET model evaluators + the shared
+    // mag/flux → axis projection the overlays reuse from the detection path).
+    projectModel, projectFluxModel, spmFlux_mJy, fleetMag, mjdEnvelope,
+  };
 })();

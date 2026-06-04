@@ -129,8 +129,13 @@ globals it exposes (see `tests-js/`). Coverage:
 - `dust.js` — galactic latitude
 - `lightcurve.js` — `projectPoint` (the Flux/Mag × Diff/Sci × App/Abs ×
   Obs/Der × offset projection), `foldDataset`, per-survey `mjdToUtcString`
-  (incl. the LSST TAI offset), marker/label helpers — reached via the
-  `window.__lcTest` hook the script exposes for tests
+  (incl. the LSST TAI offset), the parametric-overlay model evaluators
+  (`projectModel`, `projectFluxModel`, `spmFlux_mJy`, `fleetMag`,
+  `mjdEnvelope`), marker/label helpers — reached via the `window.__lcTest`
+  hook the script exposes for tests
+- `periodogram.js` — the pure multi-harmonic LS core (`mhPowerAtFreq` +
+  `makeMhScratch`) and `findTopPeaks`, via `window.__pgTest`; the headline
+  test injects a sinusoid of known period and confirms it is recovered
 - `selection.js` — cross-panel `setSelectedIdentifier` (state, survey-routed
   stamps dispatch, URL mirroring)
 

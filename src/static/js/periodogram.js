@@ -397,6 +397,107 @@
     if (lcCanvasId && window.lcSetFoldPeriod) window.lcSetFoldPeriod(lcCanvasId, period);
   }
 
+  // Reusable scratch buffers for the multi-harmonic normal-equation solve,
+  // allocated once and shared across every frequency and band so the hot loop
+  // never allocates. phi[0] is the constant basis term and stays 1.
+  function makeMhScratch(NH) {
+    const DIM = 2 * NH + 1; // [c, a₁, b₁, a₂, b₂, …, a_NH, b_NH]
+    const phi = new Float64Array(DIM);
+    phi[0] = 1;
+    return {
+      DIM,
+      M: new Float64Array(DIM * DIM),
+      v: new Float64Array(DIM),
+      yvec: new Float64Array(DIM),
+      phi,
+    };
+  }
+
+  // Joint multi-harmonic least-squares χ²-reduction at a single angular
+  // frequency ω, summed across bands (Schwarzenberg-Czerny 1996). Pure: no
+  // DOM, no time budget — extracted from compute()'s chunked loop so that loop
+  // and the unit tests (inject a sinusoid, recover its period) share one
+  // implementation. Each band entry needs {dt, w, resid} typed arrays; pass a
+  // scratch object from makeMhScratch(NH). Solves the symmetric positive-
+  // definite normal equations M·p = v by in-place Cholesky and returns ‖L⁻¹v‖²
+  // (no need to back-solve for p).
+  function mhPowerAtFreq(bandData, omega, NH, scratch) {
+    const { DIM, M, v, yvec, phi } = scratch;
+    let total = 0;
+    for (const b of bandData) {
+      const N = b.dt.length;
+      const w = b.w, dt = b.dt, resid = b.resid;
+      M.fill(0);
+      v.fill(0);
+
+      // Build M (upper triangle) and v.
+      for (let i = 0; i < N; i++) {
+        const t = dt[i];
+        const c1 = Math.cos(omega * t);
+        const s1 = Math.sin(omega * t);
+        phi[1] = c1; phi[2] = s1;
+        let cPrev = 1, sPrev = 0, cCur = c1, sCur = s1;
+        for (let k = 2; k <= NH; k++) {
+          const cNew = 2 * c1 * cCur - cPrev;
+          const sNew = 2 * c1 * sCur - sPrev;
+          cPrev = cCur; sPrev = sCur;
+          cCur = cNew; sCur = sNew;
+          phi[2 * k - 1] = cCur;
+          phi[2 * k] = sCur;
+        }
+
+        const wi = w[i];
+        const wri = wi * resid[i];
+        for (let j = 0; j < DIM; j++) {
+          const wpj = wi * phi[j];
+          v[j] += wri * phi[j];
+          for (let kk = j; kk < DIM; kk++) {
+            M[j * DIM + kk] += wpj * phi[kk];
+          }
+        }
+      }
+
+      // Mirror to lower triangle, then in-place Cholesky.
+      for (let j = 0; j < DIM; j++) {
+        for (let kk = 0; kk < j; kk++) {
+          M[j * DIM + kk] = M[kk * DIM + j];
+        }
+      }
+      let valid = true;
+      for (let j = 0; j < DIM; j++) {
+        let s = M[j * DIM + j];
+        for (let kk = 0; kk < j; kk++) {
+          const lkk = M[j * DIM + kk];
+          s -= lkk * lkk;
+        }
+        if (!(s > 1e-14)) { valid = false; break; }
+        const Ljj = Math.sqrt(s);
+        M[j * DIM + j] = Ljj;
+        const inv = 1 / Ljj;
+        for (let r = j + 1; r < DIM; r++) {
+          let sum = M[r * DIM + j];
+          for (let kk = 0; kk < j; kk++) {
+            sum -= M[r * DIM + kk] * M[j * DIM + kk];
+          }
+          M[r * DIM + j] = sum * inv;
+        }
+      }
+      if (!valid) continue;
+
+      // Forward solve L·y = v ; χ² reduction = ‖y‖².
+      let red = 0;
+      for (let j = 0; j < DIM; j++) {
+        let sum = v[j];
+        for (let kk = 0; kk < j; kk++) sum -= M[j * DIM + kk] * yvec[kk];
+        const yj = sum / M[j * DIM + j];
+        yvec[j] = yj;
+        red += yj * yj;
+      }
+      total += red;
+    }
+    return total;
+  }
+
   async function compute(panel) {
     if (panel.dataset.pgRunning === "1") return;
     const lcCanvasId = panel.dataset.lcTarget;
@@ -502,12 +603,7 @@
     // so each point costs only one cos+sin and (NH−1)·4 muladds. Chunked
     // so the busy message repaints every ~50 ms.
     const NH = 4;
-    const DIM = 2 * NH + 1; // [c, a₁, b₁, a₂, b₂, …, a_NH, b_NH]
-    const M = new Float64Array(DIM * DIM);
-    const v = new Float64Array(DIM);
-    const yvec = new Float64Array(DIM);
-    const phi = new Float64Array(DIM);
-    phi[0] = 1; // constant basis — never overwritten in the inner loop
+    const scratch = makeMhScratch(NH);
 
     const CHUNK_MS = 50;
     let fi = 0;
@@ -516,78 +612,7 @@
       while (fi < nFreq && performance.now() - chunkStart < CHUNK_MS) {
         const freq = minFreq + fi * df;
         const omega = 2 * Math.PI * freq;
-        let total = 0;
-        for (const b of bandData) {
-          const N = b.dt.length;
-          const w = b.w, dt = b.dt, resid = b.resid;
-          M.fill(0);
-          v.fill(0);
-
-          // Build M (upper triangle) and v.
-          for (let i = 0; i < N; i++) {
-            const t = dt[i];
-            const c1 = Math.cos(omega * t);
-            const s1 = Math.sin(omega * t);
-            phi[1] = c1; phi[2] = s1;
-            let cPrev = 1, sPrev = 0, cCur = c1, sCur = s1;
-            for (let k = 2; k <= NH; k++) {
-              const cNew = 2 * c1 * cCur - cPrev;
-              const sNew = 2 * c1 * sCur - sPrev;
-              cPrev = cCur; sPrev = sCur;
-              cCur = cNew; sCur = sNew;
-              phi[2 * k - 1] = cCur;
-              phi[2 * k] = sCur;
-            }
-
-            const wi = w[i];
-            const wri = wi * resid[i];
-            for (let j = 0; j < DIM; j++) {
-              const wpj = wi * phi[j];
-              v[j] += wri * phi[j];
-              for (let kk = j; kk < DIM; kk++) {
-                M[j * DIM + kk] += wpj * phi[kk];
-              }
-            }
-          }
-
-          // Mirror to lower triangle, then in-place Cholesky.
-          for (let j = 0; j < DIM; j++) {
-            for (let kk = 0; kk < j; kk++) {
-              M[j * DIM + kk] = M[kk * DIM + j];
-            }
-          }
-          let valid = true;
-          for (let j = 0; j < DIM; j++) {
-            let s = M[j * DIM + j];
-            for (let kk = 0; kk < j; kk++) {
-              const lkk = M[j * DIM + kk];
-              s -= lkk * lkk;
-            }
-            if (!(s > 1e-14)) { valid = false; break; }
-            const Ljj = Math.sqrt(s);
-            M[j * DIM + j] = Ljj;
-            const inv = 1 / Ljj;
-            for (let r = j + 1; r < DIM; r++) {
-              let sum = M[r * DIM + j];
-              for (let kk = 0; kk < j; kk++) {
-                sum -= M[r * DIM + kk] * M[j * DIM + kk];
-              }
-              M[r * DIM + j] = sum * inv;
-            }
-          }
-          if (!valid) continue;
-
-          // Forward solve L·y = v ; χ² reduction = ‖y‖².
-          let red = 0;
-          for (let j = 0; j < DIM; j++) {
-            let sum = v[j];
-            for (let kk = 0; kk < j; kk++) sum -= M[j * DIM + kk] * yvec[kk];
-            const yj = sum / M[j * DIM + j];
-            yvec[j] = yj;
-            red += yj * yj;
-          }
-          total += red;
-        }
+        const total = mhPowerAtFreq(bandData, omega, NH, scratch);
         freqArr[fi] = freq;
         power[fi] = total;
         fi++;
@@ -765,4 +790,10 @@
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));
   document.addEventListener("htmx:afterSwap", (evt) => initAll(evt.detail.target));
+
+  // Test-only surface: the pure multi-harmonic LS core (and its scratch
+  // factory) plus the peak finder, so the Vitest suite can inject a synthetic
+  // sinusoid and confirm the period is recovered without a Chart.js panel.
+  // Not used by any runtime code path.
+  window.__pgTest = { makeMhScratch, mhPowerAtFreq, findTopPeaks };
 })();
