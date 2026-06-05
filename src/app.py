@@ -13,9 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .routes import htmx, rest
+from .services import replay
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+
+# Off unless EXPLORER_REPLAY_DIR is set (Tier 3 / E2E). No-op in production.
+replay.maybe_install()
 
 app = FastAPI(title="Tutorial ALeRCE Explorer")
 

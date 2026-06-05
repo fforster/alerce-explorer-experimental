@@ -1,0 +1,9 @@
+{
+"url": "https://api.alerce.online/ztf/v1/objects?page=1&page_size=20&count=false&oid=ZTF17aabopdz&ranking=1&order_by=probability&order_mode=DESC",
+"status": 308,
+"headers": {
+"content-type": "text/html; charset=utf-8",
+"location": "https://api.alerce.online/ztf/v1/objects/?page=1&page_size=20&count=false&oid=ZTF17aabopdz&ranking=1&order_by=probability&order_mode=DESC"
+},
+"body_b64": "PCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9ZW4+Cjx0aXRsZT5SZWRpcmVjdGluZy4uLjwvdGl0bGU+CjxoMT5SZWRpcmVjdGluZy4uLjwvaDE+CjxwPllvdSBzaG91bGQgYmUgcmVkaXJlY3RlZCBhdXRvbWF0aWNhbGx5IHRvIHRoZSB0YXJnZXQgVVJMOiA8YSBocmVmPSJodHRwczovL2FwaS5hbGVyY2Uub25saW5lL3p0Zi92MS9vYmplY3RzLz9wYWdlPTEmYW1wO3BhZ2Vfc2l6ZT0yMCZhbXA7Y291bnQ9ZmFsc2UmYW1wO29pZD1aVEYxN2FhYm9wZHomYW1wO3Jhbmtpbmc9MSZhbXA7b3JkZXJfYnk9cHJvYmFiaWxpdHkmYW1wO29yZGVyX21vZGU9REVTQyI+aHR0cHM6Ly9hcGkuYWxlcmNlLm9ubGluZS96dGYvdjEvb2JqZWN0cy8/cGFnZT0xJmFtcDtwYWdlX3NpemU9MjAmYW1wO2NvdW50PWZhbHNlJmFtcDtvaWQ9WlRGMTdhYWJvcGR6JmFtcDtyYW5raW5nPTEmYW1wO29yZGVyX2J5PXByb2JhYmlsaXR5JmFtcDtvcmRlcl9tb2RlPURFU0M8L2E+LiBJZiBub3QsIGNsaWNrIHRoZSBsaW5rLgo="
+}

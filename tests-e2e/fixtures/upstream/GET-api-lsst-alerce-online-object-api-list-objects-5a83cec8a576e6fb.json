@@ -1,0 +1,8 @@
+{
+"url": "https://api-lsst.alerce.online/object_api/list_objects?page=1&page_size=1&count=false&ra=307.47413048621615&dec=51.12344127469595&radius=3.0&survey=lsst&order_by=probability&order_mode=DESC",
+"status": 200,
+"headers": {
+"content-type": "application/json"
+},
+"body_b64": "eyJ0b3RhbCI6MCwibmV4dCI6bnVsbCwiaGFzX25leHQiOmZhbHNlLCJwcmV2IjpudWxsLCJoYXNfcHJldiI6ZmFsc2UsImN1cnJlbnRfcGFnZSI6MSwiaXRlbXMiOltdLCJpbmZvX21lc3NhZ2UiOiJFbXB0eSBxdWVyeSJ9"
+}

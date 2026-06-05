@@ -1,0 +1,8 @@
+{
+"url": "https://api-lsst.alerce.online/classifier_api/classifiers",
+"status": 200,
+"headers": {
+"content-type": "application/json"
+},
+"body_b64": "W3siY2xhc3NpZmllcl9uYW1lIjoic3RhbXBfY2xhc3NpZmllcl9ydWJpbl9iZXRhIiwiY2xhc3NpZmllcl92ZXJzaW9uIjoiMi4wLjEiLCJjbGFzc2VzIjpbIlNOIiwiQUdOIiwiVlMiLCJhc3Rlcm9pZCIsImJvZ3VzIl0sImNsYXNzaWZpZXJfaWQiOjF9LHsiY2xhc3NpZmllcl9uYW1lIjoic3RhbXBfY2xhc3NpZmllcl9ydWJpbl9iZXRhXzIwMjYwNDIxIiwiY2xhc3NpZmllcl92ZXJzaW9uIjoiMi4wLjIiLCJjbGFzc2VzIjpbIlNOIiwiQUdOIiwiVlMiLCJhc3Rlcm9pZCIsImJvZ3VzIl0sImNsYXNzaWZpZXJfaWQiOjN9XQ=="
+}

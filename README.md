@@ -152,6 +152,31 @@ globals it exposes (see `tests-js/`). Coverage:
 
 Both suites run in CI via `.github/workflows/tests.yml`.
 
+### End-to-end (Tier 3, Playwright)
+
+Browser tests that drive the real app — search → row click → detail view →
+light-curve render and the Flux/Mag toggle:
+
+```bash
+npm install
+npx playwright install chromium   # first time
+npm run test:e2e
+```
+
+These run **fully offline and deterministically**. Upstream ALeRCE/catsHTM
+calls are served from recorded fixtures (`tests-e2e/fixtures/upstream/`) via a
+record/replay httpx transport (`src/services/replay.py`), switched on for the
+test server by `EXPLORER_REPLAY_DIR`. Browser-direct external calls (Aladin
+CDN, IRSA dust, VizieR, stamp images) are blocked per-test by the offline
+guard in `tests-e2e/helpers.js`; the app degrades gracefully without them.
+
+To refresh the fixtures against the live API (needs network):
+
+```bash
+EXPLORER_REPLAY_DIR=tests-e2e/fixtures/upstream EXPLORER_RECORD=1 \
+    PYTHONPATH=. python3 scripts/record_e2e_fixtures.py
+```
+
 ## Layout
 
 ```

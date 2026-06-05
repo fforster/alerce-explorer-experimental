@@ -9,6 +9,12 @@ node_modules/
 .DS_Store
 src/static/css/main.css
 
+# Playwright (Tier 3) — generated artifacts; fixtures under tests-e2e are kept
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
 # Secrets — never commit. SSH keys, TLS keys, runtime env.
 *.pem
 *.key
