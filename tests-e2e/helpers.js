@@ -25,3 +25,56 @@ export async function openGoldenDetail(page) {
   await row.click();
   await expect(page.locator("#object-detail")).toBeVisible();
 }
+
+// Total number of plotted datapoints across all LC datasets (0 until the
+// deferred fetch + Chart.js render lands).
+export function lcPointCount(page, oid = GOLDEN.oid) {
+  return page.evaluate((id) => {
+    const cv = document.getElementById(`lc-canvas-${id}`);
+    const chart = window.Chart && cv && window.Chart.getChart(cv);
+    if (!chart) return 0;
+    return chart.data.datasets.reduce((n, ds) => n + (ds.data?.length || 0), 0);
+  }, oid);
+}
+
+// Wait until the light curve has rendered its data, so subsequent interactions
+// (toggles, periodogram, selection) act on a populated chart.
+export async function waitForLcData(page, oid = GOLDEN.oid) {
+  await expect.poll(() => lcPointCount(page, oid), { timeout: 15_000 }).toBeGreaterThan(0);
+}
+
+// Wait until the LC has fully settled — the deferred FP / cross-survey / features
+// fragments have all landed and stopped rebuilding the chart. Needed before any
+// pixel-precise interaction (clicking a specific marker), since a mid-flight
+// applyModes() rebuild moves the markers. Detects a point count stable across
+// consecutive polls.
+export async function waitForLcSettled(page, oid = GOLDEN.oid) {
+  await waitForLcData(page, oid);
+  let prev = -1;
+  await expect
+    .poll(
+      async () => {
+        const n = await lcPointCount(page, oid);
+        const stable = n > 0 && n === prev;
+        prev = n;
+        return stable;
+      },
+      { intervals: [500, 500, 500, 500, 500], timeout: 15_000 },
+    )
+    .toBe(true);
+}
+
+// The projected y of the first datapoint that has one — the value every LC
+// toggle re-projects. Used to prove a toggle changed the data, not just a label.
+export function firstDatumY(page, oid = GOLDEN.oid) {
+  return page.evaluate((id) => {
+    const cv = document.getElementById(`lc-canvas-${id}`);
+    const chart = window.Chart && cv && window.Chart.getChart(cv);
+    if (!chart) return null;
+    for (const ds of chart.data.datasets) {
+      const p = (ds.data || []).find((d) => d && typeof d.y === "number");
+      if (p) return p.y;
+    }
+    return null;
+  }, oid);
+}
