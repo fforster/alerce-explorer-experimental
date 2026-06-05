@@ -167,31 +167,38 @@ def shape_response(
     raw: Any, *, survey: str, page: int, page_size: int = DEFAULT_PAGE_SIZE
 ) -> dict[str, Any]:
     """Convert the upstream response to the dict the template expects."""
-    # `has_next_signal` is the upstream's authoritative answer when present:
-    # the paginated dict always carries a `next` pointer (a page number on
-    # non-last pages, null on the last page) and often a `has_next` boolean.
-    # We must trust an explicit null here — it means "no next page". Falling
-    # back to an item-count heuristic in that case is the bug that made a
-    # single-page result still show a "Next" button (→ empty page 2). `None`
-    # below means "upstream gave no pagination metadata at all" (plain-array
-    # responses), the only case where we heuristically guess.
+    # We deliberately query with `count=false` (no total) — counting is the
+    # API's expensive path and we only need to know whether a *next* page
+    # exists, not how many. Without a total, ZTF's `has_next`/`next` is
+    # unreliable (it returns "no next" even when more pages follow), so we
+    # can't simply trust a negative signal. Instead:
+    #   * trust a *positive* upstream signal when present (it means "yes, more"), and
+    #   * otherwise infer from page fullness — a page that came back full
+    #     (page_size rows) probably has a successor; a short page is the last.
+    # `has_next_positive` is only ever set when upstream explicitly says yes.
     if isinstance(raw, dict) and "items" in raw:
         items = raw.get("items") or []
         total = raw.get("total")
         if "has_next" in raw:
-            has_next_signal: bool | None = bool(raw.get("has_next"))
+            has_next_positive = bool(raw.get("has_next"))
         elif "next" in raw:
-            has_next_signal = bool(raw.get("next"))
+            has_next_positive = bool(raw.get("next"))
         else:
-            has_next_signal = None
+            has_next_positive = False
     elif isinstance(raw, list):
         items = raw
         total = None
-        has_next_signal = None
+        has_next_positive = False
     else:
         items = []
         total = None
-        has_next_signal = None
+        has_next_positive = False
+
+    # Page-fullness uses the RAW upstream row count, captured before dedupe:
+    # LSST returns one row per (object, classifier), so a full page of rows
+    # dedupes to fewer objects — checking len(items) after dedupe would hide
+    # real next pages.
+    raw_count = len(items)
 
     if survey == "ztf":
         items = [_normalize_ztf_row(dict(r)) for r in items]
@@ -203,10 +210,11 @@ def shape_response(
     # the upstream's probability-DESC ordering.
     items = _dedupe_by_oid(items)
 
-    # No upstream metadata → guess from page fullness. A partial page can't
-    # have a successor, so this never invents a phantom next page the way the
-    # old `len(items) > 0` test did.
-    has_next = has_next_signal if has_next_signal is not None else len(items) >= page_size
+    # A full page implies a possible next page (count-free pagination). The
+    # only cost is that a last page whose size is an exact multiple of
+    # page_size shows one extra Next that lands on an empty page — an accepted
+    # trade for not paying the count.
+    has_next = has_next_positive or raw_count >= page_size
     has_prev = page > 1
     return {
         "items": items,

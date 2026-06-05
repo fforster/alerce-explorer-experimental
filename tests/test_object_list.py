@@ -201,6 +201,47 @@ def test_shape_response_full_page_array_assumes_next():
     assert shape_response(raw, survey="lsst", page=1, page_size=5)["has_next"] is False
 
 
+def test_shape_response_full_page_overrides_negative_next_signal():
+    """Regression: with count=false the ZTF API returns `next: null` /
+    `has_next: false` even when more pages follow, which used to pin every
+    result to a single page. A full page (page_size rows) must offer page 2
+    regardless of a negative upstream signal."""
+    raw = {"items": [{"oid": f"ZTF{i}"} for i in range(3)], "next": None, "has_next": False}
+    out = shape_response(raw, survey="ztf", page=1, page_size=3)
+    assert out["has_next"] is True
+    assert out["next"] == 2
+
+
+def test_shape_response_short_page_is_last_even_without_total():
+    """A page that came back shorter than page_size is the last one — no next,
+    no count needed."""
+    raw = {"items": [{"oid": "ZTF1"}, {"oid": "ZTF2"}], "has_next": False}
+    out = shape_response(raw, survey="ztf", page=2, page_size=20)
+    assert out["has_next"] is False
+    assert out["next"] is False
+
+
+def test_shape_response_fullness_uses_raw_count_before_dedupe():
+    """LSST returns one row per (object, classifier); a full page of rows
+    dedupes to fewer objects. Page-fullness must be judged on the raw row
+    count, or a full page would look short and hide the next page."""
+    # 4 rows (2 objects × 2 classifiers) fills a page_size=4 page; dedupe
+    # leaves 2 objects. has_next must still be True.
+    raw = {
+        "items": [
+            {"oid": "A", "classifier_name": "stamp"},
+            {"oid": "A", "classifier_name": "lc_classifier"},
+            {"oid": "B", "classifier_name": "stamp"},
+            {"oid": "B", "classifier_name": "lc_classifier"},
+        ],
+        "next": None,
+    }
+    out = shape_response(raw, survey="lsst", page=1, page_size=4)
+    assert len(out["items"]) == 2  # deduped
+    assert out["has_next"] is True
+    assert out["next"] == 2
+
+
 def test_shape_response_accepts_plain_array():
     raw = [{"oid": "X"}]
     out = shape_response(raw, survey="lsst", page=1)
