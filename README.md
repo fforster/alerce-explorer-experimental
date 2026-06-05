@@ -6,7 +6,9 @@ mirroring the patterns used in the production
 
 See `CLAUDE.md` for the overall design, reference implementations, and the
 domain-specific traps (survey abstraction, 64-bit OIDs, ZTF→nJy normalization,
-GLS periodogram, FITS rendering, etc.).
+GLS periodogram, FITS rendering, etc.). See `RELEASES.md` for a
+feature-by-feature comparison against the production ALeRCE explorers
+(what is new here vs. parity).
 
 ## Status
 
@@ -78,7 +80,21 @@ OOB-populates the LC redshift input via a tiny inline script.
 **catsHTM crossmatch panel** prefetches on detail-view load (`hx-trigger=
 "load"` instead of on-expand) so opening the collapsible is instant.
 **Airmass panel** shares a grid cell with periodogram and position
-residuals; mutually exclusive toggles. **Name resolver** is still deferred.
+residuals; mutually exclusive toggles.
+
+**More overlays and tools.** A multi-band **Gaussian-Process** fit (ICM +
+wavelength kernel, lazy-loaded via `/htmx/lc_gp`) and **parametric-fit
+overlays** (SPM / FLEET / TDE-tail) draw over the LC and re-project through
+every active Flux/Mag × Diff/Sci × App/Abs × Obs/Der × Fold toggle. A
+per-detection **AVRO metadata viewer** (`/htmx/avro`, ZTF), a **moving-object
+detector** (LSST cone-search ±10′ / ±2 hr around the object, plotted in Aladin
+to flag contemporaneous trails), **drag-to-resize panels** (persisted, per
+object), and a working **Sesame name resolver** in the search form round out
+the toolset. **LC data export** is a CSV carrying `survey` / `oid` / `candid`
+columns and cross-survey rows, with 64-bit ids double-quoted so they survive
+pandas/Excel. Search results paginate **without an upstream count** — the
+Next page is inferred from page fullness, so ZTF searches move past page 1
+without paying the API's expensive total.
 
 ## Install
 
@@ -86,7 +102,7 @@ residuals; mutually exclusive toggles. **Name resolver** is still deferred.
 # Python deps (Poetry)
 poetry install
 
-# Node deps (Tailwind CLI)
+# Node deps (Tailwind CLI + Vitest/Playwright test tooling)
 npm install
 
 # Build the stylesheet (required before first run)
@@ -104,6 +120,11 @@ npm run watch:css
 Then open http://localhost:8000.
 
 ## Test
+
+Three tiers: **pytest** (server services + route fragments, ~326 tests),
+**Vitest + jsdom** (pure client-side JS logic, 112 tests), and **Playwright**
+(end-to-end browser flows, 10 tests). All three run offline and are wired into
+CI (`.github/workflows/tests.yml`).
 
 Python (service layer + route fragments; upstream ALeRCE calls monkeypatched):
 
@@ -150,12 +171,14 @@ globals it exposes (see `tests-js/`). Coverage:
   `computeStampFootprint`, `computeNorthAngle`, `zscaleStretch`), exercised
   against a hand-built synthetic FITS buffer, via `window.__stampsTest`
 
-Both suites run in CI via `.github/workflows/tests.yml`.
-
 ### End-to-end (Tier 3, Playwright)
 
-Browser tests that drive the real app — search → row click → detail view →
-light-curve render and the Flux/Mag toggle:
+Browser tests that drive the real app end to end. Beyond search → row click →
+detail view → light-curve render, the suite covers the **Flux/Mag toggle**
+re-projecting the data, the **periodogram** folding the main chart at its best
+peak, **cross-panel selection** (clicking an LC point selects that detection),
+a **host redshift** unlocking absolute magnitudes, and **dereddening** via a
+manual E(B-V):
 
 ```bash
 npm install
@@ -192,8 +215,13 @@ src/
     normalize.py          Raw detection → common schema (ZTF mag→nJy)
     safe_json.py          64-bit-OID-safe JSON parsing for LSST
     alerce_client.py      httpx client for the public ALeRCE API
-    object_list.py        build_search_params + ZTF↔LSST row normalization
+    replay.py             record/replay httpx transport for the offline E2E suite
+                          (no-op unless EXPLORER_REPLAY_DIR is set)
+    object_list.py        build_search_params + ZTF↔LSST row normalization +
+                          count-free pagination (next page inferred from page
+                          fullness on the raw upstream row count, no total)
     object_info.py        Detail-view shaping for the basic-info panel
+    avro.py               Per-detection AVRO metadata shaping (ZTF)
     probability.py        Classifier probabilities for the radar panel
     coord_residuals.py    (Δra, Δdec) shape_coord_residuals (now used only via
                           the programmatic API; the UI panel derives client-side
@@ -208,6 +236,8 @@ src/
                           placeholders so cross-survey clicks dispatch correctly);
                           _mjd_to_utc(mjd, scale) applies the TAI offset for LSST
     ztf_dr.py             ZTF DR archival cone-search
+    lsst_neighbors.py     LSST cone-search (±10′, ±2 hr) for the moving-object /
+                          contemporaneous-trail detector plotted in Aladin
     features.py           Feature-table fetch + pick_default_version (strict N.N.N picker,
                           shared with LC fold-period extractor)
     lightcurve.py         get_lightcurve (detections only) + get_lc_fp_bundle (FP +
@@ -215,6 +245,8 @@ src/
                           (Multiband_period + parametric_fits, deferred) +
                           get_lc_xsurvey_bundle (object_info → other-survey
                           conesearch (3″) → matched LC + FP for the overlay)
+    gp.py                 Multi-band Gaussian-Process fit (ICM + wavelength kernel)
+                          for the deferred /htmx/lc_gp overlay
     tns.py                ALeRCE TNS htmx-bridge proxy (now driven by /htmx/tns_lookup)
   templates/              Jinja2 partials, grouped by feature sub-area
                           (basic_information/, features/, object_detail/, lightcurve/,
@@ -259,4 +291,10 @@ src/
                           (incl. cross-survey) so toggling LC bands changes the
                           periodogram input set on the next compute.
 tests/                    pytest suite (service layer + route fragments)
+tests-js/                 Vitest + jsdom unit tests for pure client-side JS
+                          (window.__*Test hooks; see the Test section)
+tests-e2e/                Playwright end-to-end tests + offline replay fixtures
+                          (tests-e2e/fixtures/upstream/, helpers.js, specs/)
+scripts/
+  record_e2e_fixtures.py  Regenerate the E2E fixtures against the live API
 ```
