@@ -107,6 +107,24 @@ def test_index_deep_link_to_filtered_list(client):
     assert "/htmx/detail" not in r.text
 
 
+def test_index_comma_oid_list_opens_list_not_detail(client):
+    # Production-explorer convention: a comma-separated `oid` is a multi-object
+    # list search, e.g. `?survey=lsst&oid=123,456,789`. It must pre-run the
+    # listing (filtered to those OIDs), not jump to a single detail view.
+    r = client.get("/?survey=lsst&oid=170494726617694871,170503520965363493,170494726636044433")
+    assert r.status_code == 200
+    assert "/htmx/list_objects" in r.text
+    assert "oids=170494726617694871%2C170503520965363493%2C170494726636044433" in r.text
+    assert "/htmx/detail" not in r.text
+
+
+def test_index_single_oid_still_opens_detail(client):
+    # A single `oid` (no commas) keeps opening the detail view.
+    r = client.get("/?survey=lsst&oid=170494726617694871")
+    assert r.status_code == 200
+    assert "/htmx/detail?oid=170494726617694871" in r.text
+
+
 def test_index_rejects_unknown_survey(client):
     r = client.get("/?survey=panstarrs")
     assert r.status_code == 400
@@ -244,18 +262,22 @@ def test_list_objects_pushes_full_filter_url(client, stub_services):
         "&oids=ZTF1,ZTF2&page=3"
     )
     assert r.status_code == 200
+    # The shareable list URL carries the OID set under `oid=` (the production
+    # explorer's convention), not `oids=`.
     assert r.headers.get("HX-Push-Url") == (
         "/?survey=ztf&classifier=lc_classifier_top&classifier_version=2.1.0"
         "&class_name=SN&probability=0.5"
         "&n_det_min=5&n_det_max=50&firstmjd_min=60000.0&firstmjd_max=60100.0"
         "&lastmjd_min=60050.0&lastmjd_max=60200.0"
-        "&ra=150.0&dec=2.0&radius=30.0&oids=ZTF1%2CZTF2&page=3"
+        "&ra=150.0&dec=2.0&radius=30.0&oid=ZTF1,ZTF2&page=3"
     )
 
 
 def test_list_objects_accepts_oids_and_forwards_as_oid(client, monkeypatch):
-    """The URL uses `oids=` (plural) to not collide with detail's `oid=`, but
-    the service layer still takes `oid=`. The route bridges the two names."""
+    """The internal htmx call uses `oids=` (plural) so it can't collide with
+    detail's single-object `oid=`; the service layer still takes `oid=`, and
+    the route bridges the two names. (The shareable browser URL re-emits the
+    list under `oid=` — see test_list_objects_pushes_full_filter_url.)"""
     captured = {}
 
     async def fake_objects(**kwargs):
@@ -274,6 +296,17 @@ def test_list_objects_accepts_oids_and_forwards_as_oid(client, monkeypatch):
     r = client.get("/htmx/list_objects?survey=lsst&oids=OID1,OID2")
     assert r.status_code == 200
     assert captured.get("oid") == "OID1,OID2"
+
+
+def test_detail_push_url_keeps_back_list_under_oids(client):
+    # Drilling into one object from a multi-OID list: the detail's `oid=X`
+    # selector and the back-context list must stay on separate keys so they
+    # don't collide — the list rides under `oids` here, not `oid`.
+    r = client.get("/htmx/detail?oid=LSST-9&survey_id=lsst&oids=A,B,C")
+    assert r.status_code == 200
+    push = r.headers.get("HX-Push-Url")
+    assert "oid=LSST-9" in push
+    assert "oids=A,B,C" in push
 
 
 def test_list_objects_emits_total_pages_for_oid_list(client, monkeypatch):
@@ -365,7 +398,7 @@ def test_detail_pushes_full_filter_url(client):
     assert r.status_code == 200
     assert r.headers.get("HX-Push-Url") == (
         "/?survey=lsst&oid=LSST-1&classifier=lc_classifier_top&class_name=SN"
-        "&probability=0.5&n_det_min=5&n_det_max=50&oids=A%2CB&page=2"
+        "&probability=0.5&n_det_min=5&n_det_max=50&oids=A,B&page=2"
     )
 
 

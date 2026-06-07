@@ -119,11 +119,12 @@ def _share_url(
     Kept in one place so the HX-Push-Url header and the server-rendered initial
     markup can't drift. Empty/None pieces are dropped so the URL stays legible.
 
-    Param naming:
-      - `oid` is a single-object selector (detail view).
-      - `oids` is the free-text OID-list search filter. Distinct names so the
-        two can coexist in one URL (e.g. "I searched by an OID list and drilled
-        into one result").
+    Param naming (follows the production explorer):
+      - `oid` carries a single object (detail view) OR a comma-separated set
+        (multi-object list search), e.g. `?survey=lsst&oid=123,456,789`.
+      - `oids` only appears in the drill-in case — a single-object `oid` plus
+        the back-context list — where the list can't share the `oid` key
+        without colliding with the detail selector.
       - `page` only appears when > 1.
       - `probability` only appears when > 0.
     """
@@ -164,12 +165,19 @@ def _share_url(
         if radius is not None:
             params.append(("radius", str(radius)))
     if oids:
-        params.append(("oids", oids))
+        # Original-explorer convention: a multi-object selection lives under
+        # `oid` as a comma-separated list (e.g. `?survey=lsst&oid=123,456,789`).
+        # Emit the list there. The only time a single-object `oid` is also set
+        # is a drill-in from a list (detail view): keep the back-context list
+        # under `oids` then, so it doesn't collide with the detail selector.
+        params.append(("oids" if oid else "oid", oids))
     if page is not None and page > 1:
         params.append(("page", str(page)))
     if identifier:
         params.append(("identifier", identifier))
-    return "/" if not params else f"/?{urlencode(params)}"
+    # safe="," keeps the OID-list separators literal (`oid=123,456,789`) instead
+    # of percent-encoding them to `%2C`, matching the production explorer's URL.
+    return "/" if not params else f"/?{urlencode(params, safe=',')}"
 
 
 @router.get("/object/{oid}")
@@ -235,6 +243,14 @@ async def index(
     # the empty-hint default.
     if survey:
         _validate_survey(survey)
+    # Original-explorer convention: `oid` carries either a single object (→
+    # detail view) or a comma-separated set (→ multi-object list). A
+    # multi-valued `oid` is the list-search filter, so route it through the
+    # same path as the legacy `oids` param and clear the single-object
+    # selector. A single `oid` keeps opening the detail view.
+    if oid and len(object_list_service.parse_oid_list(oid)) > 1:
+        oids = oids or oid
+        oid = None
     return templates.TemplateResponse(
         request,
         "index.html.jinja",

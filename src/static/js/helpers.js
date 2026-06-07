@@ -44,9 +44,11 @@ function send_form_Data() {
   if (className) payload.class_name = className;
   if (resolvedVersion) payload.classifier_version = resolvedVersion;
   if (probability && parseFloat(probability) > 0) payload.probability = probability;
-  // `oids` (plural) is the free-text OID-list search. Distinct from the detail
-  // view's `oid=` (single-object), which shares the URL namespace but means
-  // something different — rename here so a search + detail URL can coexist.
+  // The free-text OID-list search goes to the htmx endpoint as `oids=`
+  // (plural) so the *internal* call can't collide with the detail view's
+  // single-object `oid=`. The shareable browser URL (set server-side via
+  // HX-Push-Url) re-emits this list under `oid=` to match the production
+  // explorer's convention (`?survey=lsst&oid=123,456,789`).
   if (oidsRaw) payload.oids = oidsRaw;
   if (minDet) payload.n_det_min = minDet;
   if (maxDet) payload.n_det_max = maxDet;
