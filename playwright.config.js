@@ -8,7 +8,10 @@ import { defineConfig, devices } from "@playwright/test";
 // tests-e2e/helpers.js — the app is designed to degrade gracefully without
 // them, and the core search / detail / light-curve flow does not depend on
 // them.
-const PORT = 8099;
+// Uncommon port to avoid colliding with other local dev servers / Docker
+// containers; reuseExistingServer would otherwise silently bind the test run
+// to a foreign app already listening here.
+const PORT = 8743;
 
 export default defineConfig({
   testDir: "tests-e2e/specs",
