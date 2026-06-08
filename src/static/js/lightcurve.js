@@ -1755,6 +1755,53 @@
     }
   }
 
+  // True when the chart has at least one detection/FP point with a finite
+  // science (corrected) flux, across the primary and cross-survey data. ZTF's
+  // corrected mags arrive with the deferred v2 merge, so this is only
+  // meaningful once lcSetBundle has run; LSST never carries science flux.
+  function bandsHaveScienceFlux(bandList) {
+    for (const b of bandList || []) {
+      for (const p of b.points || []) {
+        if (p && p.sci_flux != null && isFinite(p.sci_flux)) return true;
+      }
+    }
+    return false;
+  }
+  function chartHasScienceFlux(chart) {
+    const raw = chart.$lcRaw || {};
+    if (bandsHaveScienceFlux(raw.bands) || bandsHaveScienceFlux(raw.fpBands)) return true;
+    const x = chart.$lcXRaw || {};
+    return bandsHaveScienceFlux(x.bands) || bandsHaveScienceFlux(x.fpBands);
+  }
+
+  // Keep the Diff/Sci toggle honest about whether science flux exists for
+  // *this* object. Some ZTF objects have corrected mags that are all
+  // missing/NaN — Sci mode would draw a blank chart — so fall back to Diff and
+  // lock the toggle. Re-enables automatically if science flux later appears.
+  // The caller re-renders (applyModes) after this, so we only adjust state +
+  // the button here.
+  function updateSourceAvailability(chart) {
+    const has = chartHasScienceFlux(chart);
+    const canvas = chart.canvas;
+    const btn = canvas && document.querySelector(`.lc-source-toggle[data-target="${canvas.id}"]`);
+    if (!has && chart.$lcSource === "sci") {
+      chart.$lcSource = "diff";
+      if (btn) setCycleValue(btn, TOGGLE_SPECS.source, "diff");
+    }
+    if (btn) {
+      btn.disabled = !has;
+      btn.classList.toggle("tw-opacity-40", !has);
+      btn.classList.toggle("tw-cursor-not-allowed", !has);
+      if (!has) {
+        btn.setAttribute("aria-disabled", "true");
+        btn.title = "No science (corrected) flux for this object — showing difference flux.";
+      } else {
+        btn.removeAttribute("aria-disabled");
+        btn.removeAttribute("title");
+      }
+    }
+  }
+
   function bindCycleButton(btn, spec) {
     if (btn.$bound) return;
     btn.$bound = true;
@@ -1793,7 +1840,8 @@
     mode:   { btnSelector: ".lc-mode-toggle",   dataKey: "lcMode",   chartProp: "$lcMode",
               values: ["flux", "mag"], labels: { flux: "Flux", mag: "Mag" } },
     source: { btnSelector: ".lc-source-toggle", dataKey: "lcSource", chartProp: "$lcSource",
-              values: ["diff", "sci"], labels: { diff: "Diff", sci: "Sci" } },
+              values: ["diff", "sci"], labels: { diff: "Diff", sci: "Sci" },
+              guard: (chart, v) => v !== "sci" || chartHasScienceFlux(chart) },
     abs:    { btnSelector: ".lc-abs-toggle",    dataKey: "lcAbs",    chartProp: "$lcAbs",
               values: ["app", "abs"], labels: { app: "App", abs: "Abs" },
               guard: (chart, v) => v !== "abs" || (chart.$lcZ != null && chart.$lcZ > 0) },
@@ -2417,6 +2465,9 @@
       bands: bundle.bands || [],
       fpBands: bundle.forced_phot_bands || [],
     };
+    // The v2 merge is when ZTF science flux actually arrives — re-evaluate
+    // whether Sci is usable for this object (fall back to Diff if not).
+    updateSourceAvailability(chart);
     applyModes(chart);
     // FP arrival can also bring NEW per-detection rows (FP records the
     // service didn't have at synchronous render time), so signal a data
@@ -2446,6 +2497,7 @@
       fpBands: bundle.forced_phot_bands || [],
     };
     chart.$lcXOid = bundle.oid || null;
+    updateSourceAvailability(chart);
     applyModes(chart);
     emitDataChanged(chart);
     // Basic-info placeholder lives in a sibling panel of the LC; safe to
@@ -2754,5 +2806,7 @@
     // Parametric-overlay math (SPM / FLEET model evaluators + the shared
     // mag/flux → axis projection the overlays reuse from the detection path).
     projectModel, projectFluxModel, spmFlux_mJy, fleetMag, mjdEnvelope,
+    // Per-object science-flux availability (drives the Diff/Sci fallback).
+    chartHasScienceFlux,
   };
 })();

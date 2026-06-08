@@ -197,6 +197,28 @@ describe("fleetMag — polynomial-rise model", () => {
   });
 });
 
+describe("chartHasScienceFlux — Diff/Sci fallback gate", () => {
+  const withRaw = (raw) => ({ $lcRaw: raw });
+
+  test("false when every science flux is null or NaN", () => {
+    expect(T.chartHasScienceFlux(withRaw({ bands: [{ points: [{ flux: 100, sci_flux: null }] }], fpBands: [] }))).toBe(false);
+    expect(T.chartHasScienceFlux(withRaw({ bands: [{ points: [{ flux: 100, sci_flux: NaN }] }], fpBands: [] }))).toBe(false);
+  });
+
+  test("true when any detection has a finite science flux", () => {
+    expect(T.chartHasScienceFlux(withRaw({ bands: [{ points: [{ sci_flux: 1234 }] }], fpBands: [] }))).toBe(true);
+  });
+
+  test("counts forced-photometry and cross-survey bands too", () => {
+    expect(T.chartHasScienceFlux(withRaw({ bands: [], fpBands: [{ points: [{ sci_flux: 5 }] }] }))).toBe(true);
+    expect(T.chartHasScienceFlux({ $lcRaw: {}, $lcXRaw: { bands: [{ points: [{ sci_flux: 9 }] }] } })).toBe(true);
+  });
+
+  test("false on an empty / not-yet-loaded chart", () => {
+    expect(T.chartHasScienceFlux({})).toBe(false);
+  });
+});
+
 describe("mjdEnvelope", () => {
   test("returns the global min/max MJD across bands, ignoring NaN", () => {
     const env = T.mjdEnvelope([
