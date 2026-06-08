@@ -243,6 +243,15 @@ async def index(
     # the empty-hint default.
     if survey:
         _validate_survey(survey)
+    elif oid or oids:
+        # No survey pinned but we have OID(s): guess it from the OID shape
+        # (ZTF<2-digit year><letters> ⇒ ztf, all-digit ⇒ lsst), same rule the
+        # legacy /object/{oid} redirect uses. Lets a bare `?oid=…` link resolve
+        # to the right survey instead of always falling back to the default.
+        # Mixed-survey lists are unusual, so the first OID decides.
+        candidates = object_list_service.parse_oid_list(oid or oids)
+        if candidates:
+            survey = _detect_survey_from_oid(candidates[0]) or survey
     # Original-explorer convention: `oid` carries either a single object (→
     # detail view) or a comma-separated set (→ multi-object list). A
     # multi-valued `oid` is the list-search filter, so route it through the

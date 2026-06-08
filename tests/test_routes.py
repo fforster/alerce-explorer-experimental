@@ -125,6 +125,37 @@ def test_index_single_oid_still_opens_detail(client):
     assert "/htmx/detail?oid=170494726617694871" in r.text
 
 
+def test_index_guesses_ztf_survey_from_oid(client):
+    # No survey in the URL: guess ZTF from the `ZTF<yy><letters>` shape and
+    # open the detail view against that survey.
+    r = client.get("/?oid=ZTF18adqimwe")
+    assert r.status_code == 200
+    assert "/htmx/detail?oid=ZTF18adqimwe&survey_id=ztf" in r.text
+
+
+def test_index_guesses_lsst_survey_from_oid(client):
+    # No survey in the URL: an all-digit OID is LSST.
+    r = client.get("/?oid=170494726617694871")
+    assert r.status_code == 200
+    assert "/htmx/detail?oid=170494726617694871&survey_id=lsst" in r.text
+
+
+def test_index_guesses_survey_from_oid_list(client):
+    # No survey + a comma-list of all-digit OIDs → LSST list search.
+    r = client.get("/?oid=170494726617694871,170503520965363493")
+    assert r.status_code == 200
+    assert "/htmx/list_objects?survey=lsst" in r.text
+    assert "/htmx/detail" not in r.text
+
+
+def test_index_unguessable_oid_falls_back_to_default(client):
+    # An OID we can't classify (not ZTF-shaped, not all-digit) falls back to
+    # the default survey rather than erroring.
+    r = client.get("/?oid=mystery-oid")
+    assert r.status_code == 200
+    assert "/htmx/detail?oid=mystery-oid&survey_id=lsst" in r.text
+
+
 def test_index_rejects_unknown_survey(client):
     r = client.get("/?survey=panstarrs")
     assert r.status_code == 400
