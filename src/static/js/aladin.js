@@ -4,7 +4,7 @@
 // data-dec / data-oid. We:
 //   1. Lazy-load Aladin Lite v3 from CDS CDN (~1 MB) the first time an
 //      aladin host appears — not on every page view.
-//   2. Probe HiPS surveys in priority order (DESI DR10 → PanSTARRS DR1 →
+//   2. Probe HiPS surveys in priority order (PanSTARRS DR1 → DESI DR10 →
 //      SkyMapper DR4) against the object's RA/Dec using the hips2fits FITS
 //      cutout service. A tiny 16×16 cutout is enough to tell coverage from
 //      background: if any pixel is finite and non-zero, the survey has data
@@ -20,8 +20,8 @@
   const booted = new WeakSet();
 
   const HIPS_SURVEYS = [
-    { id: "CDS/P/DESI-Legacy-Surveys/DR10/color", label: "DESI DR10" },
     { id: "CDS/P/PanSTARRS/DR1/color-i-r-g",      label: "PanSTARRS DR1" },
+    { id: "CDS/P/DESI-Legacy-Surveys/DR10/color", label: "DESI DR10" },
     { id: "CDS/P/Skymapper/DR4/color",            label: "SkyMapper DR4" },
   ];
   const HIPS_FALLBACK = { id: "https://alaskybis.cds.unistra.fr/DSS/DSSColor", label: "DSS Color" };

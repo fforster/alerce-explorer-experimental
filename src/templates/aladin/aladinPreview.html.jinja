@@ -1,7 +1,7 @@
 {#
   Aladin panel — rendered by /htmx/aladin. The server emits the empty target
   div and the RA/Dec; client JS (static/js/aladin.js) probes HiPS coverage
-  (DESI → PanSTARRS → SkyMapper → DSS fallback) and boots Aladin Lite on it.
+  (PanSTARRS → DESI → SkyMapper → DSS fallback) and boots Aladin Lite on it.
 
   Aladin Lite v3 is loaded from CDS CDN the first time an aladin panel is
   rendered — it's a megabyte of JS and we don't want it on every page view.
@@ -11,7 +11,7 @@
     {% from "_panel_help.html.jinja" import panel_help %}
     {% call panel_help("Sky view", side="right") %}
       <div class="tw-font-semibold tw-mb-1">What's shown</div>
-      <p class="tw-mb-3 tw-text-text-secondary">Aladin Lite sky viewer centred on the object, backed by HiPS imagery (DESI → PanSTARRS → SkyMapper → DSS fallback depending on coverage).</p>
+      <p class="tw-mb-3 tw-text-text-secondary">Aladin Lite sky viewer centred on the object, backed by HiPS imagery (PanSTARRS → DESI → SkyMapper → DSS fallback depending on coverage).</p>
       <div class="tw-font-semibold tw-mb-1">Navigation</div>
       <ul class="tw-space-y-0.5 tw-mb-3 tw-list-disc tw-list-inside tw-text-text-secondary">
         <li>Pan: drag</li>
