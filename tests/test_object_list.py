@@ -1,4 +1,13 @@
-from src.services.object_list import build_search_params, parse_oid_list, shape_response
+import asyncio
+
+from src.services import object_list
+from src.services.object_list import (
+    build_search_params,
+    get_objects_list,
+    parse_oid_list,
+    shape_oid_list_response,
+    shape_response,
+)
 
 
 def test_parse_oid_list_splits_and_dedupes():
@@ -269,6 +278,53 @@ def test_shape_response_dedupes_same_oid_across_classifiers():
     assert out["items"][1]["classifier_name"] == "stamp"
 
 
+def test_shape_oid_list_reorders_to_entered_order():
+    """An explicit OID list displays in the order the user typed, not the
+    upstream's probability-DESC order. User entered B, A, C; API returned
+    them sorted by probability."""
+    rows = [
+        {"oid": "A", "probability": 0.9},
+        {"oid": "C", "probability": 0.7},
+        {"oid": "B", "probability": 0.5},
+    ]
+    out = shape_oid_list_response(rows, survey="lsst", page=1, oids=["B", "A", "C"])
+    assert [r["oid"] for r in out["items"]] == ["B", "A", "C"]
+    assert out["total"] == 3
+
+
+def test_shape_oid_list_reorder_runs_after_dedupe():
+    """Per-classifier duplicate rows collapse first, then the survivors line
+    up in entered order."""
+    rows = [
+        {"oid": "A", "classifier_name": "stamp", "probability": 0.9},
+        {"oid": "A", "classifier_name": "lc", "probability": 0.6},
+        {"oid": "B", "classifier_name": "stamp", "probability": 0.8},
+        {"oid": "B", "classifier_name": "lc", "probability": 0.5},
+    ]
+    out = shape_oid_list_response(rows, survey="lsst", page=1, oids=["B", "A"])
+    assert [r["oid"] for r in out["items"]] == ["B", "A"]
+    assert out["items"][0]["classifier_name"] == "stamp"
+
+
+def test_shape_oid_list_paginates_locally_in_entry_order():
+    """The second page holds the *next* entered OIDs, not the next
+    probability bucket. Entered 5 OIDs (E,D,C,B,A) with page_size=2; the
+    API returned them probability-sorted (A..E)."""
+    rows = [{"oid": o, "probability": p / 10} for o, p in
+            (("A", 9), ("B", 7), ("C", 5), ("D", 3), ("E", 1))]
+    oids = ["E", "D", "C", "B", "A"]
+    p1 = shape_oid_list_response(rows, survey="lsst", page=1, oids=oids, page_size=2)
+    assert [r["oid"] for r in p1["items"]] == ["E", "D"]
+    assert p1["has_next"] is True and p1["next"] == 2
+    assert p1["total"] == 5
+    p2 = shape_oid_list_response(rows, survey="lsst", page=2, oids=oids, page_size=2)
+    assert [r["oid"] for r in p2["items"]] == ["C", "B"]
+    assert p2["has_prev"] is True and p2["has_next"] is True
+    p3 = shape_oid_list_response(rows, survey="lsst", page=3, oids=oids, page_size=2)
+    assert [r["oid"] for r in p3["items"]] == ["A"]
+    assert p3["has_next"] is False and p3["next"] is False
+
+
 def test_shape_response_dedupe_handles_int_oids_and_missing_oid():
     raw = {
         "items": [
@@ -282,3 +338,68 @@ def test_shape_response_dedupe_handles_int_oids_and_missing_oid():
     out = shape_response(raw, survey="lsst", page=1)
     oids = [r.get("oid") for r in out["items"]]
     assert oids == [123456789012345678, None, 999]
+
+
+def test_get_objects_list_oid_search_paginates_in_entry_order(monkeypatch):
+    """End-to-end: a multi-page OID search pulls the whole matched set across
+    upstream pages and slices the requested page in *entry* order, even though
+    upstream returns the objects sorted by probability across its own pages."""
+    # 5 entered OIDs, reverse of upstream's probability order.
+    oids = ["E", "D", "C", "B", "A"]
+    # Upstream serves probability-DESC (A..E) over pages of 2 rows.
+    upstream = [
+        {"oid": "A", "probability": 0.9},
+        {"oid": "B", "probability": 0.7},
+        {"oid": "C", "probability": 0.5},
+        {"oid": "D", "probability": 0.3},
+        {"oid": "E", "probability": 0.1},
+    ]
+    calls = []
+
+    async def fake_list_objects(survey, params):
+        calls.append(params)
+        size = params["page_size"]
+        page = params["page"]
+        start = (page - 1) * size
+        return {"items": upstream[start : start + size]}
+
+    monkeypatch.setattr(object_list.alerce_client, "list_objects", fake_list_objects)
+    # Force the bulk fetch to page (tiny upstream page size) so we exercise
+    # the multi-page walk rather than a single jumbo request.
+    monkeypatch.setattr(object_list, "OID_FETCH_PAGE_SIZE", 2)
+
+    page2 = asyncio.run(
+        get_objects_list(survey="lsst", oid="E,D,C,B,A", page=2, page_size=2)
+    )
+    # Page 2 in entry order is C, B — not the second probability bucket.
+    assert [r["oid"] for r in page2["items"]] == ["C", "B"]
+    assert page2["total"] == 5
+    assert page2["has_next"] is True and page2["has_prev"] is True
+    # The bulk fetch walked upstream pages (more than one request).
+    assert len(calls) >= 2
+
+
+def test_get_objects_list_oid_fetch_stops_once_all_oids_seen(monkeypatch):
+    """The bulk fetch stops paging as soon as every entered OID has appeared,
+    rather than draining lower-probability strangers off later pages."""
+    oids = ["A", "B"]
+    # Huge upstream result, but the two wanted OIDs land on the first page.
+    page1 = [{"oid": "A"}, {"oid": "B"}]
+    calls = []
+
+    async def fake_list_objects(survey, params):
+        calls.append(params["page"])
+        if params["page"] == 1:
+            return {"items": page1}
+        # Any further page would be full of unrelated objects — should never
+        # be requested because both wanted OIDs already showed up.
+        return {"items": [{"oid": f"X{params['page']}"}] * params["page_size"]}
+
+    monkeypatch.setattr(object_list.alerce_client, "list_objects", fake_list_objects)
+    monkeypatch.setattr(object_list, "OID_FETCH_PAGE_SIZE", 2)
+
+    out = asyncio.run(
+        get_objects_list(survey="lsst", oid="A,B", page=1, page_size=20)
+    )
+    assert [r["oid"] for r in out["items"]] == ["A", "B"]
+    assert calls == [1]  # stopped after the first page

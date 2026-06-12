@@ -418,13 +418,17 @@ async def list_objects(
             "info_message": f"Upstream error: {e}",
         }
     # Known-total optimisation: when the user filtered by an OID list, the
-    # number of pages is exactly ceil(len(unique oids) / page_size). The
-    # dropdown can render the full 1..N range up-front instead of showing
-    # the "…" unknown-total marker. We compute on the parsed/deduped list
-    # so a user typing the same oid twice doesn't inflate the page count.
+    # service paginates locally and returns an exact `total` (matched objects),
+    # so the dropdown can render the full 1..N range up-front instead of the
+    # "…" unknown-total marker. Prefer the real matched count — some entered
+    # OIDs may not exist upstream — and fall back to the entered count if a
+    # transient error skipped the service total.
     parsed_oids = object_list_service.parse_oid_list(oids)
     if parsed_oids:
-        data["total_pages"] = (len(parsed_oids) + page_size - 1) // page_size
+        total_objects = data.get("total")
+        if total_objects is None:
+            total_objects = len(parsed_oids)
+        data["total_pages"] = max(1, (total_objects + page_size - 1) // page_size)
     resp = templates.TemplateResponse(
         request,
         "main_table_objects/objects_table.html.jinja",

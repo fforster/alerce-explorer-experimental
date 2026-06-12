@@ -363,6 +363,29 @@ def test_list_objects_emits_total_pages_for_oid_list(client, monkeypatch):
     assert "&#34;total_pages&#34;:2" in r.text
 
 
+def test_list_objects_total_pages_uses_real_matched_total(client, monkeypatch):
+    """When some entered OIDs don't exist upstream, total_pages follows the
+    service's exact matched `total`, not the (larger) entered count — so the
+    dropdown doesn't offer a trailing empty page."""
+    async def fake_objects(**kwargs):
+        return {
+            "items": [{"oid": f"OID{i}"} for i in range(20)],
+            "total": 20,  # only 20 of the 50 entered OIDs actually matched
+            "current_page": 1, "has_prev": False, "prev": False,
+            "has_next": False, "next": False, "info_message": None,
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.object_list_service.get_objects_list",
+        fake_objects,
+    )
+    oids = ",".join(f"OID{i}" for i in range(50))  # 50 entered, page_size 20
+    r = client.get(f"/htmx/list_objects?survey=lsst&oids={oids}")
+    assert r.status_code == 200
+    # 20 matched / 20 per page → 1 page, not ceil(50/20)=3.
+    assert "&#34;total_pages&#34;:1" in r.text
+
+
 def test_list_objects_omits_total_pages_for_generic_search(client, monkeypatch):
     """Without an OID list we have no way to know the total — data-nav
     must say `total_pages: null` so the dropdown falls back to the "…"
