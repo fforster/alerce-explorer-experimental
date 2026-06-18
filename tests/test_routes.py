@@ -684,6 +684,18 @@ def test_object_information_renders_basic_fields(client, monkeypatch):
     assert 'data-ecl="201.76000"' in r.text
     assert 'data-ecl="-21.88000"' in r.text
     assert "60000.000" in r.text
+    # First/Last time toggle: ⇄ button cycles MJD/JD/ISOT; the raw MJD is
+    # stashed on the value cells (data-mjd) + survey so the reformat is
+    # pure client-side (JD offset / TAI−UTC ISOT).
+    assert "time-format-toggle" in r.text
+    assert "time-value" in r.text
+    assert 'data-mjd="60000.0"' in r.text
+    assert 'data-mjd="60100.0"' in r.text
+    # The TAI−UTC offset used for the ISOT (UTC calendar) form is rendered
+    # server-side from survey_config so the template carries no second copy
+    # to drift on the next leap second.
+    from src.services.survey_config import TAI_MINUS_UTC_SECONDS
+    assert f"const TAI_MINUS_UTC_SECONDS = {TAI_MINUS_UTC_SECONDS};" in r.text
     assert "SIMBAD" in r.text
     # ZTF has a features endpoint, so the "Show features" button should render.
     assert "Show features" in r.text

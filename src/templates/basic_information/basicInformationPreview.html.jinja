@@ -9,7 +9,7 @@
       <div class="tw-font-semibold tw-mb-1">Fields</div>
       <ul class="tw-space-y-0.5 tw-mb-3 tw-list-disc tw-list-inside tw-text-text-secondary">
         <li><strong class="tw-text-text-primary">RA / Dec</strong> — mean object position</li>
-        <li><strong class="tw-text-text-primary">First / Last MJD</strong> — time span of detections (Δ MJD is the extent)</li>
+        <li><strong class="tw-text-text-primary">First / Last MJD</strong> — time span of detections (Δ MJD is the extent); the ⇄ button cycles both through MJD, JD, and ISOT (UTC calendar)</li>
         <li><strong class="tw-text-text-primary">N det / N non-det</strong> — detection and non-detection counts</li>
         <li><strong class="tw-text-text-primary">N forced</strong> — LSST forced-photometry count (when available)</li>
         <li><strong class="tw-text-text-primary">Corrected / Stellar</strong> — ZTF only: whether host-galaxy correction was applied, and a stellarity flag</li>
@@ -118,11 +118,36 @@
     <span></span>
     {% endif %}
 
-    <dt class="tw-text-text-secondary">First MJD</dt>
-    <dd class="mono tw-col-span-2">{% if info.firstmjd is not none %}{{ "%.6f"|format(info.firstmjd) }}{% else %}-{% endif %}</dd>
+    {#
+      First / Last time rows. The displayed unit cycles MJD → JD → ISOT via the
+      ⇄ button on the First row (it drives both rows). The raw MJD is stashed on
+      data-mjd and data-survey so the toggle is a pure client-side reformat: JD =
+      MJD + 2400000.5; ISOT is a UTC calendar string that subtracts the TAI−UTC
+      offset for LSST (midpointMjdTai is atomic time) — same handling as
+      lightcurve.js::mjdToUtcString. The unit word in each label is a
+      `.time-unit-label` span the toggle rewrites in place.
+    #}
+    <dt class="tw-text-text-secondary">First <span class="time-unit-label">MJD</span></dt>
+    <dd class="mono time-value"
+        data-mjd="{% if info.firstmjd is not none %}{{ info.firstmjd }}{% endif %}"
+        data-survey="{{ survey_id }}">{% if info.firstmjd is not none %}{{ "%.6f"|format(info.firstmjd) }}{% else %}-{% endif %}</dd>
+    {% if info.firstmjd is not none or info.lastmjd is not none %}
+    <button
+      type="button"
+      class="time-format-toggle tw-justify-self-start tw-px-1 tw-text-[10px] tw-leading-none tw-text-accent hover:tw-text-text-primary tw-border tw-border-border tw-rounded"
+      data-mode="mjd"
+      aria-label="Cycle First/Last time format (MJD, JD, ISOT)"
+      title="Cycle First/Last time format: MJD ↔ JD ↔ ISOT (UTC calendar; LSST atomic time is offset by TAI−UTC)."
+    >⇄</button>
+    {% else %}
+    <span></span>
+    {% endif %}
 
-    <dt class="tw-text-text-secondary">Last MJD</dt>
-    <dd class="mono tw-col-span-2">{% if info.lastmjd is not none %}{{ "%.6f"|format(info.lastmjd) }}{% else %}-{% endif %}</dd>
+    <dt class="tw-text-text-secondary">Last <span class="time-unit-label">MJD</span></dt>
+    <dd class="mono time-value"
+        data-mjd="{% if info.lastmjd is not none %}{{ info.lastmjd }}{% endif %}"
+        data-survey="{{ survey_id }}">{% if info.lastmjd is not none %}{{ "%.6f"|format(info.lastmjd) }}{% else %}-{% endif %}</dd>
+    <span></span>
 
     <dt class="tw-text-text-secondary">Δ MJD</dt>
     {#
@@ -385,6 +410,48 @@
       deltaToggle.textContent = next === "human" ? "Days" : "Human";
       deltaToggle.setAttribute("aria-pressed", next === "days" ? "true" : "false");
     });
+  }
+
+  // First/Last time toggle: cycle the displayed unit MJD → JD → ISOT for both
+  // rows at once. The raw MJD lives on data-mjd (full precision) and the survey
+  // on data-survey; JD adds the MJD→JD offset, ISOT is a UTC calendar string
+  // that subtracts TAI−UTC for LSST atomic time. The offset is rendered
+  // server-side from services/survey_config.py::TAI_MINUS_UTC_SECONDS so this
+  // template doesn't carry its own copy to drift on the next leap second.
+  const timeToggle = root.querySelector(".time-format-toggle");
+  const timeCells = root.querySelectorAll(".time-value");
+  const timeUnitLabels = root.querySelectorAll(".time-unit-label");
+  if (timeToggle && timeCells.length) {
+    const TIME_CYCLE = ["mjd", "jd", "isot"];
+    const TIME_UNIT_LABEL = { mjd: "MJD", jd: "JD", isot: "ISOT" };
+    const MJD_UNIX_EPOCH = 40587;
+    const TAI_MINUS_UTC_SECONDS = {{ tai_minus_utc_seconds }};
+    function fmtTime(mjd, survey, mode) {
+      if (!isFinite(mjd)) return "-";
+      if (mode === "jd") return (mjd + 2400000.5).toFixed(6);
+      if (mode === "isot") {
+        let seconds = (mjd - MJD_UNIX_EPOCH) * 86400;
+        if (survey === "lsst") seconds -= TAI_MINUS_UTC_SECONDS;
+        const d = new Date(seconds * 1000);
+        if (isNaN(d.getTime())) return "-";
+        return d.toISOString().slice(0, 23); // YYYY-MM-DDTHH:MM:SS.sss (UTC)
+      }
+      return mjd.toFixed(6);
+    }
+    function applyTime() {
+      const mode = timeToggle.dataset.mode || "mjd";
+      timeCells.forEach((cell) => {
+        const raw = parseFloat(cell.dataset.mjd);
+        cell.textContent = isFinite(raw) ? fmtTime(raw, cell.dataset.survey, mode) : "-";
+      });
+      timeUnitLabels.forEach((el) => { el.textContent = TIME_UNIT_LABEL[mode]; });
+    }
+    timeToggle.addEventListener("click", () => {
+      const idx = TIME_CYCLE.indexOf(timeToggle.dataset.mode || "mjd");
+      timeToggle.dataset.mode = TIME_CYCLE[(idx + 1) % TIME_CYCLE.length];
+      applyTime();
+    });
+    applyTime();
   }
 
   if (copyBtn) {

@@ -30,7 +30,7 @@ from ..services import object_list as object_list_service
 from ..services import probability as probability_service
 from ..services import stamps as stamps_service
 from ..services import tns as tns_service
-from ..services.survey_config import SC, known_surveys
+from ..services.survey_config import SC, TAI_MINUS_UTC_SECONDS, known_surveys
 
 log = logging.getLogger(__name__)
 
@@ -855,6 +855,7 @@ async def object_information(request: Request, oid: str, survey_id: str) -> HTML
             "info": info,
             "survey_id": survey_id,
             "has_features": SC(survey_id).features_url_template is not None,
+            "tai_minus_utc_seconds": TAI_MINUS_UTC_SECONDS,
         },
     )
 
