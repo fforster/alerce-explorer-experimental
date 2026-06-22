@@ -511,36 +511,33 @@ def test_search_form_prefills_all_filters(client, stub_services):
     assert '<option value="SN" selected>SN</option>' in r.text
 
 
-def test_search_form_renders_classifier_version_dropdown(client, stub_services):
-    """The version select carries the static Latest/Any options plus a
-    `data-versions` JSON list on each classifier option so the inline JS
-    can repopulate the per-version options on classifier change."""
+def test_search_form_hides_classifier_version_control(client, stub_services):
+    """The version control is HIDDEN until upstream supports the filter:
+    neither survey's list_objects honors `classifier_version` (ZTF returns
+    zero rows for any value, LSST ignores it — see
+    test_survey_config::test_ztf_extra_params_drops_classifier_version). The
+    live <select> must be gone, but the classifier options keep their
+    `data-versions` / `data-latest-version` attrs so re-enabling is a pure
+    template revert."""
     r = client.get("/htmx/search_objects/?survey=lsst&classifier=lc_classifier_top")
     assert r.status_code == 200
-    # Static modes always present.
-    assert 'id="classifier_version"' in r.text
-    assert '<option value="latest"' in r.text
-    assert '<option value="any"' in r.text
-    # Per-version options pre-rendered for the deep-linked classifier so the
-    # form is fully hydrated without waiting on a JS event.
-    assert '<option value="1.0.0"' in r.text
-    assert '<option value="2.0.1"' in r.text
-    # Each classifier option carries its versions + latest as data attrs so
-    # client-side JS can resolve "Latest" and rebuild the dropdown without
-    # a server round trip.
+    # The interactive control and its options must not render.
+    assert 'id="classifier_version"' not in r.text
+    assert '<option value="latest"' not in r.text
+    # Data attrs stay on the classifier options for a clean re-enable later.
     assert 'data-versions=' in r.text
     assert 'data-latest-version="2.0.1"' in r.text
 
 
-def test_search_form_preselects_classifier_version(client, stub_services):
-    """Deep-link with `classifier_version=1.0.0` → that option lands as
-    `selected` so the form mirrors what the URL is asking for."""
+def test_search_form_version_deeplink_is_inert(client, stub_services):
+    """A deep-link still carrying `classifier_version=…` must not error or
+    resurrect the hidden control — the param is simply ignored by the form."""
     r = client.get(
         "/htmx/search_objects/?survey=lsst&classifier=lc_classifier_top"
         "&classifier_version=1.0.0"
     )
     assert r.status_code == 200
-    assert '<option value="1.0.0" selected>1.0.0</option>' in r.text
+    assert 'id="classifier_version"' not in r.text
 
 
 def test_index_hydrates_list_from_any_filter(client):

@@ -101,6 +101,14 @@ def _ztf_extra_params(params: dict[str, object]) -> dict[str, object]:
     Matches the prototype's SURVEY_CONFIG.ztf.extraParams behavior.
     """
     out = {k: v for k, v in params.items() if v is not None and k != "survey"}
+    # ZTF's /objects endpoint does NOT filter on classifier_version — passing
+    # one (e.g. the form's "Latest" resolving lc_classifier to
+    # "hierarchical_random_forest_1.0.0") silently returns ZERO rows instead of
+    # ignoring the unknown filter. ZTF's classifiers endpoint reports a version
+    # per classifier, but it's informational only; the classifier runs
+    # deterministically off the features and isn't selectable by version (see
+    # the note in object_list._normalize_ztf_row). Drop it so the search works.
+    out.pop("classifier_version", None)
     if "class_name" in out:
         out["class"] = out.pop("class_name")
     if "n_det" in out:
