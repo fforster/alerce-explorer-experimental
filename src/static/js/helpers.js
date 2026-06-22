@@ -25,8 +25,15 @@ function send_form_Data() {
   // "any" sends nothing, otherwise pass the picked version through.
   // Version is meaningless without a chosen classifier, so we skip
   // the field entirely in that case.
+  //
+  // The Version control is currently HIDDEN in the form (see form.html.jinja):
+  // neither survey's list_objects endpoint actually honors classifier_version —
+  // ZTF returns ZERO rows for any value (even the one it reports), LSST ignores
+  // it. So when the select is absent we default to "any" (send nothing) rather
+  // than the old "latest" fallback, which is what was silently zeroing ZTF
+  // searches. Restore the default to "latest" when the control returns.
   const versionSelect = document.getElementById("classifier_version");
-  const versionMode = versionSelect ? versionSelect.value : "latest";
+  const versionMode = versionSelect ? versionSelect.value : "any";
   let resolvedVersion = null;
   if (classifier && versionMode && versionMode !== "any") {
     if (versionMode === "latest") {

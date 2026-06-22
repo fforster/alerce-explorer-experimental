@@ -27,6 +27,19 @@ def test_ztf_extra_params_remaps_field_names():
     assert out["probability"] == 0.9
 
 
+def test_ztf_extra_params_drops_classifier_version():
+    # ZTF's /objects endpoint silently returns zero rows when given a
+    # classifier_version (the form's "Latest" resolves lc_classifier to a
+    # concrete version) instead of ignoring the unknown filter — so we must
+    # strip it. LSST keeps it (see test below).
+    out = SC("ztf").extra_params({
+        "classifier": "lc_classifier",
+        "classifier_version": "hierarchical_random_forest_1.0.0",
+    })
+    assert "classifier_version" not in out
+    assert out["classifier"] == "lc_classifier"
+
+
 def test_ztf_extra_params_sorts_by_probability_desc():
     out = SC("ztf").extra_params({})
     assert out["order_by"] == "probability"

@@ -122,7 +122,6 @@
       hx-target="#class_name"
       hx-swap="innerHTML"
       hx-vals='js:{...send_classes_data()}'
-      onchange="window.refillClassifierVersions && window.refillClassifierVersions()"
     >
       {#
         Each option carries the available class list AND the available
@@ -147,13 +146,22 @@
   </div>
 
   {#
-    Class + classifier-version live side-by-side because they're both
-    classifier-scoped: changing the classifier rewires both lists.
-    classes_select runs server-side via htmx (existing pattern); versions
-    are repopulated client-side from `data-versions` on the classifier
-    option (refillClassifierVersions, defined inline below the row).
+    Class (and, when re-enabled, classifier-version) is classifier-scoped:
+    changing the classifier rewires the list. classes_select runs server-side
+    via htmx (existing pattern).
+
+    The classifier-version control is HIDDEN until the API supports it: neither
+    survey's list_objects endpoint honors `classifier_version` — ZTF returns
+    ZERO rows for any value (even the version it reports), LSST silently ignores
+    it (see services/survey_config.py::_ztf_extra_params and the regression test
+    in tests/test_survey_config.py). The Version <select>, its inline
+    `refillClassifierVersions` script, and the classifier select's
+    `onchange="refillClassifierVersions(...)"` hook are commented out below so
+    re-enabling is a pure revert once upstream filtering works. The
+    `data-versions` / `data-latest-version` attrs on the classifier options are
+    left in place (harmless) so the control can come straight back.
   #}
-  <div class="tw-grid tw-grid-cols-2 tw-gap-2">
+  <div class="tw-grid tw-grid-cols-1 tw-gap-2">
     <div>
       <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
         <label class="tw-text-xs tw-text-text-secondary" for="class_name">Class</label>
@@ -180,22 +188,27 @@
         {% endif %}
       </select>
     </div>
+    {#
+      HIDDEN until the API supports classifier_version filtering (see the note
+      on the grid container above). To re-enable: uncomment this <div> and the
+      <script> below, restore grid-cols-1 → grid-cols-2 on the wrapper, restore
+      the classifier select's onchange="refillClassifierVersions()" hook, and
+      flip helpers.js's absent-select fallback from "any" back to "latest".
+
     <div>
       <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
         <label class="tw-text-xs tw-text-text-secondary" for="classifier_version">Version</label>
         {{ tip("Which trained version of the classifier to use. 'Latest' resolves to the newest version on submit; 'Any' ignores the version (matches classifications from every version); or pin a specific version to reproduce an older run.") }}
       </div>
-      {#
-        Three modes:
-          - "latest" (default): helpers.js resolves to the classifier's
-            data-latest-version on submit. So "Latest" is concrete: the same
-            specific version always lands on the wire, the user just
-            doesn't have to know which.
-          - "any": don't send classifier_version upstream — useful when
-            comparing classifications across versions.
-          - <specific>: pinned. Repopulated server-side on deep-link, and
-            client-side whenever the classifier select fires `change`.
-      #}
+      Three modes:
+        - "latest" (default): helpers.js resolves to the classifier's
+          data-latest-version on submit. So "Latest" is concrete: the same
+          specific version always lands on the wire, the user just
+          doesn't have to know which.
+        - "any": don't send classifier_version upstream — useful when
+          comparing classifications across versions.
+        - <specific>: pinned. Repopulated server-side on deep-link, and
+          client-side whenever the classifier select fires `change`.
       <select
         id="classifier_version"
         class="tw-w-full tw-bg-bg-tertiary tw-border tw-border-border tw-rounded tw-py-1 tw-px-2 tw-text-xs"
@@ -211,8 +224,10 @@
         {% endif %}
       </select>
     </div>
+    #}
   </div>
 
+  {#
   <script>
     // Rebuilds the version select when the classifier select changes. Reads
     // the chosen classifier option's `data-versions` (JSON list); falls back
@@ -245,6 +260,7 @@
       verSel.value = stillValid ? prev : "latest";
     };
   </script>
+  #}
 
   <div>
     <div class="tw-flex tw-items-center tw-gap-1 tw-mb-1">
