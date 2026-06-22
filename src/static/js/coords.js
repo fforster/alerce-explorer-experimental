@@ -237,6 +237,38 @@
     return m;
   };
 
+  // Reverse of calendarPickerToMJD: push a free-text date field's value into
+  // its hidden <input type="datetime-local"> picker (id = "<textId>-cal") so
+  // that when the user types an MJD/JD/date by hand and then opens the picker,
+  // it lands on the date they entered instead of a stale value. Unparseable
+  // input leaves the picker untouched; an empty field clears it.
+  window.syncDatePickerFromText = function (textId) {
+    const textEl = document.getElementById(textId);
+    const calEl = document.getElementById(textId + "-cal");
+    if (!textEl || !calEl) return;
+    const raw = textEl.value.trim();
+    if (!raw) {
+      calEl.value = "";
+      return;
+    }
+    const m = smartDateToMJD(raw);
+    if (m == null) return;
+    const s = mjdToCalendarStr(m); // "YYYY-MM-DDTHH:MM:SS" (UTC)
+    if (s) calEl.value = s;
+  };
+
+  // Delegated so it survives htmx re-rendering the form fragment and doesn't
+  // need an onchange threaded through the shared input() macro. The only text
+  // fields with a sibling "<id>-cal" picker are the four discovery /
+  // last-detection date inputs, so that sibling check is the selector.
+  document.addEventListener("change", function (ev) {
+    const t = ev.target;
+    if (!t || !t.id || t.type === "datetime-local") return;
+    if (document.getElementById(t.id + "-cal")) {
+      window.syncDatePickerFromText(t.id);
+    }
+  });
+
   // Resolve a name field into the coords field. Returns true on success so
   // the caller can update UI (e.g. swap the spinner back to its icon).
   window.resolveNameInto = async function (nameId, coordsId) {

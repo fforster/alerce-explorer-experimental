@@ -68,3 +68,57 @@ describe("mjdToCalendarStr", () => {
     expect(window.smartDateToMJD(iso)).toBeCloseTo(59000, 6);
   });
 });
+
+describe("syncDatePickerFromText", () => {
+  // Mirrors the form layout: a free-text date field plus its hidden
+  // datetime-local picker sibling at id="<textId>-cal".
+  function makePair(textValue) {
+    // step="1" matches the form's pickers — without it datetime-local
+    // sanitizes to minute precision and drops the seconds.
+    document.body.innerHTML = `
+      <input id="filter-date-from" type="text" value="${textValue}" />
+      <input id="filter-date-from-cal" type="datetime-local" step="1" value="2099-01-01T00:00:00" />
+    `;
+    return document.getElementById("filter-date-from-cal");
+  }
+
+  // NOTE: jsdom's datetime-local sanitizer drops seconds even with step="1",
+  // so we assert to the minute (startsWith) — same compromise as the
+  // mjdToCalendarStr test above. The fractional MJD (.5 = 12:00 UTC) proves
+  // the time-of-day flows through, not just the date.
+  test("typing an MJD (with time of day) updates the hidden UTC picker", () => {
+    const cal = makePair("59000.5"); // 2020-05-31 12:00:00 UTC
+    window.syncDatePickerFromText("filter-date-from");
+    expect(cal.value.startsWith("2020-05-31T12:00")).toBe(true);
+  });
+
+  test("a JD and a calendar date both drive the picker", () => {
+    let cal = makePair("2459000.5"); // JD → MJD 59000 → 2020-05-31 00:00
+    window.syncDatePickerFromText("filter-date-from");
+    expect(cal.value.startsWith("2020-05-31T00:00")).toBe(true);
+
+    cal = makePair("2020-05-31");
+    window.syncDatePickerFromText("filter-date-from");
+    expect(cal.value.startsWith("2020-05-31T00:00")).toBe(true);
+  });
+
+  test("unparseable text leaves the picker untouched", () => {
+    const cal = makePair("not a date");
+    window.syncDatePickerFromText("filter-date-from");
+    expect(cal.value.startsWith("2099-01-01T00:00")).toBe(true);
+  });
+
+  test("clearing the text field clears the picker", () => {
+    const cal = makePair("");
+    window.syncDatePickerFromText("filter-date-from");
+    expect(cal.value).toBe("");
+  });
+
+  test("delegated change event syncs without an explicit call", () => {
+    const cal = makePair("59000.5");
+    document
+      .getElementById("filter-date-from")
+      .dispatchEvent(new window.Event("change", { bubbles: true }));
+    expect(cal.value.startsWith("2020-05-31T12:00")).toBe(true);
+  });
+});
