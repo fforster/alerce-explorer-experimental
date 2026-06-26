@@ -20,9 +20,24 @@ services:
     image: alerce-explorer-experimental:latest
     restart: unless-stopped
     env_file: .env          # API_URL and any future secrets (git-ignored)
+    environment:
+      # Session-replay analytics (services/analytics.py). Collection is OFF
+      # unless ANALYTICS_ENABLED is truthy in .env. Set ANALYTICS_IP_SALT in
+      # .env to make the per-IP hashes non-guessable. ANALYTICS_LOG_DIR is left
+      # at its default (/app/logs/analytics), which the bind mount below maps
+      # onto ./logs/analytics on the host.
+      ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-0}
+      ANALYTICS_IP_SALT: ${ANALYTICS_IP_SALT:-}
     expose:
       - "8000"              # internal only — no `ports:`, never hits the host
-    # No volumes, no secrets baked in. Stateless container.
+    volumes:
+      # Persist captured sessions in the repo's own ./logs dir on the host (it
+      # is both git- and docker-ignored, so nothing is ever committed or baked
+      # into the image — only written here at runtime). The container fs is
+      # otherwise ephemeral, so without this mount logs vanish on redeploy.
+      # One-time on the host before the first `up`, so the non-root appuser
+      # (uid 10001) can write:  mkdir -p logs && sudo chown -R 10001:10001 logs
+      - ./logs:/app/logs
 
   caddy:
     image: caddy:2

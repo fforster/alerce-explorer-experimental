@@ -22,6 +22,7 @@
 {%- set v = asset_v() %}
 <link rel="stylesheet" href="/static/css/main.css?v={{ v }}"/>
 
+<script>window.API_URL = "{{ API_URL }}";</script>
 <script src="/static/htmx/htmx.min.js"></script>
 <script src="https://unpkg.com/htmx-ext-response-targets@2.0.2" crossorigin="anonymous"></script>
 <script src="/static/chart-js/chart.umd.js"></script>
@@ -43,6 +44,14 @@
 <script src="/static/js/color_evolution.js?v={{ v }}" defer></script>
 <script src="/static/js/specz.js?v={{ v }}" defer></script>
 <script src="/static/js/aladin.js?v={{ v }}" defer></script>
+{# Session-replay analytics — only shipped when the operator opts in via
+   ANALYTICS_ENABLED, so "disabled" means these scripts aren't on the page.
+   Served under neutral names (recorder.min.js / ux_recorder.js, not "rrweb" /
+   "analytics") so Brave/uBlock tracker filter lists don't block them. #}
+{% if analytics_enabled() %}
+<script src="/static/vendor/recorder/recorder.min.js" defer></script>
+<script src="/static/js/ux_recorder.js?v={{ v }}" defer></script>
+{% endif %}
 </head>
 <body class="tw-h-full tw-bg-bg-primary tw-text-text-primary">
 {% block body %}{% endblock %}

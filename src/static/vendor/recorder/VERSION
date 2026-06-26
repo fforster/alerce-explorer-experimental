@@ -1,0 +1,18 @@
+rrweb record-only bundle
+=========================
+
+package : rrweb (record build)
+version : 2.0.0-alpha.4
+file    : recorder.min.js   (upstream name: rrweb-record.min.js)
+source  : https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.4/dist/record/rrweb-record.min.js
+renamed : served as recorder.min.js (NOT "rrweb-record") so Brave/uBlock
+          tracker filter lists, which match the substring "rrweb", don't block
+          the bundle from loading.
+global  : window.rrwebRecord   (the record() function; also exposes
+          .addCustomEvent / .takeFullSnapshot / .freezePage)
+
+Self-hosted per project convention (no runtime CDN — same as htmx / Chart.js).
+Only the record half of rrweb is vendored; replay (rrweb-player) is a dev-only
+tool and is intentionally NOT shipped to the browser.
+
+To upgrade: re-download the same path at the new version and bump this file.

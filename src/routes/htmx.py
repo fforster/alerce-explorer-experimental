@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from ..services import analytics as analytics_service
 from ..services import avro as avro_service
 from ..services import classifiers as classifiers_service
 from ..services import coord_residuals as coord_residuals_service
@@ -70,6 +71,10 @@ def _asset_version() -> str:
 
 
 templates.env.globals["asset_v"] = _asset_version
+# Callable (not a snapshot) so the env flag is read per-render — keeps tests
+# that toggle ANALYTICS_ENABLED honest, and lets the operator flip it without
+# a process restart.
+templates.env.globals["analytics_enabled"] = analytics_service.is_enabled
 
 
 def _validate_survey(survey: str) -> None:

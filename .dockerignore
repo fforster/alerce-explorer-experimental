@@ -12,6 +12,10 @@
 .env.*
 !.env.example
 
+# Captured session-replay analytics logs — runtime data, never build input
+# (services/analytics.py writes logs/analytics/*.jsonl.gz here)
+logs/
+
 # Python / build artifacts (reinstalled or rebuilt inside the image)
 .venv/
 venv/
