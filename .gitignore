@@ -1,5 +1,8 @@
 __pycache__/
 *.py[cod]
+
+# Captured session-replay analytics logs (services/analytics.py)
+logs/
 .venv/
 venv/
 .env

@@ -3,10 +3,13 @@ features (Chart.js, FITS, Aladin) that need data rather than HTML fragments.
 """
 from __future__ import annotations
 
+import json
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response
 
+from ..services import analytics as analytics_service
 from ..services import lsst_neighbors as lsst_neighbors_service
 from ..services import ztf_dr as ztf_dr_service
 
@@ -18,6 +21,33 @@ router = APIRouter(prefix="/api", tags=["rest"])
 @router.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.post("/ux_events")
+async def ux_events(request: Request) -> Response:
+    """Sink for client-side rrweb session-replay batches.
+
+    Path is deliberately neutral (``/ux_events``, not ``/analytics``) so
+    Brave/uBlock tracker filter lists don't block the beacon. Always answers
+    204 No Content — even when collection is disabled or the body is
+    unparseable — so the browser never retries and the response never leaks
+    whether tracking is on. The body arrives via ``navigator.sendBeacon``
+    (which can't set custom headers), so we read and parse the raw bytes
+    ourselves rather than relying on a Pydantic model.
+    """
+    if not analytics_service.is_enabled():
+        return Response(status_code=204)
+    raw = await request.body()
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return Response(status_code=204)
+    client_ip = request.client.host if request.client else None
+    try:
+        analytics_service.append(payload, client_ip=client_ip)
+    except Exception:
+        log.exception("analytics append failed")
+    return Response(status_code=204)
 
 
 @router.get("/ztf_dr")

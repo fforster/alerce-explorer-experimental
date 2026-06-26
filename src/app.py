@@ -13,13 +13,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .routes import htmx, rest
-from .services import replay
+from .services import analytics, replay
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 # Off unless EXPLORER_REPLAY_DIR is set (Tier 3 / E2E). No-op in production.
 replay.maybe_install()
+
+# Make it obvious at boot whether session-replay analytics is collecting and
+# where it writes — otherwise an unset ANALYTICS_ENABLED looks like a broken
+# logs dir (it just means collection is off). Mirrors replay's print style.
+if analytics.is_enabled():
+    print(f"[analytics] enabled, logging to {analytics.log_dir()}")
+else:
+    print("[analytics] disabled (set ANALYTICS_ENABLED=1 to collect)")
 
 app = FastAPI(title="Tutorial ALeRCE Explorer")
 
