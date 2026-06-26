@@ -56,6 +56,50 @@ git pull
 docker compose up -d --build
 ```
 
+## Session-replay analytics
+
+Optional, **off by default**. Records visitor sessions (rrweb) to gzipped daily
+JSONL so we can study how the explorer is used. See `src/services/analytics.py`.
+
+Enable on the server:
+
+```bash
+ssh explorer-exp
+cd alerce-explorer-experimental
+git pull                       # make sure the analytics feature is deployed
+
+# 1. Turn it on in .env
+#      ANALYTICS_ENABLED=1
+#      ANALYTICS_IP_SALT=<a long random string>   # so per-IP hashes aren't reversible
+nano .env
+
+# 2. One-time: let the container's non-root appuser (uid 10001) write ./logs.
+#    docker-compose bind-mounts ./logs -> /app/logs, so sessions persist on the
+#    host next to the code (./logs is git- and docker-ignored, never committed).
+mkdir -p logs && sudo chown -R 10001:10001 logs
+
+# 3. Rebuild + restart
+docker compose up -d --build
+```
+
+Verify it's live:
+
+```bash
+docker compose logs app | grep analytics                  # → "[analytics] enabled, logging to /app/logs/analytics"
+curl -s https://explorer-experiment.alerce.online/ | grep -o 'ux_recorder.js'   # script is injected
+ls logs/analytics/                                        # YYYY-MM-DD.jsonl.gz appears after real traffic
+```
+
+Notes:
+- **Privacy:** anonymous only; raw IPs are never stored (salted hash). Visitors
+  who send **GPC / Do-Not-Track** (Brave default, Firefox with the signal on)
+  are intentionally **not** recorded. To turn collection off again, set
+  `ANALYTICS_ENABLED=0` in `.env` and `docker compose up -d`.
+- **Durability:** logs live on the instance disk only. For long-term retention,
+  periodically sync `./logs/analytics/` to S3.
+- **Inspect:** `pd.read_json("logs/analytics/<date>.jsonl.gz", lines=True, compression="gzip")`;
+  feed a row's `payload.events` into `rrweb-player` (dev tool) to replay a session.
+
 ## Handy commands
 
 ```bash
