@@ -320,4 +320,23 @@ window.send_classes_data = send_classes_data;
   }
 
   window.backToResults = backToResults;
+
+  /* Fire-and-forget bulk-crossmatch prefetch for the objects on a results page
+   * (or the whole OID list). Reads the [{oid,ra,dec}] payload off the hidden
+   * #xmatch-prefetch element and POSTs it to /htmx/xmatch_prefetch, which warms
+   * the server-side cache so detail-view crossmatch + spec-z overlays are
+   * instant. Off the critical path — failures are swallowed. */
+  function send_xmatch_prefetch(el) {
+    try {
+      const positions = JSON.parse(el.getAttribute("data-xmatch-positions") || "[]");
+      if (!positions.length) return;
+      fetch((window.API_URL || "") + "/htmx/xmatch_prefetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ positions: positions }),
+        keepalive: true,
+      }).catch(function () {});
+    } catch (e) { /* malformed payload — skip */ }
+  }
+  window.send_xmatch_prefetch = send_xmatch_prefetch;
 })();

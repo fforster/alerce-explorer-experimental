@@ -14,6 +14,11 @@ httpx = "^0.27.2"
 pydantic-settings = "^2.5.2"
 uvicorn = { extras = ["standard"], version = "^0.30.6" }
 scikit-learn = "^1.5"
+# Bulk crossmatch (services/xmatch.py): astroquery.xmatch → CDS XMatch for
+# Simbad/SDSS/DESI + VizieR spec-z catalogs; pyvo → NED TAP. astropy/numpy come
+# transitively (numpy already pulled by scikit-learn).
+astroquery = "^0.4.7"
+pyvo = "^1.5"
 
 [tool.poetry.group.test.dependencies]
 pytest = "^8.3.3"

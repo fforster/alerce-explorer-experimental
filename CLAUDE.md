@@ -203,6 +203,12 @@ src/
     coord_residuals.py       # shape_coord_residuals — programmatic API only; the UI panel derives
                              # client-side from the live LC chart (incl. cross-survey)
     crossmatch.py            # catsHTM crossmatch fetch + per-catalog row shaping
+    xmatch.py                # bulk CDS XMatch (Simbad/SDSS/DESI + 11 VizieR spec-z
+                             # catalogs) + NED TAP; async bulk_all() fans every catalog
+                             # out concurrently (to_thread + gather, Semaphore(8)).
+                             # Ported from the TNS pipeline's catalogs.py registry/normalizers
+    xmatch_cache.py          # in-memory TTL cache (oid→record) warmed by the page-load
+                             # prefetch; in-flight de-dup; read by the crossmatch panel + overlay
     stamps.py                # stamp picker context + per-survey stamp_url_templates_by_survey
                              # (with __OID__ + __IDENT__ placeholders so cross-survey clicks
                              # dispatch to the right survey's stamp service)
@@ -330,4 +336,16 @@ tests/                       # pytest; each service file has a matching test fil
 - **Airmass panel** — toggleable from the basic-info "Airmass" button; shares a grid cell with periodogram + position residuals (mutually exclusive). `js/airmass.js` + `templates/airmass/airmassPanel.html.jinja`.
 - **Cross-survey LC overlay** — every detail view cone-searches the *other* survey at this object's RA/Dec (3″) via `/htmx/lc_xsurvey` and overlays the matched counterpart on the same chart. See domain-trap #12 for the end-to-end plumbing (per-survey markers, legend grouping, visibility memory, stamps dispatch, position-residuals + periodogram + CSV inheritance, basic-info xsurvey link). The header reads "ALeRCE multisurvey explorer" once this lands.
 - **Position residuals from live LC** — the `/htmx/coord_residuals` endpoint became a shell renderer; `js/coord_residuals.js` derives the scatter client-side from the LC chart's `$lcRaw` + `$lcXRaw`, filters by LC dataset visibility, and re-renders on `lc:dataChanged` / `lc:visibilityChanged`. Marker shape mirrors the LC (LSST=circle, ZTF=square).
+- **Bulk CDS/NED crossmatch prefetch** — at each results-page render (or, for an
+  OID-list search, the whole list at once via `all_positions`) a fire-and-forget
+  `POST /htmx/xmatch_prefetch` bulk-crossmatches every object against the CDS XMatch
+  catalogs (Simbad, SDSS DR16, DESI DR1 + 11 VizieR spec-z catalogs) **and** NED TAP,
+  concurrently, warming `services/xmatch_cache.py` (in-memory, TTL 1h, oid-keyed,
+  in-flight de-dup). The detail-view **catsHTM panel folds in** the cached CDS/NED
+  summary (best spec-z + source + sep, SIMBAD type, per-catalog counts + cards), and
+  the Aladin **spec-z overlay reads from the cache** via `GET /api/xmatch_overlay`
+  (`specz.js` no longer queries VizieR per object from the browser). Registry +
+  normalizers ported nearly verbatim from the ALeRCE TNS pipeline
+  (`../TNS_report/alerce_tns_project/alerce_tns/clients/catalogs.py`). Adds the
+  `astroquery` + `pyvo` deps (astropy transitive). Cache is runtime-only.
 - **Deferred** — name resolver.
