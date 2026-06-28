@@ -263,10 +263,10 @@
       on `load` (not on toggle) so the data is already in the DOM by the
       time the user clicks the summary — no spinner-on-expand wait. The
       panel stays collapsed by default; the only change is that opening
-      is instant. catsHTM is the only catalog source for now; future
-      xmatch sources will surface as additional cards inside this same
-      panel. Lives inside the row-resize wrapper so handle-2 can sit
-      between row 2 and this slot.
+      is instant. Sources: the bulk CDS/NED crossmatch summary (served from
+      the page-load prefetch cache) plus catsHTM, rendered as cards inside
+      this same panel. Lives inside the row-resize wrapper so handle-2 can
+      sit between row 2 and this slot.
     #}
     <div id="crossmatch-slot">
     <details
@@ -276,7 +276,7 @@
       <summary
         class="tw-cursor-pointer tw-px-4 tw-py-3 tw-text-sm tw-font-medium tw-text-text-primary hover:tw-bg-bg-tertiary tw-flex tw-items-center tw-gap-2"
       >
-        <span>Crossmatch &mdash; catsHTM (30&Prime;)</span>
+        <span>Crossmatch</span>
         <span class="tw-text-xs tw-text-text-muted">click to expand</span>
       </summary>
       <div
@@ -288,7 +288,7 @@
       >
         <div class="tw-text-text-muted tw-py-3">
           <i class="fa-solid fa-spinner fa-spin tw-mr-1"></i>
-          Loading catsHTM crossmatch&hellip;
+          Loading crossmatch&hellip;
         </div>
       </div>
     </details>
