@@ -124,6 +124,7 @@
     const ra = parseFloat(host.dataset.ra);
     const dec = parseFloat(host.dataset.dec);
     const oid = host.dataset.oid || "";
+    const surveyId = host.dataset.survey || "";
     const lastmjd = parseFloat(host.dataset.lastmjd);
     const legendEl = document.getElementById(host.dataset.legendId || "");
     const loadingEl = host.querySelector(".aladin-loading");
@@ -186,7 +187,7 @@
       // trail-spotting). Each overlay manages its own legend chip + Aladin
       // layer, so they can interleave safely.
       if (typeof window.loadSpecZOverlays === "function") {
-        window.loadSpecZOverlays(aladin, ra, dec, (info) => {
+        window.loadSpecZOverlays(aladin, oid, surveyId, (info) => {
           addLegendChip(legendEl, `${info.name} (${info.count})`, info.color);
         });
       }

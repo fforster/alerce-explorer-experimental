@@ -327,6 +327,15 @@ def shape_oid_list_response(
     page_items = items[start : start + page_size]
     has_prev = page > 1
     has_next = start + page_size < total_objects
+    # The whole matched set is known here, so the bulk-crossmatch prefetch can
+    # warm the entire OID list at once (not just the visible page) — the cache
+    # then makes every page's detail views instant. Coords come from the same
+    # meanra/meandec the table renders.
+    all_positions = [
+        {"oid": str(r.get("oid")), "ra": r.get("meanra"), "dec": r.get("meandec")}
+        for r in items
+        if r.get("meanra") is not None and r.get("meandec") is not None
+    ]
     return {
         "items": page_items,
         "total": total_objects,
@@ -335,6 +344,7 @@ def shape_oid_list_response(
         "prev": page - 1 if has_prev else False,
         "has_next": has_next,
         "next": page + 1 if has_next else False,
+        "all_positions": all_positions,
         "info_message": None if page_items else "No objects matched these filters.",
     }
 

@@ -69,6 +69,20 @@
 >
 
   {#
+    Bulk crossmatch prefetch: warm the CDS/NED cache for this page's objects
+    (or the WHOLE OID-list set when known — `all_positions`) so opening any
+    detail view renders its crossmatch + spec-z overlay instantly. Fires once
+    per render via a tiny helper; off the critical path, never blocks the table.
+    Coords are the meanra/meandec already shaped per row.
+  #}
+  <div
+    id="xmatch-prefetch"
+    class="tw-hidden"
+    data-xmatch-positions='{{ (objects_list["all_positions"] if objects_list.get("all_positions") else (objects_list["items"] | xmatch_positions)) | tojson_compact }}'
+    hx-on:htmx:load="window.send_xmatch_prefetch && window.send_xmatch_prefetch(this)"
+  ></div>
+
+  {#
     Loading overlay — covers the results card with a translucent backdrop and
     a centered spinner+label whenever its `.htmx-request` flag is set (Search
     button, pagination, row-click drill-in). `.htmx-indicator-scoped` only

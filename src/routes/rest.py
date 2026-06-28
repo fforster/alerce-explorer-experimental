@@ -11,6 +11,8 @@ from fastapi.responses import Response
 
 from ..services import analytics as analytics_service
 from ..services import lsst_neighbors as lsst_neighbors_service
+from ..services import object_info as object_info_service
+from ..services import xmatch_cache as xmatch_cache_service
 from ..services import ztf_dr as ztf_dr_service
 
 log = logging.getLogger(__name__)
@@ -67,6 +69,31 @@ async def ztf_dr(
     except Exception as e:
         log.exception("ztf_dr fetch failed")
         raise HTTPException(status_code=502, detail=f"Upstream error: {e}") from e
+
+
+@router.get("/xmatch_overlay")
+async def xmatch_overlay(
+    oid: str = Query(...),
+    survey_id: str = Query(...),
+) -> dict:
+    """Spec-z overlay sources for one object, from the bulk-crossmatch cache.
+
+    Drives the Aladin spec-z overlay (static/js/specz.js). Cache-first: the
+    results-page prefetch usually has this object warm, so the overlay appears
+    instantly; a cold call resolves the object's ra/dec via object_info and
+    computes (then caches) it. Returns ``{"oid", "overlay": [...]}``; overlay is
+    the list of spec-z marker dicts ``{cat_id,name,ra,dec,z,z_err,type,sep,color,size}``.
+    """
+    record = await xmatch_cache_service.get(oid)
+    if record is None:
+        try:
+            info = await object_info_service.get_object_info(survey=survey_id, oid=oid)
+            ra, dec = info.get("ra"), info.get("dec")
+        except Exception:
+            log.warning("xmatch_overlay object_info failed for %s", oid)
+            ra = dec = None
+        record = await xmatch_cache_service.get_or_compute(oid, ra, dec)
+    return {"oid": oid, "overlay": record.get("overlay", [])}
 
 
 @router.get("/lsst_neighbors")

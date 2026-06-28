@@ -16,7 +16,7 @@ from typing import Annotated
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from ..services import analytics as analytics_service
@@ -31,6 +31,7 @@ from ..services import object_list as object_list_service
 from ..services import probability as probability_service
 from ..services import stamps as stamps_service
 from ..services import tns as tns_service
+from ..services import xmatch_cache as xmatch_cache_service
 from ..services.survey_config import SC, TAI_MINUS_UTC_SECONDS, known_surveys
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,21 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR), autoescape=True, auto_
 templates.env.globals["API_URL"] = os.getenv("API_URL", "http://localhost:8000")
 # `tojson` filter produces JS-safe JSON for embedding in data-* attributes.
 templates.env.filters["tojson_compact"] = lambda v: json.dumps(v, separators=(",", ":"))
+
+
+def _xmatch_positions(items: list[dict]) -> list[dict]:
+    """Map listing rows → [{oid, ra, dec}] for the bulk-crossmatch prefetch,
+    dropping rows without coordinates. Coords are the same meanra/meandec the
+    results table renders."""
+    out = []
+    for r in items or []:
+        ra, dec = r.get("meanra"), r.get("meandec")
+        if ra is not None and dec is not None and r.get("oid") is not None:
+            out.append({"oid": str(r.get("oid")), "ra": ra, "dec": dec})
+    return out
+
+
+templates.env.filters["xmatch_positions"] = _xmatch_positions
 
 STATIC_DIR = BASE_DIR / "static"
 
@@ -885,11 +901,47 @@ async def crossmatch(request: Request, oid: str, survey_id: str) -> HTMLResponse
     ctx = await crossmatch_service.get_crossmatch(
         ra=info.get("ra"), dec=info.get("dec"),
     )
+    # Fold the bulk CDS/NED crossmatch in beside catsHTM. Cache-first: the
+    # results page prefetch usually has this object warm already, so opening the
+    # panel is instant; a cold open computes it on demand (and caches it).
+    try:
+        xm = await xmatch_cache_service.get_or_compute(
+            oid, info.get("ra"), info.get("dec"),
+        )
+    except Exception:
+        log.exception("crossmatch xmatch lookup failed")
+        xm = xmatch_cache_service.EMPTY_RECORD
     return templates.TemplateResponse(
         request,
         "crossmatch/crossmatchPanel.html.jinja",
-        {"ctx": ctx, "oid": oid, "survey_id": survey_id},
+        {"ctx": ctx, "xm": xm, "oid": oid, "survey_id": survey_id},
     )
+
+
+@router.post("/htmx/xmatch_prefetch")
+async def xmatch_prefetch(request: Request) -> Response:
+    """Warm the bulk-crossmatch cache for a page (or whole OID list) of objects.
+
+    Fired once per results-table render with a JSON body
+    ``{"positions": [{"oid":, "ra":, "dec":}, ...]}``. Off the critical path —
+    always 204s, even on a bad body or upstream failure, so it never blocks or
+    errors the listing. The cache de-dups, so paging back re-queries nothing.
+    """
+    try:
+        body = await request.json()
+        raw = body.get("positions") or []
+        positions = [
+            (str(p["oid"]), float(p["ra"]), float(p["dec"]))
+            for p in raw
+            if p.get("oid") and p.get("ra") is not None and p.get("dec") is not None
+        ]
+    except Exception:
+        return Response(status_code=204)
+    try:
+        await xmatch_cache_service.prefetch(positions)
+    except Exception:
+        log.exception("xmatch prefetch failed")
+    return Response(status_code=204)
 
 
 @router.get("/htmx/features", response_class=HTMLResponse)

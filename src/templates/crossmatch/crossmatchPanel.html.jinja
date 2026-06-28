@@ -14,6 +14,71 @@
   meaningful. Future xmatch sources will appear as additional cards in the
   same list.
 #}
+{#
+  Bulk CDS/NED crossmatch (services/xmatch.py), folded in above catsHTM. `xm`
+  shape: {by_catalog:{cat:[{name,ra,dec,z,z_err,photoz,type,sep}]}, best_z:
+  {z,z_err,source,sep}, simbad_type, counts:{cat:n}, overlay:[…]}. Served from
+  the page-load prefetch cache, so this is usually instant.
+#}
+{% if xm and xm.counts %}
+  <div class="tw-mb-4">
+    <div class="tw-text-xs tw-font-semibold tw-text-accent tw-mb-1.5">
+      Redshift crossmatch &mdash; CDS / NED
+    </div>
+    {# Summary line: best spec-z, SIMBAD type, per-catalog match counts. #}
+    <div class="tw-text-[11px] tw-text-text-secondary tw-mb-2 tw-flex tw-flex-col tw-gap-0.5">
+      {% if xm.best_z %}
+        <div>
+          Best spec-<i>z</i>:
+          <span class="tw-text-text-primary mono">{{ "%.5f"|format(xm.best_z.z) }}</span>{% if xm.best_z.z_err is not none %}<span class="mono"> &plusmn; {{ "%.5f"|format(xm.best_z.z_err) }}</span>{% endif %}
+          from <span class="tw-text-text-primary">{{ xm.best_z.source }}</span>{% if xm.best_z.sep is not none %} ({{ "%.2f"|format(xm.best_z.sep) }}&Prime;){% endif %}
+        </div>
+      {% else %}
+        <div>No spectroscopic redshift among the matched catalogs.</div>
+      {% endif %}
+      {% if xm.simbad_type %}<div>SIMBAD type: <span class="tw-text-text-primary">{{ xm.simbad_type }}</span></div>{% endif %}
+      <div>
+        Matched:
+        {% for cat, n in xm.counts.items() %}<span class="tw-text-text-primary">{{ cat }}</span>&nbsp;{{ n }}{% if not loop.last %} &middot; {% endif %}{% endfor %}
+      </div>
+    </div>
+    {# One card per CDS/NED catalog with matches. #}
+    <div class="tw-flex tw-flex-col tw-gap-3">
+      {% for cat, rows in xm.by_catalog.items() %}
+        <div class="tw-border tw-border-border tw-rounded">
+          <div class="tw-px-3 tw-py-1.5 tw-text-xs tw-font-semibold tw-text-accent tw-border-b tw-border-border">
+            {{ cat }}
+          </div>
+          <div class="tw-overflow-auto">
+            <table class="xmatch-table tw-w-full tw-text-[11px] mono">
+              <thead>
+                <tr class="tw-text-text-muted">
+                  {% for h in ["name", "ra", "dec", "z", "z_err", "type", "sep [″]"] %}
+                    <th class="tw-text-left tw-px-2 tw-py-1 tw-font-semibold tw-uppercase tw-text-[10px] tw-whitespace-nowrap">{{ h }}</th>
+                  {% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in rows %}
+                  <tr>
+                    <td class="tw-px-2 tw-py-1 tw-text-text-primary tw-whitespace-nowrap">{{ r.name if r.name is not none else "&mdash;"|safe }}</td>
+                    <td class="tw-px-2 tw-py-1 tw-whitespace-nowrap">{% if r.ra is not none %}{{ "%.5f"|format(r.ra) }}{% else %}&mdash;{% endif %}</td>
+                    <td class="tw-px-2 tw-py-1 tw-whitespace-nowrap">{% if r.dec is not none %}{{ "%.5f"|format(r.dec) }}{% else %}&mdash;{% endif %}</td>
+                    <td class="tw-px-2 tw-py-1 tw-whitespace-nowrap">{% if r.z is not none %}{{ "%.5f"|format(r.z) }}{% else %}&mdash;{% endif %}</td>
+                    <td class="tw-px-2 tw-py-1 tw-whitespace-nowrap">{% if r.z_err is not none %}{{ "%.5f"|format(r.z_err) }}{% else %}&mdash;{% endif %}</td>
+                    <td class="tw-px-2 tw-py-1 tw-text-text-primary tw-whitespace-nowrap">{{ r.type if r.type else "&mdash;"|safe }}</td>
+                    <td class="tw-px-2 tw-py-1 tw-whitespace-nowrap">{% if r.sep is not none %}{{ "%.2f"|format(r.sep) }}{% else %}&mdash;{% endif %}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="tw-mt-3 tw-mb-1 tw-text-xs tw-font-semibold tw-text-accent">catsHTM</div>
+  </div>
+{% endif %}
 {% if not ctx.available %}
   <div class="tw-text-text-muted tw-py-3">No coordinates available for crossmatch.</div>
 {% elif ctx.error %}
