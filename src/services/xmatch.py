@@ -66,16 +66,22 @@ CATEGORY: dict[str, str] = {
 
 
 def _simbad_category(otype: str | None) -> str:
-    """Route a Simbad match into a use-case category from its main_type/otype."""
-    s = (otype or "").lower()
-    if any(k in s for k in ("qso", "quasar", "seyfert", "agn", "blazar", "bl_lac", "bllac", "liner")):
+    """Route a Simbad match into a use-case category from its main_type/otype.
+
+    Simbad's stellar otype space is huge and irregular (Mira, RR Lyrae, Cepheid,
+    AGB, T Tauri, Wolf-Rayet, …), so we identify AGN and galaxies explicitly and
+    treat *everything else as stellar*: host galaxies reliably carry "galax" (or a
+    galaxy short-code), and the remaining otypes — variable/peculiar stars,
+    nebulae, SNR, ISM — are Galactic, not host galaxies. (Fixes Mira-type stars
+    being coloured green like a host.)"""
+    s = (otype or "").strip().lower()
+    if (any(k in s for k in ("qso", "quasar", "seyfert", "blazar", "bl_lac", "bllac", "liner"))
+            or s in ("agn", "sy1", "sy2", "sy", "bla", "bll")):
         return "agn"
-    if any(k in s for k in ("star", "rrlyr", "cepheid", "variable", "eclbin", "white",
-                            "dwarf", "nova", "cataclys", "pulsat", "yso", "carbon", "wd")):
-        return "stellar"
-    if "galax" in s or s in ("g", "gig", "gic", "gpair", "ggroup"):
+    if "galax" in s or s in ("g", "gig", "gic", "gip", "ig", "grg", "clg", "gg",
+                             "gpair", "ggroup", "emg", "rg", "brg", "blg", "sbg", "h2g"):
         return "host"
-    return "host"   # ambiguous → host (extragalactic-leaning)
+    return "stellar"
 
 
 class CatalogQueryError(RuntimeError):
@@ -564,11 +570,11 @@ def _bulk_ned_tap_sync(positions: list[tuple[str, float, float]],
 
 # --- overlay + panel display ------------------------------------------------
 
-# One colour per category, used everywhere (panel dots, Aladin markers, hints):
-# stellar = blue, AGN = red, host galaxy = green. A per-catalog palette used to
-# colour SDSS light-blue, which read as a Galactic star — categories now own
-# their colour so blue/red/green map unambiguously to the three use cases.
-CATEGORY_COLOR = {"stellar": "#42a5f5", "agn": "#ef5350", "host": "#9ccc65"}
+# One colour per category, the single source of truth used everywhere — the
+# Crossmatch panel dots, the Aladin sky markers + grouped legend, the hints and
+# the (?) hover all read these so the schema is identical across panels:
+#   stars = light blue, AGN/QSO = red, galaxies = dark green.
+CATEGORY_COLOR = {"stellar": "#4fc3f7", "agn": "#ef5350", "host": "#2e7d32"}
 GENERAL_COLOR = "#ba68c8"   # Simbad row in the loading message (routed per match)
 # Single-column ordering: tight-radius star/AGN counterparts are the strongest
 # classifiers, so they lead; host galaxies follow. (stars → AGN → host).
@@ -688,10 +694,12 @@ def _classification_hints(matches: list[dict], best_z: dict | None) -> dict:
             gaia_var = True
     if plx_best:
         tail = []
-        if plx_best.get("parallax_snr"):
+        # Show only the metric that actually passed the ≥5σ gate (a 2σ parallax
+        # alongside a significant proper motion shouldn't be quoted as evidence).
+        if (plx_best.get("parallax_snr") or 0) >= 5:
             d = f", d≈{plx_best['dist_pc']:.0f} pc" if plx_best.get("dist_pc") else ""
             tail.append(f"parallax {plx_best['parallax_snr']:.0f}σ{d}")
-        elif plx_best.get("pm_snr"):
+        elif (plx_best.get("pm_snr") or 0) >= 5:
             tail.append(f"proper motion {plx_best['pm_snr']:.0f}σ")
         if vsx:
             p = f", P={vsx[2]:.4g} d" if vsx[2] else ""

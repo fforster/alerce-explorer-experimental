@@ -21,6 +21,7 @@ appending to the same shaped `catalogs` list.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import httpx
@@ -28,6 +29,55 @@ import httpx
 from .safe_json import safe_json_loads
 
 log = logging.getLogger(__name__)
+
+# catsHTM field keys that hold the matched object's position, by axis. catsHTM
+# returns RA/Dec per catalog; key names + units vary, so we match case-insensitively.
+_RA_KEYS = {"ra", "raj2000", "ra_icrs", "_raj2000", "alpha", "alphawin_j2000", "radeg"}
+_DEC_KEYS = {"dec", "de", "dej2000", "de_icrs", "_dej2000", "delta", "deltawin_j2000", "dedeg"}
+
+
+def _catshtm_markers(raw: Any) -> list[dict[str, Any]]:
+    """Pull {name, ra, dec} (deg) per catsHTM catalog so the 'show all in Aladin'
+    button can plot them. Values arrive as {unit, value}; rad → deg if flagged."""
+    markers: list[dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return markers
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry:
+            continue
+        name = next(iter(entry.keys()))
+        body = entry[name]
+        if not isinstance(body, dict):
+            continue
+        ra = dec = None
+        prop_bits: list[str] = []
+        for key, val in body.items():
+            kl = str(key).strip().lower()
+            if kl in _RA_KEYS or kl in _DEC_KEYS:
+                # Position — used for the marker, not repeated in the details.
+                unit = (val.get("unit") if isinstance(val, dict) else "") or ""
+                v = val.get("value") if isinstance(val, dict) else val
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if str(unit).strip().lower().startswith("rad"):
+                    f = math.degrees(f)
+                if kl in _RA_KEYS:
+                    ra = f
+                else:
+                    dec = f
+                continue
+            disp = _shape_field(val)
+            if disp == "—":
+                continue
+            unit = _shape_unit(val)
+            prop_bits.append(f"{key} {disp}{(' ' + unit) if unit else ''}")
+        if ra is not None and dec is not None:
+            # Cap the details so a many-column catalog stays a readable one-liner.
+            markers.append({"name": str(name), "ra": ra, "dec": dec,
+                            "props": " · ".join(prop_bits[:8])})
+    return markers
 
 CATSHTM_URL = "https://catshtm.alerce.online"
 DEFAULT_RADIUS_ARCSEC = 30.0
@@ -136,6 +186,7 @@ async def get_crossmatch(
         "catalogs": [],
         "n_catalogs": 0,
         "error": None,
+        "markers": [],
     }
     if not ctx["available"]:
         return ctx
@@ -154,4 +205,5 @@ async def get_crossmatch(
     catalogs = shape_crossmatch(data)
     ctx["catalogs"] = catalogs
     ctx["n_catalogs"] = len(catalogs)
+    ctx["markers"] = _catshtm_markers(data)   # positions for the Aladin "show all" button
     return ctx

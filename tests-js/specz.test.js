@@ -8,10 +8,13 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { loadScript } from "./helpers/load.js";
 
+// Sources are grouped by CATEGORY (not catalog); all use the shared category
+// colours (galaxies = dark green, stars = light blue).
 const OVERLAY = [
-  { cat_id: "desi", cat_name: "DESI", ra: 150.1, dec: 2.2, z: 0.345, z_err: 0.001, type: "GALAXY", sep: 1.2, color: "#ff7f0e", size: 14 },
-  { cat_id: "desi", cat_name: "DESI", ra: 150.2, dec: 2.3, z: 0.5, z_err: null, type: "GALAXY", sep: 2.0, color: "#ff7f0e", size: 14 },
-  { cat_id: "sdss", cat_name: "SDSS DR16", ra: 150.3, dec: 2.4, z: 0.1, z_err: 1e-4, type: "GALAXY", sep: 0.5, color: "#4fc3f7", size: 12 },
+  { cat_id: "desi", cat_name: "DESI", category: "host", ra: 150.1, dec: 2.2, z: 0.345, type: "GALAXY", sep: 1.2, label: "z = 0.345", color: "#2e7d32" },
+  { cat_id: "desi", cat_name: "DESI", category: "host", ra: 150.2, dec: 2.3, z: 0.5, type: "GALAXY", sep: 2.0, label: "z = 0.5", color: "#2e7d32" },
+  { cat_id: "sdss", cat_name: "SDSS DR16", category: "host", ra: 150.3, dec: 2.4, z: 0.1, type: "GALAXY", sep: 0.5, label: "z = 0.1", color: "#2e7d32" },
+  { cat_id: "gaia", cat_name: "Gaia DR3", category: "stellar", ra: 151.0, dec: 3.0, z: null, type: "star", sep: 0.3, label: "π=5 mas", color: "#4fc3f7" },
 ];
 
 beforeEach(() => {
@@ -24,7 +27,7 @@ beforeEach(() => {
 });
 
 describe("loadSpecZOverlays", () => {
-  test("groups overlay sources by catalog and adds them to Aladin", async () => {
+  test("groups overlay sources by category and adds one layer each", async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ overlay: OVERLAY }) });
     const added = [];
     const aladin = { addCatalog: (c) => added.push(c) };
@@ -32,18 +35,18 @@ describe("loadSpecZOverlays", () => {
 
     await window.loadSpecZOverlays(aladin, "OID1", "lsst", onLoad);
 
-    // One catalog layer per cat_id (desi has 2 sources, sdss 1).
+    // One layer per category (3 galaxies, 1 star); stars are ordered first.
     expect(added).toHaveLength(2);
-    const desi = added.find((c) => c.opts.color === "#ff7f0e");
-    const sdss = added.find((c) => c.opts.color === "#4fc3f7");
-    expect(desi.sources).toHaveLength(2);
-    expect(sdss.sources).toHaveLength(1);
-    // Redshift is stringified to 5 dp on the source's data (click→z reads this).
-    expect(desi.sources[0].data.z).toBe("0.34500");
-    expect(desi.sources[0].data.Source).toBe("DESI");
-    expect(desi.opts.sourceSize).toBe(14);
-    // onLoad fires once per catalog with its count (drives the legend chips).
+    expect(added.map((c) => c.opts.name)).toEqual(["Stars (1)", "Galaxies (3)"]);
+    const galaxies = added.find((c) => c.opts.name.startsWith("Galaxies"));
+    expect(galaxies.opts.color).toBe("#2e7d32");
+    expect(galaxies.sources).toHaveLength(3);
+    // Each source carries structured click data (Source/ID/z) for the info bar.
+    expect(galaxies.sources[0].data.Source).toBe("DESI");
+    expect(galaxies.sources[0].data.z).toBe("0.34500");
+    // onLoad fires once per category with its label + count (drives the legend).
     expect(onLoad).toHaveBeenCalledTimes(2);
+    expect(onLoad).toHaveBeenCalledWith({ label: "Galaxies", color: "#2e7d32", count: 3 });
   });
 
   test("queries the overlay endpoint with oid + survey", async () => {
@@ -59,15 +62,16 @@ describe("loadSpecZOverlays", () => {
   test("draws stellar/AGN markers that carry no redshift", async () => {
     const overlay = [
       { cat_id: "gaia_dr3", cat_name: "Gaia DR3", category: "stellar", ra: 10, dec: 20,
-        z: null, type: "star", sep: 0.5, label: "π=5.0 mas, d≈200 pc", color: "#42a5f5", size: 12 },
+        z: null, type: "star", sep: 0.5, label: "π=5.0 mas, d≈200 pc", color: "#4fc3f7" },
     ];
     global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ overlay }) });
     const added = [];
     await window.loadSpecZOverlays({ addCatalog: (c) => added.push(c) }, "OID", "ztf", vi.fn());
     expect(added).toHaveLength(1);
+    expect(added[0].opts.name).toBe("Stars (1)");
     const src = added[0].sources[0];
-    expect(src.data.z).toBeUndefined();          // no redshift → no click→z
-    expect(src.data.name).toContain("π=5.0 mas"); // popup uses the server label
+    expect(src.data.z).toBeNull();                 // no redshift → no click→z
+    expect(src.data.label).toContain("π=5.0 mas"); // info bar uses the server label
   });
 
   test("a failed fetch adds no catalogs (graceful)", async () => {

@@ -191,9 +191,14 @@ def test_signal_extractors():
         "agn_class": "QSO", "radio": True, "xray": True, "z": 1.2, "type_label": "QSO"}
     g = xmatch._sig_gaia({"Plx": "5.0", "e_Plx": "0.5", "RPlx": "10.0", "VarFlag": "VARIABLE"})
     assert g["parallax_snr"] == 10.0 and g["gaia_variable"] is True
+    # AGN + galaxies are explicit; every other Simbad type (variable stars,
+    # nebulae, …) defaults to stellar — not host.
     assert xmatch._simbad_category("RRLyrae") == "stellar"
+    assert xmatch._simbad_category("Mira") == "stellar"          # was wrongly "host"
+    assert xmatch._simbad_category("Cepheid") == "stellar"
     assert xmatch._simbad_category("Seyfert_1") == "agn"
     assert xmatch._simbad_category("Galaxy") == "host"
+    assert xmatch._simbad_category("Emission-line Galaxy") == "host"
 
 
 # --- bulk_all (monkeypatched cores) -----------------------------------------

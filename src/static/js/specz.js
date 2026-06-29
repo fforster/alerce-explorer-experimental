@@ -42,47 +42,47 @@
       return;
     }
 
-    // Group the flat source list by catalog so each becomes one Aladin layer.
+    // Group sources by USE-CASE CATEGORY (not per catalog) so the sky shows one
+    // layer per category, colour-coded with the shared schema (stars=light blue,
+    // AGN=red, galaxies=dark green) and one grouped legend entry each — instead
+    // of a chip per external catalog.
+    const LABELS = { stellar: "Stars", agn: "AGN/QSO", host: "Galaxies" };
+    const ORDER = ["stellar", "agn", "host"];
     const groups = new Map();
     for (const s of overlay) {
-      if (!groups.has(s.cat_id)) groups.set(s.cat_id, []);
-      groups.get(s.cat_id).push(s);
+      if (s.ra == null || s.dec == null) continue;
+      const cat = s.category || "host";
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(s);
     }
 
-    for (const items of groups.values()) {
-      const first = items[0];
-      const sources = [];
-      for (const s of items) {
-        // Stellar / AGN markers carry no redshift — only host markers do. Draw
-        // any source with a position; the server-built `label` describes it
-        // (parallax / variable type / AGN class / z). `data.z` is set ONLY when
-        // a redshift is present, so click→redshift (aladin.js) fires for host /
-        // AGN-with-z markers and is a no-op for stellar ones.
-        if (s.ra == null || s.dec == null) continue;
-        const data = {
-          name: `${s.cat_name}${s.label ? ": " + s.label : ""}`,
+    for (const cat of ORDER) {
+      const items = groups.get(cat);
+      if (!items || !items.length) continue;
+      const color = items[0].color || "#9ccc65";
+      const sources = items.map((s) =>
+        // Structured data feeds the Aladin info bar (aladin.js) on click, not a
+        // popup. `z` is set only when present so click→redshift still works.
+        window.A.source(s.ra, s.dec, {
           Source: s.cat_name,
-        };
-        if (s.z != null) {
-          data.z = fmt(s.z, 5);
-          if (s.z_err != null) data.z_err = fmt(s.z_err, 5);
-        }
-        if (s.type) data.Type = s.type;
-        if (s.sep != null) data.Separation = `${fmt(s.sep, 2)}″`;
-        sources.push(window.A.source(s.ra, s.dec, data));
-      }
-      if (sources.length === 0) continue;
-
-      const cat = window.A.catalog({
-        name: `${first.cat_name} (${sources.length})`,
-        sourceSize: first.size || 12,
-        color: first.color || "#4fc3f7",
+          ID: s.name || "",
+          label: s.label || "",
+          z: s.z != null ? fmt(s.z, 5) : null,
+          Type: s.type || null,
+          Separation: s.sep != null ? `${fmt(s.sep, 2)}″` : null,
+        }),
+      );
+      const catalog = window.A.catalog({
+        name: `${LABELS[cat]} (${sources.length})`,
+        sourceSize: 12,
+        color,
         shape: "circle",
-        onClick: "showPopup",
+        onClick: () => {},   // suppress Aladin's hard-to-close popup; the
+                             // objectClicked handler fills the bottom info bar
       });
-      aladin.addCatalog(cat);
-      cat.addSources(sources);
-      if (onLoad) onLoad({ name: first.cat_name, color: first.color, count: sources.length });
+      aladin.addCatalog(catalog);
+      catalog.addSources(sources);
+      if (onLoad) onLoad({ label: LABELS[cat], color, count: sources.length });
     }
   };
 })();
