@@ -14,6 +14,35 @@
   handled entirely in stamps.js via window.updateStampsForIdentifier(id),
   so only the initial panel load hits this endpoint.
 #}
+<style>
+  /*
+    Center crosshair — four red, semi-transparent segments (two horizontal,
+    two vertical) pointing inward at the stamp centre, where the candidate
+    sits (the survey-cutout contract centres the object). They guide the eye
+    without covering the source: each segment spans radius 20%→40%, measured
+    as a fraction of the half-size (edge = radius 100%), i.e. 10%→20% of the
+    full dimension out from the centre — leaving the central 40%→60% clear.
+    Drawn over the canvas but `pointer-events: none` so wheel-zoom and the
+    download button still receive clicks. Because zoom is rendered into the
+    canvas pixels (scale about centre), this fixed overlay always marks the
+    true centre regardless of zoom level.
+  */
+  /* `transform-origin: center` so the zoom scale (applied by setPanelZoom in
+     stamps.js) grows the crosshair about the stamp centre — keeping it locked
+     to the zoomed image content at a constant relative scale. */
+  #stamps-panel .stamp-crosshair { position: absolute; inset: 0; pointer-events: none; z-index: 4; transform-origin: center; }
+  #stamps-panel .stamp-crosshair > span { position: absolute; background: rgba(255, 0, 0, 0.5); }
+  #stamps-panel .stamp-crosshair .xhair-l,
+  #stamps-panel .stamp-crosshair .xhair-r { top: 50%; height: 6px; transform: translateY(-50%); }
+  #stamps-panel .stamp-crosshair .xhair-t,
+  #stamps-panel .stamp-crosshair .xhair-b { left: 50%; width: 6px; transform: translateX(-50%); }
+  #stamps-panel .stamp-crosshair .xhair-l { left: 30%; width: 10%; }   /* radius 40%→20% */
+  #stamps-panel .stamp-crosshair .xhair-r { left: 60%; width: 10%; }   /* radius 20%→40% */
+  #stamps-panel .stamp-crosshair .xhair-t { top: 30%; height: 10%; }
+  #stamps-panel .stamp-crosshair .xhair-b { top: 60%; height: 10%; }
+  /* Toggle (crosshair button next to AVRO) hides the overlay on all stamps. */
+  #stamps-panel.crosshair-hidden .stamp-crosshair { display: none; }
+</style>
 <div
   id="stamps-panel"
   {# `tw-h-full` so the panel card stretches to fill its grid cell — keeps
@@ -101,6 +130,21 @@
         always reflect the *displayed* stamp, even after a cross-survey
         click) — see `window.openAvroModal` in stamps.js.
       #}
+      {#
+        Crosshair toggle — show/hide the centre crosshair on all three stamps.
+        Sits next to AVRO; defaults ON (accent colour, aria-pressed=true).
+        toggleStampCrosshairs flips `.crosshair-hidden` on the panel.
+      #}
+      <button
+        type="button"
+        class="stamps-crosshair-btn tw-px-2 tw-py-1 tw-text-accent hover:tw-text-text-primary tw-border tw-border-border tw-rounded tw-flex tw-items-center"
+        aria-pressed="true"
+        title="Toggle the centre crosshair on the stamps"
+        aria-label="Toggle centre crosshair"
+        onclick="window.toggleStampCrosshairs && window.toggleStampCrosshairs(this)"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><line x1="12" y1="1" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/></svg>
+      </button>
       <button
         type="button"
         class="stamps-avro-btn tw-px-2 tw-py-1 tw-text-xs tw-text-accent hover:tw-text-text-primary tw-border tw-border-border tw-rounded"
@@ -183,6 +227,12 @@
               data-stamp-type="{{ t }}"
               width="180" height="180"
             ></canvas>
+            {# Center crosshair (see <style> above) — points the eye at the
+               centred candidate without covering it. #}
+            <div class="stamp-crosshair" aria-hidden="true">
+              <span class="xhair-l"></span><span class="xhair-r"></span>
+              <span class="xhair-t"></span><span class="xhair-b"></span>
+            </div>
             <div class="stamp-loading tw-absolute tw-inset-0 tw-flex tw-items-center tw-justify-center tw-text-xs tw-text-text-muted">
               loading…
             </div>
