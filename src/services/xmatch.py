@@ -564,17 +564,12 @@ def _bulk_ned_tap_sync(positions: list[tuple[str, float, float]],
 
 # --- overlay + panel display ------------------------------------------------
 
-# Category colours (Aladin markers + panel tags): stellar = blue, AGN = red,
-# host = the per-catalog redshift palette (NED recoloured off red so host
-# markers don't clash with the AGN red).
-CATEGORY_COLOR = {"stellar": "#42a5f5", "agn": "#ef5350"}
-DEFAULT_HOST_COLOR = "#9ccc65"
-HOST_COLOR: dict[str, str] = {
-    "DESI": "#ff7f0e", "SDSS": "#4fc3f7", "6dFGS": "#81c784", "GAMA DR4": "#ef9a9a",
-    "2MRS": "#80cbc4", "WiggleZ": "#fff176", "zCOSMOS": "#f48fb1", "VIPERS PDR2": "#ffcc80",
-    "OzDES DR1": "#b0bec5", "2dFGRS": "#a5d6a7", "HECATE": "#90caf9", "GLADE v2": "#bcaaa4",
-    "NED": "#4db6ac", "HyperLEDA": "#aed581", "Simbad": "#ba68c8",
-}
+# One colour per category, used everywhere (panel dots, Aladin markers, hints):
+# stellar = blue, AGN = red, host galaxy = green. A per-catalog palette used to
+# colour SDSS light-blue, which read as a Galactic star — categories now own
+# their colour so blue/red/green map unambiguously to the three use cases.
+CATEGORY_COLOR = {"stellar": "#42a5f5", "agn": "#ef5350", "host": "#9ccc65"}
+GENERAL_COLOR = "#ba68c8"   # Simbad row in the loading message (routed per match)
 # Single-column ordering: tight-radius star/AGN counterparts are the strongest
 # classifiers, so they lead; host galaxies follow. (stars → AGN → host).
 CAT_ORDER = {"stellar": 0, "agn": 1, "host": 2}
@@ -599,8 +594,8 @@ def queried_catalogs() -> dict:
     groups = [
         ("Stellar", CATEGORY_COLOR["stellar"], by["stellar"]),
         ("AGN / QSO", CATEGORY_COLOR["agn"], by["agn"]),
-        ("Host galaxies", DEFAULT_HOST_COLOR, by["host"]),
-        ("General", HOST_COLOR["Simbad"], by["general"]),
+        ("Host galaxies", CATEGORY_COLOR["host"], by["host"]),
+        ("General", GENERAL_COLOR, by["general"]),
     ]
     return {"total": sum(len(v) for v in by.values()), "groups": groups}
 
@@ -620,10 +615,7 @@ def _is_transient_type(t: str | None) -> bool:
 
 
 def _match_color(m: dict) -> str:
-    cat = m.get("category", "host")
-    if cat in CATEGORY_COLOR:
-        return CATEGORY_COLOR[cat]
-    return HOST_COLOR.get(m["cat_name"], DEFAULT_HOST_COLOR)
+    return CATEGORY_COLOR.get(m.get("category", "host"), CATEGORY_COLOR["host"])
 
 
 def _attach_meta(m: dict) -> dict:
