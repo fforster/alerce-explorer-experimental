@@ -462,10 +462,15 @@ def _norm_generic(raw: dict, cfg: dict) -> dict | None:
         v = _cell(raw.get(col))
         if v is not None and str(v).strip() not in ("", "--", "nan"):
             fields.append({"label": label, "value": v, "unit": unit})
+    # Strip a redundant leading catalog name from the ID (e.g. Gaia's DR3Name
+    # "Gaia DR3 2125…" → "2125…"); the Survey column already names the catalog.
+    name = _cell(raw.get(cfg.get("name_col"))) if cfg.get("name_col") else None
+    if isinstance(name, str) and name.startswith(cfg["display"]):
+        name = name[len(cfg["display"]):].strip() or name
     return {
         "cat_name": cfg["display"], "category": cfg["category"],
         "ra": ra, "dec": dec, "sep": _num(raw.get("angDist")),
-        "name": _cell(raw.get(cfg.get("name_col"))) if cfg.get("name_col") else None,
+        "name": name,
         "type": sig.get("type_label"),
         "z": sig.get("z"), "z_err": sig.get("z_err"), "photoz": None,
         "fields": fields, "signals": sig,
@@ -574,9 +579,24 @@ HOST_COLOR: dict[str, str] = {
 # classifiers, so they lead; host galaxies follow. (stars → AGN → host).
 CAT_ORDER = {"stellar": 0, "agn": 1, "host": 2}
 
+# Max separation a point-source category match may have (the transient *is* the
+# star/AGN). Caps Simbad's wide 36" search from leaking distant neighbours into
+# these categories. Host has no extra cap (galaxies are offset; uses its radius).
+_CAT_RADIUS = {"stellar": RADIUS_STELLAR, "agn": RADIUS_AGN}
+
 
 def _cat_id(cat_name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", cat_name.lower()).strip("_")
+
+
+def _is_transient_type(t: str | None) -> bool:
+    """True for catalog entries that are the transient itself (a supernova),
+    not a host galaxy — NED/SIMBAD catalogue SNe, and their redshift is the
+    event's own, not a host's. Excludes SNR (a Galactic remnant)."""
+    s = (t or "").strip().upper()
+    if "SUPERNOV" in s:
+        return True
+    return s in ("SN", "SN?", "SN*", "SLSN", "SLSN-I", "SLSN-II")
 
 
 def _match_color(m: dict) -> str:
@@ -696,12 +716,27 @@ def _build_object_record(by_catalog: dict[str, list[dict]]) -> dict:
         for m in rows:
             all_matches.append(_attach_meta(m))
 
-    counts = {cat: len(rows) for cat, rows in by_catalog.items() if rows}
+    # Enforce the tight radius for point-source categories. The dedicated
+    # stellar/AGN catalogs already query at 3", but Simbad searches a wide 36"
+    # and routes far-away field stars / QSOs into the stellar/AGN categories —
+    # a star or AGN tens of arcsec away is an unrelated neighbour, not the
+    # transient's counterpart, so drop it. (Host galaxies stay at their radius.)
+    all_matches = [
+        m for m in all_matches
+        if not (m["category"] in _CAT_RADIUS and m.get("sep") is not None
+                and m["sep"] > _CAT_RADIUS[m["category"]])
+    ]
 
-    # Best HOST redshift (nearest) → host hint + the redshift overlay markers.
+    counts: dict[str, int] = {}
+    for m in all_matches:
+        counts[m["cat_name"]] = counts.get(m["cat_name"], 0) + 1
+
+    # Best HOST redshift (nearest galaxy) → host hint + the redshift overlay
+    # markers. A NED/SIMBAD supernova entry sits at the transient and carries the
+    # event's own z, not a host's, so it must not masquerade as the host galaxy.
     best = None
     for m in all_matches:
-        if m["category"] != "host" or m.get("z") is None:
+        if m["category"] != "host" or m.get("z") is None or _is_transient_type(m.get("type")):
             continue
         sep = m.get("sep")
         if best is None or (sep is not None and (best["sep"] is None or sep < best["sep"])):
@@ -725,7 +760,9 @@ def _build_object_record(by_catalog: dict[str, list[dict]]) -> dict:
     for m in matches:
         if m.get("ra") is None or m.get("dec") is None:
             continue
-        if m["category"] == "host" and m.get("z") is None:
+        # Host markers need a redshift and must be a galaxy (not the transient's
+        # own SN entry); stellar/AGN markers need only a position.
+        if m["category"] == "host" and (m.get("z") is None or _is_transient_type(m.get("type"))):
             continue
         overlay.append({
             "cat_id": _cat_id(m["cat_name"]), "cat_name": m["cat_name"],

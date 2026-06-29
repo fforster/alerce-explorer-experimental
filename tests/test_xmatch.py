@@ -120,6 +120,40 @@ def test_build_record_ned_redshift_becomes_overlay_marker():
     assert marks == [("ned", "host")]          # NED host only; the z=None NED row is excluded
 
 
+def test_ned_supernova_is_not_treated_as_host():
+    # A NED SN entry sits at the transient and carries the event's own z — it
+    # must not become the "host galaxy". The nearby galaxy is the real host.
+    rec = xmatch._build_object_record({
+        "NED": [
+            {"cat_name": "NED", "ra": 1.0, "dec": 2.0, "z": 0.043, "z_err": None,
+             "type": "SN", "name": "SN 2025x", "sep": 0.04},
+            {"cat_name": "NED", "ra": 1.1, "dec": 2.1, "z": 0.026, "z_err": None,
+             "type": "G", "name": "WISEA gal", "sep": 11.0},
+        ],
+    })
+    assert rec["best_z"]["z"] == 0.026                  # the galaxy, not the SN
+    assert [o["name"] for o in rec["overlay"]] == ["WISEA gal"]   # SN gets no host marker
+    assert xmatch._is_transient_type("SN") and not xmatch._is_transient_type("SNR")
+
+
+def test_stellar_agn_matches_capped_at_tight_radius():
+    # Simbad (wide 36" search) can route a distant field star into "stellar";
+    # a stellar/AGN match beyond 3" is dropped, but a host beyond 3" is kept.
+    rec = xmatch._build_object_record({
+        "Simbad": [
+            {"cat_name": "Simbad", "category": "stellar", "ra": 1.0, "dec": 2.0,
+             "z": None, "type": "Star", "name": "near", "sep": 1.5, "fields": [], "signals": {}},
+            {"cat_name": "Simbad", "category": "stellar", "ra": 1.0, "dec": 2.0,
+             "z": None, "type": "Star", "name": "far", "sep": 30.0, "fields": [], "signals": {}},
+            {"cat_name": "Simbad", "category": "host", "ra": 1.0, "dec": 2.0,
+             "z": 0.04, "type": "Galaxy", "name": "gal", "sep": 25.0, "fields": [], "signals": {}},
+        ],
+    })
+    names = [m["name"] for m in rec["matches"]]
+    assert "near" in names and "far" not in names      # distant star dropped
+    assert "gal" in names                              # distant host galaxy kept
+
+
 def test_build_record_host_without_redshift_has_no_marker():
     # A host-category match with no redshift contributes no sky marker.
     rec = xmatch._build_object_record({

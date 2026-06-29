@@ -262,16 +262,17 @@
       Native <details>/<summary> handles the open/close UI; the fetch fires
       on `load` (not on toggle) so the data is already in the DOM by the
       time the user clicks the summary — no spinner-on-expand wait. The
-      panel stays collapsed by default; the only change is that opening
-      is instant. Sources: the bulk CDS/NED crossmatch summary (served from
-      the page-load prefetch cache) plus catsHTM, rendered as cards inside
-      this same panel. Lives inside the row-resize wrapper so handle-2 can
+      panel is `open` by default (the crossmatch is high-value), and because
+      the fetch already fired on load it's populated immediately. Sources: the
+      bulk CDS/NED crossmatch table (served from the page-load prefetch cache)
+      plus catsHTM below. Lives inside the row-resize wrapper so handle-2 can
       sit between row 2 and this slot.
     #}
     <div id="crossmatch-slot">
     <details
       id="crossmatch-details"
       class="tw-bg-bg-card tw-border tw-border-border tw-rounded"
+      open
     >
       <summary
         class="tw-cursor-pointer tw-px-4 tw-py-3 tw-text-sm tw-font-medium tw-text-text-primary hover:tw-bg-bg-tertiary tw-flex tw-items-center tw-gap-2"
@@ -309,7 +310,7 @@
             <div class="tw-text-text-secondary">Plus catsHTM (shown below): positional crossmatch against Gaia, PS1, AllWISE, 2MASS, and more.</div>
           </div>
         </span>
-        <span class="tw-text-xs tw-text-text-muted">click to expand</span>
+        <span class="tw-text-xs tw-text-text-muted">click to collapse</span>
       </summary>
       <div
         id="crossmatch-body"
