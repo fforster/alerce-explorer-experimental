@@ -585,6 +585,26 @@ CAT_ORDER = {"stellar": 0, "agn": 1, "host": 2}
 _CAT_RADIUS = {"stellar": RADIUS_STELLAR, "agn": RADIUS_AGN}
 
 
+def queried_catalogs() -> dict:
+    """The full list of catalogs bulk_all() queries, grouped by category — drives
+    the (expressive) crossmatch loading message. Derived from the live registries
+    so it never drifts from what is actually queried."""
+    by: dict[str, list[str]] = {"stellar": [], "agn": [], "host": ["SDSS DR16", "DESI DR1"],
+                                "general": ["SIMBAD"]}
+    for cfg in VIZIER_Z_CATALOGS.values():
+        by[CATEGORY.get(cfg["name"], "host")].append(cfg["name"])
+    for name, cfg in USECASE_CATALOGS.items():
+        by[cfg["category"]].append(name)
+    by["host"].append("NED")
+    groups = [
+        ("Stellar", CATEGORY_COLOR["stellar"], by["stellar"]),
+        ("AGN / QSO", CATEGORY_COLOR["agn"], by["agn"]),
+        ("Host galaxies", DEFAULT_HOST_COLOR, by["host"]),
+        ("General", HOST_COLOR["Simbad"], by["general"]),
+    ]
+    return {"total": sum(len(v) for v in by.values()), "groups": groups}
+
+
 def _cat_id(cat_name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", cat_name.lower()).strip("_")
 
