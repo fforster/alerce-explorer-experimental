@@ -56,6 +56,20 @@ describe("loadSpecZOverlays", () => {
     expect(url).toContain("survey_id=ztf");
   });
 
+  test("draws stellar/AGN markers that carry no redshift", async () => {
+    const overlay = [
+      { cat_id: "gaia_dr3", cat_name: "Gaia DR3", category: "stellar", ra: 10, dec: 20,
+        z: null, type: "star", sep: 0.5, label: "π=5.0 mas, d≈200 pc", color: "#42a5f5", size: 12 },
+    ];
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ overlay }) });
+    const added = [];
+    await window.loadSpecZOverlays({ addCatalog: (c) => added.push(c) }, "OID", "ztf", vi.fn());
+    expect(added).toHaveLength(1);
+    const src = added[0].sources[0];
+    expect(src.data.z).toBeUndefined();          // no redshift → no click→z
+    expect(src.data.name).toContain("π=5.0 mas"); // popup uses the server label
+  });
+
   test("a failed fetch adds no catalogs (graceful)", async () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false });
     const aladin = { addCatalog: vi.fn() };

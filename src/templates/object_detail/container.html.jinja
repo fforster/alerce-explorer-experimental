@@ -277,6 +277,38 @@
         class="tw-cursor-pointer tw-px-4 tw-py-3 tw-text-sm tw-font-medium tw-text-text-primary hover:tw-bg-bg-tertiary tw-flex tw-items-center tw-gap-2"
       >
         <span>Crossmatch</span>
+        {#
+          Hover card describing every crossmatched catalog. Reuses the
+          `.panel-help` fixed-tooltip mechanism (positioned by panel_help.js)
+          but keeps the summary's own title styling. preventDefault on the
+          wrapper stops a click on the (?) / card from toggling the <details>;
+          clicking the "Crossmatch" text still toggles normally.
+        #}
+        <span class="tw-relative tw-group panel-help" data-tooltip-side="left"
+              onclick="event.preventDefault();event.stopPropagation();">
+          <span class="tw-text-text-muted tw-text-xs tw-cursor-help" tabindex="0">(?)</span>
+          <div role="tooltip"
+               class="tw-hidden group-hover:tw-block group-focus-within:tw-block tw-fixed tw-z-50 tw-w-80 tw-max-w-[calc(100vw-2rem)] tw-max-h-[80vh] tw-overflow-y-auto tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-3 tw-text-xs tw-font-normal tw-text-text-primary tw-normal-case tw-shadow-lg tw-leading-relaxed">
+            <div class="tw-font-semibold tw-mb-1">Crossmatched catalogs</div>
+            <div class="tw-mb-2 tw-text-text-secondary">Bulk CDS XMatch + NED, run server-side and prefetched so this opens instantly. Matches show below ordered stars → AGN → host; markers appear in the Aladin panel, colour-coded by category.</div>
+            <div class="tw-font-semibold tw-flex tw-items-center tw-gap-1.5"><span class="tw-inline-block tw-rounded-full" style="width:8px;height:8px;background:#42a5f5"></span>Stellar (Milky Way)</div>
+            <ul class="tw-list-disc tw-list-inside tw-text-text-secondary tw-mb-1.5">
+              <li>Gaia DR3 — parallax, proper motion, G, BP−RP</li>
+              <li>AAVSO VSX — variable type, period</li>
+            </ul>
+            <div class="tw-font-semibold tw-flex tw-items-center tw-gap-1.5"><span class="tw-inline-block tw-rounded-full" style="width:8px;height:8px;background:#ef5350"></span>AGN / quasars</div>
+            <ul class="tw-list-disc tw-list-inside tw-text-text-secondary tw-mb-1.5">
+              <li>Milliquas (Million Quasars) — class, z, radio/X-ray flags</li>
+              <li>Véron-Cetty QSO · SDSS DR16 QSO</li>
+            </ul>
+            <div class="tw-font-semibold tw-flex tw-items-center tw-gap-1.5"><span class="tw-inline-block tw-rounded-full" style="width:8px;height:8px;background:#9ccc65"></span>Host galaxies (redshift &amp; morphology)</div>
+            <ul class="tw-list-disc tw-list-inside tw-text-text-secondary tw-mb-1.5">
+              <li>DESI DR1, SDSS DR16, 6dFGS, GAMA DR4, 2MRS, WiggleZ, zCOSMOS, VIPERS PDR2, OzDES DR1, 2dFGRS, HECATE, GLADE v2</li>
+              <li>HyperLEDA — morphology / size · NED &amp; SIMBAD — names, types, redshifts</li>
+            </ul>
+            <div class="tw-text-text-secondary">Plus catsHTM (shown below): positional crossmatch against Gaia, PS1, AllWISE, 2MASS, and more.</div>
+          </div>
+        </span>
         <span class="tw-text-xs tw-text-text-muted">click to expand</span>
       </summary>
       <div

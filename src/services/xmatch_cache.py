@@ -32,8 +32,9 @@ _lock = asyncio.Lock()
 
 # An object with no catalog matches still gets a (cached) record so we don't
 # re-query it; this is the canonical "empty" shape from xmatch._build_object_record.
-EMPTY_RECORD: dict = {"by_catalog": {}, "best_z": None, "simbad_type": None,
-                      "counts": {}, "overlay": []}
+EMPTY_RECORD: dict = {"by_catalog": {}, "matches": [],
+                      "hints": {"stellar": None, "host": None, "agn": None},
+                      "best_z": None, "simbad_type": None, "counts": {}, "overlay": []}
 
 
 def _fresh(oid: str) -> dict | None:
