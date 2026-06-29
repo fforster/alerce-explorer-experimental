@@ -99,17 +99,16 @@ def test_build_record_summary_and_overlay():
     assert rec["best_z"]["source"] == "DESI"
     assert rec["simbad_type"] == "Galaxy"
     assert rec["counts"] == {"Simbad": 1, "DESI": 1}
-    # overlay carries only sky-marker catalogs (DESI), not Simbad
-    assert [o["cat_id"] for o in rec["overlay"]] == ["desi"]
-    assert rec["overlay"][0]["color"] and rec["overlay"][0]["cat_name"] == "DESI"
+    # both z-bearing catalogs get a sky marker (DESI + Simbad)
+    assert sorted(o["cat_id"] for o in rec["overlay"]) == ["desi", "simbad"]
+    desi_mark = next(o for o in rec["overlay"] if o["cat_id"] == "desi")
+    assert desi_mark["color"] and desi_mark["cat_name"] == "DESI"
 
 
 def test_build_record_ned_redshift_becomes_overlay_marker():
     # NED matches with a redshift get a sky marker; NED rows without a redshift
     # (and Simbad) do not. (Regression: ZTF25abioriw's NED host z wasn't shown.)
     rec = xmatch._build_object_record({
-        "Simbad": [{"cat_name": "Simbad", "ra": 1.0, "dec": 2.0, "z": 0.04,
-                    "z_err": None, "type": "Galaxy", "name": "sb", "sep": 1.0}],
         "NED": [
             {"cat_name": "NED", "ra": 1.0, "dec": 2.0, "z": 0.026, "z_err": None,
              "type": "G", "name": "host", "sep": 11.0},
@@ -118,7 +117,7 @@ def test_build_record_ned_redshift_becomes_overlay_marker():
         ],
     })
     marks = [(o["cat_id"], o["name"]) for o in rec["overlay"]]
-    assert marks == [("ned", "host")]          # NED host only; Simbad + z=None NED excluded
+    assert marks == [("ned", "host")]          # NED host only; the z=None NED row is excluded
 
 
 def test_build_record_no_redshift():
