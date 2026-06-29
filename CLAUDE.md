@@ -203,10 +203,17 @@ src/
     coord_residuals.py       # shape_coord_residuals — programmatic API only; the UI panel derives
                              # client-side from the live LC chart (incl. cross-survey)
     crossmatch.py            # catsHTM crossmatch fetch + per-catalog row shaping
-    xmatch.py                # bulk CDS XMatch (Simbad/SDSS/DESI + 11 VizieR spec-z
-                             # catalogs) + NED TAP; async bulk_all() fans every catalog
-                             # out concurrently (to_thread + gather, Semaphore(8)).
-                             # Ported from the TNS pipeline's catalogs.py registry/normalizers
+    xmatch.py                # bulk CDS XMatch + NED TAP, generalized beyond redshift
+                             # into use-case categories (stellar / host / AGN). Catalogs:
+                             # Simbad/SDSS/DESI + 11 VizieR spec-z (host) + Gaia DR3 & VSX
+                             # (stellar, 3") + Milliquas, Véron-Cetty, SDSS-QSO (AGN, 3") +
+                             # HyperLEDA (host, 60") + NED. Each match carries category +
+                             # display fields + `signals`; _build_object_record emits an
+                             # ordered match list (stars→AGN→host), per-category
+                             # classification hints, and a category-coloured sky overlay.
+                             # async bulk_all() fans every catalog out (to_thread + gather,
+                             # Semaphore(8)). "Galactic" hint requires a parallax/PM ≥5σ
+                             # astrometric signature, not variability alone
     xmatch_cache.py          # in-memory TTL cache (oid→record) warmed by the page-load
                              # prefetch; in-flight de-dup; read by the crossmatch panel + overlay
     stamps.py                # stamp picker context + per-survey stamp_url_templates_by_survey
