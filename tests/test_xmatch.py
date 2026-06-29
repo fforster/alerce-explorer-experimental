@@ -104,6 +104,23 @@ def test_build_record_summary_and_overlay():
     assert rec["overlay"][0]["color"] and rec["overlay"][0]["cat_name"] == "DESI"
 
 
+def test_build_record_ned_redshift_becomes_overlay_marker():
+    # NED matches with a redshift get a sky marker; NED rows without a redshift
+    # (and Simbad) do not. (Regression: ZTF25abioriw's NED host z wasn't shown.)
+    rec = xmatch._build_object_record({
+        "Simbad": [{"cat_name": "Simbad", "ra": 1.0, "dec": 2.0, "z": 0.04,
+                    "z_err": None, "type": "Galaxy", "name": "sb", "sep": 1.0}],
+        "NED": [
+            {"cat_name": "NED", "ra": 1.0, "dec": 2.0, "z": 0.026, "z_err": None,
+             "type": "G", "name": "host", "sep": 11.0},
+            {"cat_name": "NED", "ra": 1.1, "dec": 2.1, "z": None, "z_err": None,
+             "type": "", "name": "no-z", "sep": 22.0},
+        ],
+    })
+    marks = [(o["cat_id"], o["name"]) for o in rec["overlay"]]
+    assert marks == [("ned", "host")]          # NED host only; Simbad + z=None NED excluded
+
+
 def test_build_record_no_redshift():
     rec = xmatch._build_object_record({
         "Simbad": [{"cat_name": "Simbad", "ra": 1.0, "dec": 2.0, "z": None,
