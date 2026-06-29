@@ -411,6 +411,11 @@ OVERLAY_DISPLAY: dict[str, tuple[str, str, int]] = {
     "2dFGRS": ("2dfgrs", "#a5d6a7", 12),
     "HECATE": ("hecate", "#90caf9", 12),
     "GLADE v2": ("glade", "#bcaaa4", 12),
+    # NED rides along too: many objects have a NED redshift (host or the
+    # transient itself) and no spec-z-catalog match, so it's the only z-bearing
+    # marker on the sky. Only NED rows that actually carry a redshift become
+    # markers (the overlay loop drops z=None rows).
+    "NED": ("ned", "#ff5252", 12),
 }
 
 
@@ -438,7 +443,7 @@ def _build_object_record(by_catalog: dict[str, list[dict]]) -> dict:
     overlay: list[dict] = []
     for cat, rows in by_catalog.items():
         disp = OVERLAY_DISPLAY.get(cat)
-        if not disp:                       # Simbad / NED don't get sky markers
+        if not disp:                       # Simbad has no sky marker (z often absent/unreliable)
             continue
         cat_id, color, size = disp
         for r in rows:
