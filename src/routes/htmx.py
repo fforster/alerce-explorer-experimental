@@ -31,6 +31,7 @@ from ..services import object_list as object_list_service
 from ..services import probability as probability_service
 from ..services import stamps as stamps_service
 from ..services import tns as tns_service
+from ..services import xmatch as xmatch_service
 from ..services import xmatch_cache as xmatch_cache_service
 from ..services.survey_config import SC, TAI_MINUS_UTC_SECONDS, known_surveys
 
@@ -87,6 +88,9 @@ def _asset_version() -> str:
 
 
 templates.env.globals["asset_v"] = _asset_version
+# Catalog list (grouped by category) for the expressive crossmatch loading
+# message; derived from the live xmatch registries so it never drifts.
+templates.env.globals["xmatch_catalogs"] = xmatch_service.queried_catalogs
 # Callable (not a snapshot) so the env flag is read per-render — keeps tests
 # that toggle ANALYTICS_ENABLED honest, and lets the operator flip it without
 # a process restart.

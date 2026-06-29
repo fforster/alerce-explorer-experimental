@@ -319,9 +319,27 @@
         hx-trigger="load"
         hx-swap="innerHTML"
       >
-        <div class="tw-text-text-muted tw-py-3">
-          <i class="fa-solid fa-spinner fa-spin tw-mr-1"></i>
-          Loading crossmatch&hellip;
+        {#
+          Expressive loading state: a cold (un-prefetched) object fires ~20 live
+          CDS XMatch + NED queries, so the wait names every catalog being hit,
+          grouped by category. The list comes from xmatch_catalogs() so it tracks
+          the registry. Replaced wholesale once /htmx/crossmatch returns.
+        #}
+        {%- set cats = xmatch_catalogs() %}
+        <div class="tw-text-text-secondary tw-py-2 tw-text-[11px] tw-leading-relaxed">
+          <div class="tw-text-text-primary tw-mb-2">
+            <i class="fa-solid fa-spinner fa-spin tw-mr-1.5"></i>
+            Querying {{ cats.total }} catalogs &mdash; CDS XMatch + NED&hellip;
+          </div>
+          {% for label, color, names in cats.groups %}
+            {% if names %}
+              <div class="tw-mb-1 tw-flex tw-items-baseline tw-gap-1.5">
+                <span class="tw-inline-block tw-rounded-full tw-shrink-0" style="width:8px;height:8px;background:{{ color }};transform:translateY(1px)"></span>
+                <span><span class="tw-text-text-primary tw-font-semibold">{{ label }}</span> &middot; {{ names | join(", ") }}</span>
+              </div>
+            {% endif %}
+          {% endfor %}
+          <div class="tw-text-text-muted tw-mt-2">Results are usually prefetched on the results page, so this is normally instant; a direct deep-link computes them now.</div>
         </div>
       </div>
     </details>
