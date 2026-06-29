@@ -327,9 +327,13 @@
         #}
         {%- set cats = xmatch_catalogs() %}
         <div class="tw-text-text-secondary tw-py-2 tw-text-[11px] tw-leading-relaxed">
-          <div class="tw-text-text-primary tw-mb-2">
-            <i class="fa-solid fa-spinner fa-spin tw-mr-1.5"></i>
-            Querying {{ cats.total }} catalogs &mdash; CDS XMatch + NED&hellip;
+          <div class="tw-text-text-primary tw-mb-2 tw-flex tw-items-center tw-gap-2">
+            {# CSS ring spinner — Font Awesome isn't loaded in this app, so the
+               old fa-spinner rendered nothing. tw-animate-spin (compiled) drives
+               the rotation; the ring itself is inline styles so it can't be
+               purged. #}
+            <span class="tw-inline-block tw-animate-spin" style="width:14px;height:14px;border:2px solid rgba(237,237,237,0.25);border-top-color:#42a5f5;border-radius:9999px;flex-shrink:0"></span>
+            <span>Querying {{ cats.total }} catalogs &mdash; CDS XMatch + NED&hellip;</span>
           </div>
           {% for label, color, names in cats.groups %}
             {% if names %}
