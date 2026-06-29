@@ -53,15 +53,21 @@
       const first = items[0];
       const sources = [];
       for (const s of items) {
-        if (s.ra == null || s.dec == null || s.z == null) continue;
-        const zStr = fmt(s.z, 5);
+        // Stellar / AGN markers carry no redshift — only host markers do. Draw
+        // any source with a position; the server-built `label` describes it
+        // (parallax / variable type / AGN class / z). `data.z` is set ONLY when
+        // a redshift is present, so click→redshift (aladin.js) fires for host /
+        // AGN-with-z markers and is a no-op for stellar ones.
+        if (s.ra == null || s.dec == null) continue;
         const data = {
-          name: `${s.cat_name}: z = ${fmt(s.z, 4)}${s.type ? " · " + s.type : ""}`,
-          z: zStr,
-          Type: s.type || "?",
+          name: `${s.cat_name}${s.label ? ": " + s.label : ""}`,
           Source: s.cat_name,
         };
-        if (s.z_err != null) data.z_err = fmt(s.z_err, 5);
+        if (s.z != null) {
+          data.z = fmt(s.z, 5);
+          if (s.z_err != null) data.z_err = fmt(s.z_err, 5);
+        }
+        if (s.type) data.Type = s.type;
         if (s.sep != null) data.Separation = `${fmt(s.sep, 2)}″`;
         sources.push(window.A.source(s.ra, s.dec, data));
       }

@@ -29,8 +29,12 @@
   */
   /* `transform-origin: center` so the zoom scale (applied by setPanelZoom in
      stamps.js) grows the crosshair about the stamp centre — keeping it locked
-     to the zoomed image content at a constant relative scale. */
-  #stamps-panel .stamp-crosshair { position: absolute; inset: 0; pointer-events: none; z-index: 4; transform-origin: center; }
+     to the zoomed image content at a constant relative scale.
+     NO z-index: it's an absolutely-positioned sibling after the <canvas>, so it
+     already paints above the image; a positive z-index would promote it into
+     the page's global stacking context and let it bleed over the Aladin
+     fullscreen overlay. */
+  #stamps-panel .stamp-crosshair { position: absolute; inset: 0; pointer-events: none; transform-origin: center; }
   #stamps-panel .stamp-crosshair > span { position: absolute; background: rgba(255, 0, 0, 0.5); }
   #stamps-panel .stamp-crosshair .xhair-l,
   #stamps-panel .stamp-crosshair .xhair-r { top: 50%; height: 6px; transform: translateY(-50%); }

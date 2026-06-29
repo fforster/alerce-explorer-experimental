@@ -120,14 +120,80 @@ def test_build_record_ned_redshift_becomes_overlay_marker():
     assert marks == [("ned", "host")]          # NED host only; the z=None NED row is excluded
 
 
-def test_build_record_no_redshift():
+def test_ned_supernova_is_not_treated_as_host():
+    # A NED SN entry sits at the transient and carries the event's own z — it
+    # must not become the "host galaxy". The nearby galaxy is the real host.
+    rec = xmatch._build_object_record({
+        "NED": [
+            {"cat_name": "NED", "ra": 1.0, "dec": 2.0, "z": 0.043, "z_err": None,
+             "type": "SN", "name": "SN 2025x", "sep": 0.04},
+            {"cat_name": "NED", "ra": 1.1, "dec": 2.1, "z": 0.026, "z_err": None,
+             "type": "G", "name": "WISEA gal", "sep": 11.0},
+        ],
+    })
+    assert rec["best_z"]["z"] == 0.026                  # the galaxy, not the SN
+    assert [o["name"] for o in rec["overlay"]] == ["WISEA gal"]   # SN gets no host marker
+    assert xmatch._is_transient_type("SN") and not xmatch._is_transient_type("SNR")
+
+
+def test_stellar_agn_matches_capped_at_tight_radius():
+    # Simbad (wide 36" search) can route a distant field star into "stellar";
+    # a stellar/AGN match beyond 3" is dropped, but a host beyond 3" is kept.
+    rec = xmatch._build_object_record({
+        "Simbad": [
+            {"cat_name": "Simbad", "category": "stellar", "ra": 1.0, "dec": 2.0,
+             "z": None, "type": "Star", "name": "near", "sep": 1.5, "fields": [], "signals": {}},
+            {"cat_name": "Simbad", "category": "stellar", "ra": 1.0, "dec": 2.0,
+             "z": None, "type": "Star", "name": "far", "sep": 30.0, "fields": [], "signals": {}},
+            {"cat_name": "Simbad", "category": "host", "ra": 1.0, "dec": 2.0,
+             "z": 0.04, "type": "Galaxy", "name": "gal", "sep": 25.0, "fields": [], "signals": {}},
+        ],
+    })
+    names = [m["name"] for m in rec["matches"]]
+    assert "near" in names and "far" not in names      # distant star dropped
+    assert "gal" in names                              # distant host galaxy kept
+
+
+def test_build_record_host_without_redshift_has_no_marker():
+    # A host-category match with no redshift contributes no sky marker.
     rec = xmatch._build_object_record({
         "Simbad": [{"cat_name": "Simbad", "ra": 1.0, "dec": 2.0, "z": None,
-                    "z_err": None, "type": "Star", "name": "s", "sep": 1.0}],
+                    "z_err": None, "type": "Galaxy", "name": "g", "sep": 1.0}],
     })
     assert rec["best_z"] is None
     assert rec["overlay"] == []
     assert rec["counts"] == {"Simbad": 1}
+
+
+def test_build_record_stellar_and_agn_markers_need_no_redshift():
+    # Stellar / AGN counterparts are point sources at the position → they get a
+    # marker even without a redshift; ordering is stars → AGN → host.
+    rec = xmatch._build_object_record({
+        "Gaia DR3": [{"cat_name": "Gaia DR3", "category": "stellar", "ra": 1.0, "dec": 2.0,
+                      "sep": 0.5, "name": "G", "type": "star", "z": None, "fields": [],
+                      "signals": {"parallax": 0.8, "parallax_snr": 12.0, "dist_pc": 1250.0}}],
+        "Milliquas": [{"cat_name": "Milliquas", "category": "agn", "ra": 1.0, "dec": 2.0,
+                       "sep": 0.1, "name": "Q", "type": "QSO", "z": 1.2, "fields": [],
+                       "signals": {"agn_class": "QSO", "radio": True, "xray": True, "z": 1.2}}],
+    })
+    assert [(o["category"], o["cat_id"]) for o in rec["overlay"]] == [("stellar", "gaia_dr3"), ("agn", "milliquas")]
+    assert rec["overlay"][0]["color"] == xmatch.CATEGORY_COLOR["stellar"]
+    assert rec["overlay"][1]["color"] == xmatch.CATEGORY_COLOR["agn"]
+    # ordered stars first, then AGN
+    assert [m["cat_name"] for m in rec["matches"]] == ["Gaia DR3", "Milliquas"]
+    assert "Galactic candidate" in rec["hints"]["stellar"]
+    assert "AGN/QSO" in rec["hints"]["agn"]
+
+
+def test_signal_extractors():
+    # Milliquas Type string encodes class + radio/X-ray; Gaia RPlx is the S/N.
+    assert xmatch._sig_milliquas({"Type": "QRX", "z": "1.2"}) == {
+        "agn_class": "QSO", "radio": True, "xray": True, "z": 1.2, "type_label": "QSO"}
+    g = xmatch._sig_gaia({"Plx": "5.0", "e_Plx": "0.5", "RPlx": "10.0", "VarFlag": "VARIABLE"})
+    assert g["parallax_snr"] == 10.0 and g["gaia_variable"] is True
+    assert xmatch._simbad_category("RRLyrae") == "stellar"
+    assert xmatch._simbad_category("Seyfert_1") == "agn"
+    assert xmatch._simbad_category("Galaxy") == "host"
 
 
 # --- bulk_all (monkeypatched cores) -----------------------------------------
@@ -258,11 +324,14 @@ def test_crossmatch_route_folds_xmatch_summary(client, monkeypatch):
                 "catalogs": [], "n_catalogs": 0, "error": None}
 
     async def fake_xm(oid, ra, dec):
-        return {"by_catalog": {"DESI": [{"cat_name": "DESI", "ra": 10.0, "dec": 20.0,
-                                         "z": 0.05, "z_err": None, "type": "GALAXY",
-                                         "name": "d", "sep": 0.8}]},
-                "best_z": {"z": 0.05, "z_err": None, "source": "DESI", "sep": 0.8},
-                "simbad_type": "Galaxy", "counts": {"DESI": 1}, "overlay": []}
+        return xmatch._build_object_record({
+            "Gaia DR3": [{"cat_name": "Gaia DR3", "category": "stellar", "ra": 10.0, "dec": 20.0,
+                          "sep": 0.5, "name": "Gaia X", "type": "star", "z": None,
+                          "fields": [{"label": "Plx", "value": 5.0, "unit": "mas"}],
+                          "signals": {"parallax": 5.0, "parallax_snr": 12.0, "dist_pc": 200.0}}],
+            "DESI": [{"cat_name": "DESI", "ra": 10.0, "dec": 20.0, "z": 0.05, "z_err": None,
+                      "type": "GALAXY", "name": "d", "sep": 0.8}],
+        })
 
     monkeypatch.setattr("src.routes.htmx.object_info_service.get_object_info", fake_info)
     monkeypatch.setattr("src.routes.htmx.crossmatch_service.get_crossmatch", fake_catshtm)
@@ -271,7 +340,7 @@ def test_crossmatch_route_folds_xmatch_summary(client, monkeypatch):
     resp = client.get("/htmx/crossmatch", params={"oid": "A", "survey_id": "lsst"})
     assert resp.status_code == 200
     html = resp.text
-    assert "Redshift crossmatch" in html
-    assert "Best spec" in html
-    assert "0.05000" in html          # best-z rendered
-    assert "SIMBAD type" in html
+    assert "Crossmatch &mdash; CDS / NED" in html or "Crossmatch — CDS / NED" in html
+    assert "Galactic candidate" in html      # stellar hint banner
+    assert "Gaia DR3" in html and "DESI" in html   # ordered match column
+    assert "Plx" in html                     # catalog-specific field rendered
