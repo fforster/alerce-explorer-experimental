@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from typing import Any, Callable
 
@@ -463,6 +464,14 @@ async def bulk_all(positions: list[tuple[str, float, float]]) -> dict[str, dict]
     failed/unreachable catalog contributes nothing and never breaks the batch.
     """
     if not positions:
+        return {}
+    # Offline test / e2e mode: astroquery + pyvo use their own HTTP clients,
+    # which bypass the httpx replay transport (services/replay.py) — so they
+    # would hit the real CDS/NED services on every page render under the
+    # otherwise-hermetic Playwright suite. Skip live catalog calls when the
+    # replay harness is active so tests stay offline and deterministic.
+    if os.getenv("EXPLORER_REPLAY_DIR"):
+        log.info("bulk_all skipped (EXPLORER_REPLAY_DIR set — offline mode)")
         return {}
     sem = asyncio.Semaphore(_CONCURRENCY)
 
