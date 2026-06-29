@@ -66,16 +66,22 @@ CATEGORY: dict[str, str] = {
 
 
 def _simbad_category(otype: str | None) -> str:
-    """Route a Simbad match into a use-case category from its main_type/otype."""
-    s = (otype or "").lower()
-    if any(k in s for k in ("qso", "quasar", "seyfert", "agn", "blazar", "bl_lac", "bllac", "liner")):
+    """Route a Simbad match into a use-case category from its main_type/otype.
+
+    Simbad's stellar otype space is huge and irregular (Mira, RR Lyrae, Cepheid,
+    AGB, T Tauri, Wolf-Rayet, …), so we identify AGN and galaxies explicitly and
+    treat *everything else as stellar*: host galaxies reliably carry "galax" (or a
+    galaxy short-code), and the remaining otypes — variable/peculiar stars,
+    nebulae, SNR, ISM — are Galactic, not host galaxies. (Fixes Mira-type stars
+    being coloured green like a host.)"""
+    s = (otype or "").strip().lower()
+    if (any(k in s for k in ("qso", "quasar", "seyfert", "blazar", "bl_lac", "bllac", "liner"))
+            or s in ("agn", "sy1", "sy2", "sy", "bla", "bll")):
         return "agn"
-    if any(k in s for k in ("star", "rrlyr", "cepheid", "variable", "eclbin", "white",
-                            "dwarf", "nova", "cataclys", "pulsat", "yso", "carbon", "wd")):
-        return "stellar"
-    if "galax" in s or s in ("g", "gig", "gic", "gpair", "ggroup"):
+    if "galax" in s or s in ("g", "gig", "gic", "gip", "ig", "grg", "clg", "gg",
+                             "gpair", "ggroup", "emg", "rg", "brg", "blg", "sbg", "h2g"):
         return "host"
-    return "host"   # ambiguous → host (extragalactic-leaning)
+    return "stellar"
 
 
 class CatalogQueryError(RuntimeError):
@@ -564,17 +570,12 @@ def _bulk_ned_tap_sync(positions: list[tuple[str, float, float]],
 
 # --- overlay + panel display ------------------------------------------------
 
-# Category colours (Aladin markers + panel tags): stellar = blue, AGN = red,
-# host = the per-catalog redshift palette (NED recoloured off red so host
-# markers don't clash with the AGN red).
-CATEGORY_COLOR = {"stellar": "#42a5f5", "agn": "#ef5350"}
-DEFAULT_HOST_COLOR = "#9ccc65"
-HOST_COLOR: dict[str, str] = {
-    "DESI": "#ff7f0e", "SDSS": "#4fc3f7", "6dFGS": "#81c784", "GAMA DR4": "#ef9a9a",
-    "2MRS": "#80cbc4", "WiggleZ": "#fff176", "zCOSMOS": "#f48fb1", "VIPERS PDR2": "#ffcc80",
-    "OzDES DR1": "#b0bec5", "2dFGRS": "#a5d6a7", "HECATE": "#90caf9", "GLADE v2": "#bcaaa4",
-    "NED": "#4db6ac", "HyperLEDA": "#aed581", "Simbad": "#ba68c8",
-}
+# One colour per category, the single source of truth used everywhere — the
+# Crossmatch panel dots, the Aladin sky markers + grouped legend, the hints and
+# the (?) hover all read these so the schema is identical across panels:
+#   stars = light blue, AGN/QSO = red, galaxies = dark green.
+CATEGORY_COLOR = {"stellar": "#4fc3f7", "agn": "#ef5350", "host": "#2e7d32"}
+GENERAL_COLOR = "#ba68c8"   # Simbad row in the loading message (routed per match)
 # Single-column ordering: tight-radius star/AGN counterparts are the strongest
 # classifiers, so they lead; host galaxies follow. (stars → AGN → host).
 CAT_ORDER = {"stellar": 0, "agn": 1, "host": 2}
@@ -599,8 +600,8 @@ def queried_catalogs() -> dict:
     groups = [
         ("Stellar", CATEGORY_COLOR["stellar"], by["stellar"]),
         ("AGN / QSO", CATEGORY_COLOR["agn"], by["agn"]),
-        ("Host galaxies", DEFAULT_HOST_COLOR, by["host"]),
-        ("General", HOST_COLOR["Simbad"], by["general"]),
+        ("Host galaxies", CATEGORY_COLOR["host"], by["host"]),
+        ("General", GENERAL_COLOR, by["general"]),
     ]
     return {"total": sum(len(v) for v in by.values()), "groups": groups}
 
@@ -620,10 +621,7 @@ def _is_transient_type(t: str | None) -> bool:
 
 
 def _match_color(m: dict) -> str:
-    cat = m.get("category", "host")
-    if cat in CATEGORY_COLOR:
-        return CATEGORY_COLOR[cat]
-    return HOST_COLOR.get(m["cat_name"], DEFAULT_HOST_COLOR)
+    return CATEGORY_COLOR.get(m.get("category", "host"), CATEGORY_COLOR["host"])
 
 
 def _attach_meta(m: dict) -> dict:
@@ -696,10 +694,12 @@ def _classification_hints(matches: list[dict], best_z: dict | None) -> dict:
             gaia_var = True
     if plx_best:
         tail = []
-        if plx_best.get("parallax_snr"):
+        # Show only the metric that actually passed the ≥5σ gate (a 2σ parallax
+        # alongside a significant proper motion shouldn't be quoted as evidence).
+        if (plx_best.get("parallax_snr") or 0) >= 5:
             d = f", d≈{plx_best['dist_pc']:.0f} pc" if plx_best.get("dist_pc") else ""
             tail.append(f"parallax {plx_best['parallax_snr']:.0f}σ{d}")
-        elif plx_best.get("pm_snr"):
+        elif (plx_best.get("pm_snr") or 0) >= 5:
             tail.append(f"proper motion {plx_best['pm_snr']:.0f}σ")
         if vsx:
             p = f", P={vsx[2]:.4g} d" if vsx[2] else ""

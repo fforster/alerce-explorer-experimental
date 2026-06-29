@@ -150,6 +150,8 @@
       inner.style.width = "100%";
       inner.style.height = "100%";
       host.appendChild(inner);
+      currentAladinView = inner;   // measured by isAladinFullscreenNow()
+      startFullscreenWatch();      // keep page chrome from bleeding over fullscreen
 
       const aladin = A.aladin(`#${innerId}`, {
         target: `${ra} ${dec}`,
@@ -164,12 +166,21 @@
       aladin.addCatalog(cat);
       cat.addSources([A.source(ra, dec, { name: String(oid) })]);
 
-      // Clicks on any catalog source (main object or spec-z overlay) fire
-      // `objectClicked`. When the clicked source carries a `z` datum, copy
-      // it into the per-oid redshift input so other panels can pick it up
-      // from there later (absolute-mag mode, future cosmology math, …).
+      // Clicks on any catalog source (object / overlay / LSST neighbour) fire
+      // `objectClicked`. We (a) show the source's details in the 2-row info bar
+      // at the bottom of the panel — not Aladin's hard-to-close popup — and
+      // (b) when the source carries a `z`, copy it into the per-oid redshift
+      // input so other panels (absolute-mag mode, …) can pick it up.
+      const infoEl = document.getElementById(`aladin-info-${oid}`);
       aladin.on("objectClicked", function (obj) {
         if (!obj || !obj.data) return;
+        const { row1, row2 } = describeSource(obj.data);
+        // In fullscreen the bottom info bar is off-screen, so show a small,
+        // easy-to-close popup instead. Aladin Lite uses a CSS fullscreen (a
+        // fixed overlay), not the native Fullscreen API, so we detect it by the
+        // view covering the viewport rather than document.fullscreenElement.
+        if (isAladinFullscreenNow()) showInfoPopup(row1, row2);
+        else { setInfoBar(infoEl, row1, row2); hideInfoPopup(); }
         const zStr = obj.data.z;
         if (!zStr || zStr === "?") return;
         const z = parseFloat(zStr);
@@ -188,7 +199,9 @@
       // layer, so they can interleave safely.
       if (typeof window.loadSpecZOverlays === "function") {
         window.loadSpecZOverlays(aladin, oid, surveyId, (info) => {
-          addLegendChip(legendEl, `${info.name} (${info.count})`, info.color);
+          // One grouped legend entry per category (Stars / AGN/QSO / Galaxies),
+          // not per external catalog.
+          addLegendChip(legendEl, `${info.label} (${info.count})`, info.color);
         });
       }
       loadLsstNeighbors(aladin, ra, dec, lastmjd, oid, legendEl);
@@ -245,7 +258,7 @@
       sourceSize: 12,
       color,
       shape: "square",
-      onClick: "showPopup",
+      onClick: () => {},   // info bar, not popup (see objectClicked)
     });
     aladin.addCatalog(cat);
     const sources = rows.map((r) => window.A.source(r.ra, r.dec, {
@@ -289,6 +302,116 @@
     applyStampFootprint(host, evt.detail.footprint);
   });
 
+  // A clicked source → two display rows. Handles the three source flavours:
+  // external crossmatch (Source/ID/label), LSST neighbour (oid/lastmjd), object.
+  function describeSource(data) {
+    let row1 = "", row2 = "";
+    if (data.Source) {
+      row1 = data.ID ? `${data.Source} · ${data.ID}` : data.Source;
+      const bits = [];
+      if (data.label) bits.push(data.label);
+      else {
+        if (data.z) bits.push(`z = ${data.z}`);
+        if (data.Type) bits.push(data.Type);
+      }
+      if (data.Separation) bits.push(data.Separation);
+      row2 = bits.join(" · ");
+    } else if (data.oid) {
+      row1 = `LSST neighbour · ${data.oid}`;
+      row2 = data.lastmjd ? `lastmjd ${data.lastmjd}` : "";
+    } else {
+      row1 = String(data.name || "object");
+    }
+    return { row1, row2 };
+  }
+
+  // Non-fullscreen: the 2-row info bar at the bottom of the panel.
+  function setInfoBar(infoEl, row1, row2) {
+    if (!infoEl) return;
+    const r1 = infoEl.querySelector(".aladin-info-row1");
+    const r2 = infoEl.querySelector(".aladin-info-row2");
+    if (r1) r1.textContent = row1;
+    if (r2) r2.textContent = row2 || "";
+  }
+
+  // The Aladin view element currently on the page (the div Aladin renders into).
+  let currentAladinView = null;
+
+  // Aladin Lite's fullscreen is a CSS fixed-overlay, NOT the native Fullscreen
+  // API, so document.fullscreenElement stays null. Detect it by the view (or a
+  // descendant Aladin container, or an `.aladin-fullscreen` class) covering the
+  // whole viewport.
+  function isAladinFullscreenNow() {
+    if (document.fullscreenElement) return true;
+    if (document.querySelector(".aladin-fullscreen")) return true;
+    const el = currentAladinView;
+    if (!el) return false;
+    const cands = [el, el.querySelector && el.querySelector(".aladin-container")];
+    for (const c of cands) {
+      if (!c) continue;
+      const r = c.getBoundingClientRect();
+      if (r.width >= window.innerWidth - 4 && r.height >= window.innerHeight - 4) return true;
+    }
+    return false;
+  }
+
+  // While Aladin is CSS-fullscreen, (a) raise its overlay above all page chrome
+  // (panel-help tooltips are z-50 and would otherwise bleed over the sky view),
+  // (b) flag <body> so a CSS rule can hide those tooltips, and (c) drop the info
+  // popup once fullscreen ends. One lightweight always-on poll (Aladin emits no
+  // event for its CSS fullscreen).
+  let fsWatch = null;
+  function startFullscreenWatch() {
+    if (fsWatch) return;
+    fsWatch = setInterval(() => {
+      const fs = isAladinFullscreenNow();
+      document.body.classList.toggle("aladin-fs-active", fs);
+      const el = currentAladinView;
+      if (el) {
+        const cc = el.querySelector && el.querySelector(".aladin-container");
+        el.style.zIndex = fs ? "2147483646" : "";
+        if (cc) cc.style.zIndex = fs ? "2147483646" : "";
+      }
+      if (!fs) hideInfoPopup();
+    }, 350);
+  }
+
+  // Fullscreen popup: a fixed, max-z-index box on document.body (so it paints
+  // over Aladin's fullscreen overlay) with an easy × to close. Singleton.
+  let infoPopup = null;
+  function getInfoPopup() {
+    if (infoPopup) return infoPopup;
+    infoPopup = document.createElement("div");
+    infoPopup.style.cssText =
+      "position:fixed;left:12px;bottom:12px;z-index:2147483647;max-width:80vw;" +
+      "background:rgba(18,18,18,0.92);border:1px solid #444;border-radius:4px;" +
+      "padding:6px 28px 6px 10px;font:12px/1.35 'IBM Plex Mono',ui-monospace,monospace;" +
+      "color:#ededed;pointer-events:auto;";
+    const r1 = document.createElement("div"); r1.className = "aip-r1";
+    const r2 = document.createElement("div"); r2.className = "aip-r2"; r2.style.color = "#a6a6a6";
+    const close = document.createElement("button");
+    close.textContent = "×"; close.setAttribute("aria-label", "Close");
+    close.style.cssText =
+      "position:absolute;top:1px;right:7px;background:none;border:none;color:#a6a6a6;" +
+      "font-size:17px;line-height:1;cursor:pointer;";
+    close.onclick = hideInfoPopup;
+    infoPopup.append(r1, r2, close);
+    document.body.appendChild(infoPopup);
+    return infoPopup;
+  }
+  function showInfoPopup(row1, row2) {
+    const p = getInfoPopup();
+    p.querySelector(".aip-r1").textContent = row1;
+    p.querySelector(".aip-r2").textContent = row2 || "";
+    p.style.display = "block";
+  }
+  function hideInfoPopup() {
+    if (infoPopup) infoPopup.style.display = "none";
+  }
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) hideInfoPopup();
+  });
+
   function addLegendChip(legendEl, label, color) {
     if (!legendEl) return;
     const chip = document.createElement("span");
@@ -302,6 +425,67 @@
     chip.appendChild(document.createTextNode(label));
     legendEl.appendChild(chip);
   }
+
+  // Plot ALL crossmatch objects (every CDS/NED match with a position, plus all
+  // catsHTM objects) in the live Aladin panel — driven by the "Show all in sky
+  // view" button in the Crossmatch panel. CDS/NED keep the category colours
+  // (cross markers, to distinguish from the auto z-overlay circles); catsHTM is
+  // cyan triangles. Toggles visibility on repeat clicks. Returns the new shown
+  // state (true/false), or null if there's no live Aladin / nothing to plot.
+  const CAT_LABEL = { stellar: "Stars", agn: "AGN/QSO", host: "Galaxies" };
+  window.showAllCrossmatchInAladin = function (payload) {
+    const host = document.querySelector(".aladin-host");
+    const aladin = host && host.$aladin;
+    if (!aladin || typeof window.A === "undefined" || !payload) return null;
+
+    if (host.$xmAllLayers) {                         // already built → toggle
+      host.$xmAllShown = !host.$xmAllShown;
+      host.$xmAllLayers.forEach((c) => {
+        if (host.$xmAllShown) { if (c.show) c.show(); }
+        else if (c.hide) c.hide();
+      });
+      return host.$xmAllShown;
+    }
+
+    const layers = [];
+    const byCat = { stellar: [], agn: [], host: [] };
+    for (const m of payload.cds || []) {
+      if (m.ra == null || m.dec == null) continue;
+      (byCat[m.category] || byCat.host).push(m);
+    }
+    for (const cat of ["stellar", "agn", "host"]) {
+      const items = byCat[cat];
+      if (!items.length) continue;
+      const c = window.A.catalog({
+        name: `All ${CAT_LABEL[cat]} (${items.length})`,
+        sourceSize: 10, color: items[0].color || "#9ccc65", shape: "cross",
+        onClick: () => {},
+      });
+      aladin.addCatalog(c);
+      c.addSources(items.map((m) => window.A.source(m.ra, m.dec, {
+        Source: m.cat_name, ID: m.name || "",
+        z: m.z != null ? Number(m.z).toFixed(5) : null,
+        Type: m.type || null,
+        Separation: m.sep != null ? `${Number(m.sep).toFixed(2)}″` : null,
+      })));
+      layers.push(c);
+    }
+    const cm = payload.catshtm || [];
+    if (cm.length) {
+      const c = window.A.catalog({
+        name: `catsHTM (${cm.length})`, sourceSize: 10, color: "#67e8f9",
+        shape: "triangle", onClick: () => {},
+      });
+      aladin.addCatalog(c);
+      c.addSources(cm.map((m) => window.A.source(m.ra, m.dec,
+        { Source: "catsHTM", ID: m.name || "", label: m.props || "" })));
+      layers.push(c);
+    }
+    if (!layers.length) return null;
+    host.$xmAllLayers = layers;
+    host.$xmAllShown = true;
+    return true;
+  };
 
   function initAll(root) {
     const hosts = (root || document).querySelectorAll(".aladin-host");

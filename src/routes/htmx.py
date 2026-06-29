@@ -91,6 +91,9 @@ templates.env.globals["asset_v"] = _asset_version
 # Catalog list (grouped by category) for the expressive crossmatch loading
 # message; derived from the live xmatch registries so it never drifts.
 templates.env.globals["xmatch_catalogs"] = xmatch_service.queried_catalogs
+# Category → colour map (stars/AGN/galaxies), shared by the Crossmatch panel and
+# the Aladin overlay so the schema is identical across panels.
+templates.env.globals["xmatch_colors"] = xmatch_service.CATEGORY_COLOR
 # Callable (not a snapshot) so the env flag is read per-render — keeps tests
 # that toggle ANALYTICS_ENABLED honest, and lets the operator flip it without
 # a process restart.
@@ -915,10 +918,24 @@ async def crossmatch(request: Request, oid: str, survey_id: str) -> HTMLResponse
     except Exception:
         log.exception("crossmatch xmatch lookup failed")
         xm = xmatch_cache_service.EMPTY_RECORD
+    # Payload for the "show all in Aladin" button: every CDS/NED match with a
+    # position (not just the z-filtered sky overlay) + the catsHTM positions.
+    aladin_markers = {
+        "cds": [
+            {"ra": m["ra"], "dec": m["dec"], "category": m.get("category"),
+             "color": m.get("color"), "cat_name": m.get("cat_name"),
+             "name": m.get("name"), "z": m.get("z"), "type": m.get("type"),
+             "sep": m.get("sep")}
+            for m in xm.get("matches", [])
+            if m.get("ra") is not None and m.get("dec") is not None
+        ],
+        "catshtm": ctx.get("markers", []),
+    }
     return templates.TemplateResponse(
         request,
         "crossmatch/crossmatchPanel.html.jinja",
-        {"ctx": ctx, "xm": xm, "oid": oid, "survey_id": survey_id},
+        {"ctx": ctx, "xm": xm, "oid": oid, "survey_id": survey_id,
+         "aladin_markers": aladin_markers},
     )
 
 

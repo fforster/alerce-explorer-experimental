@@ -6,6 +6,15 @@
   Aladin Lite v3 is loaded from CDS CDN the first time an aladin panel is
   rendered — it's a megabyte of JS and we don't want it on every page view.
 #}
+<style>
+  /* Aladin Lite's fullscreen is a CSS fixed-overlay (not the native Fullscreen
+     API), so page chrome with a positive z-index — notably the panel-help (?)
+     tooltips at z-50 — can paint over the fullscreen sky view. While fullscreen
+     is active, aladin.js sets `body.aladin-fs-active`; hide those tooltips then
+     so nothing bleeds over the sky. (aladin.js also raises the Aladin overlay's
+     z-index; this is belt-and-suspenders for the hover cards.) */
+  body.aladin-fs-active .panel-help [role="tooltip"] { display: none !important; }
+</style>
 <div id="aladin-panel" class="tw-bg-bg-card tw-border tw-border-border tw-rounded tw-p-4 tw-h-full tw-flex tw-flex-col">
   <div class="tw-flex tw-items-center tw-justify-between tw-mb-2">
     {% from "_panel_help.html.jinja" import panel_help %}
@@ -20,10 +29,16 @@
       </ul>
       <div class="tw-font-semibold tw-mb-1">Stamp footprint</div>
       <p class="tw-text-text-secondary tw-mb-3">An amber polygon traces the on-sky extent of the currently selected science stamp. LSST stamps use the FITS WCS directly; ZTF cutouts ship without WCS so the polygon is reconstructed from a 1″/pix square centred on the object. Updates whenever you pick a different detection in the stamps panel or click another light-curve point.</p>
-      <div class="tw-font-semibold tw-mb-1">Host-galaxy spec-z</div>
-      <p class="tw-text-text-secondary tw-mb-3">Coloured chips mark VizieR catalog sources (DESI DR1, SDSS DR16, 6dFGS, GAMA, 2MRS, WiggleZ, zCOSMOS, VIPERS PDR2, OzDES DR1). Click a chip to populate the <em>z</em> input in the light-curve panel — useful for absolute-magnitude mode.</p>
+      <div class="tw-font-semibold tw-mb-1">Crossmatch overlay</div>
+      <p class="tw-text-text-secondary tw-mb-3">CDS/NED crossmatches are drawn colour-coded by category —
+        <span class="tw-font-semibold" style="color:{{ xmatch_colors['stellar'] }}">stars</span>,
+        <span class="tw-font-semibold" style="color:{{ xmatch_colors['agn'] }}">AGN/QSO</span>,
+        <span class="tw-font-semibold" style="color:{{ xmatch_colors['host'] }}">galaxies</span> — the
+        same schema as the Crossmatch panel. The legend groups them (Stars / AGN/QSO / Galaxies). Click a
+        marker to see its details in the info bar at the bottom of the panel (or, in fullscreen, a small popup);
+        clicking a galaxy/AGN with a redshift also fills the <em>z</em> input in the light-curve panel.</p>
       <div class="tw-font-semibold tw-mb-1">Contemporaneous LSST objects</div>
-      <p class="tw-text-text-secondary">Gray squares mark LSST objects whose mean position lies within 10 arcmin of this object AND whose <em>lastmjd</em> falls within ±2 hr of this object's. Useful for spotting possible trails (asteroids / satellites) that share the same exposure — a near-perfect chain of squares along the same direction is a strong hint. The count is shown on the "LSST neighbours (N)" chip in the legend. Click a square to see its <em>oid</em> and <em>lastmjd</em>.</p>
+      <p class="tw-text-text-secondary">Gray squares mark LSST objects whose mean position lies within 10 arcmin of this object AND whose <em>lastmjd</em> falls within ±2 hr of this object's. Useful for spotting possible trails (asteroids / satellites) that share the same exposure — a near-perfect chain of squares along the same direction is a strong hint. The count is shown on the "LSST neighbours (N)" chip in the legend. Click a square to see its <em>oid</em> and <em>lastmjd</em> in the info bar.</p>
     {% endcall %}
     <div id="aladin-legend-{{ oid }}" class="tw-text-xs tw-text-text-muted tw-font-mono"></div>
   </div>
@@ -48,8 +63,14 @@
         loading sky view…
       </div>
     </div>
-    <div class="tw-text-xs tw-text-text-muted tw-mt-2 tw-font-mono">
-      RA {{ "%.5f"|format(ra) }}° · Dec {{ "%.5f"|format(dec) }}°
+    {#
+      2-row info bar at the bottom — replaces Aladin's hard-to-close popup.
+      Defaults to the object coordinates + a hint; aladin.js fills both rows
+      with a clicked marker's details (catalog · id, then its properties).
+    #}
+    <div id="aladin-info-{{ oid }}" class="tw-mt-2 tw-font-mono tw-text-xs tw-leading-tight tw-min-h-[2.1rem]">
+      <div class="aladin-info-row1 tw-text-text-primary tw-truncate">RA {{ "%.5f"|format(ra) }}° · Dec {{ "%.5f"|format(dec) }}°</div>
+      <div class="aladin-info-row2 tw-text-text-secondary tw-truncate">Click a marker (star / AGN / galaxy / LSST neighbour) for its details</div>
     </div>
   {% else %}
     <div class="tw-text-xs tw-text-text-muted tw-py-6 tw-text-center">
