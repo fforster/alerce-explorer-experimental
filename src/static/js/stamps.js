@@ -34,6 +34,12 @@
     panel.dataset.zoom = String(z);
     const label = panel.querySelector(".stamps-zoom-reset");
     if (label) label.textContent = `${z.toFixed(2)}×`;
+    // Scale the centre crosshair by the same factor (about centre, via CSS
+    // transform-origin) so it tracks the zoomed image at a constant relative
+    // scale instead of staying a fixed-size reticle.
+    panel.querySelectorAll(".stamp-crosshair").forEach((ch) => {
+      ch.style.transform = z === 1 ? "" : `scale(${z})`;
+    });
   }
 
   async function loadAndRenderFitsStamp(canvas, url) {
@@ -762,6 +768,19 @@
     z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
     setPanelZoom(panel, z);
     redrawPanelStamps(panel);
+  };
+
+  // Show/hide the centre crosshair overlay on every stamp in the panel. The
+  // crosshair markup lives in stampsPreview.html.jinja; toggling
+  // `.crosshair-hidden` on the panel flips its CSS `display`. Updates the
+  // button's pressed state + accent colour so it reads as on/off.
+  window.toggleStampCrosshairs = function (btn) {
+    const panel = btn?.closest("#stamps-panel") || document.getElementById("stamps-panel");
+    if (!panel) return;
+    const hidden = panel.classList.toggle("crosshair-hidden");
+    btn.setAttribute("aria-pressed", String(!hidden));
+    btn.classList.toggle("tw-text-accent", !hidden);
+    btn.classList.toggle("tw-text-text-muted", hidden);
   };
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));
