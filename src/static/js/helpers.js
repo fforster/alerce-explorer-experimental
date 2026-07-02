@@ -289,6 +289,12 @@ window.send_classes_data = send_classes_data;
     // row. Time-boxed so a later, unrelated search doesn't get decorated.
     window._returnHighlightOid = currentDetailOid();
     window._returnHighlightUntil = Date.now() + 5000;
+    // Destroy the detail's Chart.js + Aladin instances before we leave it. The
+    // cache-restore path below sets #results-slot.innerHTML directly (bypassing
+    // htmx), so detail-cleanup.js's htmx:beforeSwap net wouldn't fire for it;
+    // the network-fallback path uses htmx.ajax and would be covered, but tearing
+    // down here unconditionally keeps both paths leak-free.
+    if (window.teardownDetailView) window.teardownDetailView();
     if (restoreFromCache()) return;
     // No cache (deep-linked straight into a detail view). Use the current
     // URL as the source of truth rather than the form state — the detail

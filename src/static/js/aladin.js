@@ -185,6 +185,14 @@
         surveyChip = addLegendChip(legendEl, initialSurvey.label, null);
       }
 
+      // A detail-view teardown (object navigation / Back) can detach this host
+      // while we awaited the Aladin CDN + WebGL init above. Bail before we
+      // allocate an Aladin instance (and its WebGL context) that would
+      // immediately leak on a node no longer in the document. detail-cleanup.js
+      // sets `torndown` on the host synchronously when it tears the view down;
+      // everything below here is synchronous, so one guard is enough.
+      if (host.dataset.torndown === "1" || !host.isConnected) return;
+
       // Aladin needs a concrete div id to attach to; inject one.
       const innerId = `aladin-inner-${oid || Math.random().toString(36).slice(2)}`;
       if (loadingEl) loadingEl.remove();
@@ -429,6 +437,15 @@
       if (!fs) hideInfoPopup();
     }, 350);
   }
+  // Stop the poll when the detail view is torn down — there's no Aladin left to
+  // watch, and an always-on 350 ms timer pinning `currentAladinView` would keep
+  // the last view's node alive. detail-cleanup.js calls this on teardown.
+  function stopFullscreenWatch() {
+    if (fsWatch) { clearInterval(fsWatch); fsWatch = null; }
+    currentAladinView = null;
+    document.body.classList.remove("aladin-fs-active");
+  }
+  window.__aladinStopFullscreenWatch = stopFullscreenWatch;
 
   // Fullscreen popup: a fixed, max-z-index box on document.body (so it paints
   // over Aladin's fullscreen overlay) with an easy × to close. Singleton.

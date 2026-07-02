@@ -288,7 +288,15 @@ src/
     js/stamps.js             # FITS parsing + asinh stretch + WCS rotation for LSST stamps;
                              # updateStampsForIdentifier(ident, survey, oid) fills both __OID__ and
                              # __IDENT__ in per-survey URL templates.
-    js/aladin.js             # Aladin Lite v3 bootstrap + spec-z overlays + click→z handler
+    js/aladin.js             # Aladin Lite v3 bootstrap + spec-z overlays + click→z handler;
+                             # position-based provisional survey + background HiPS probe/swap;
+                             # honors host.dataset.torndown so an in-flight boot self-aborts
+    js/detail-cleanup.js     # detail-view teardown — destroys every Chart.js chart
+                             # (via Chart.getChart) + Aladin instance ($aladin.destroy(),
+                             # torndown flag) before #results-slot is swapped away, so
+                             # navigating objects doesn't leak them. Wired to htmx:beforeSwap
+                             # on #results-slot + window.teardownDetailView() (called from
+                             # backToResults before its direct-innerHTML cache restore).
     js/airmass.js            # airmass curve (Chart.js); shares grid cell with periodogram + residuals
     js/radar.js              # Chart.js radar panel
     js/coord_residuals.js    # position-residuals scatter — derives client-side from the live LC chart

@@ -44,6 +44,10 @@
 <script src="/static/js/color_evolution.js?v={{ v }}" defer></script>
 <script src="/static/js/specz.js?v={{ v }}" defer></script>
 <script src="/static/js/aladin.js?v={{ v }}" defer></script>
+{# Detail-view teardown — destroys Chart.js + Aladin instances before the
+   #results-slot is swapped away, so navigating objects doesn't leak them.
+   Loads after Chart.js + the chart/aladin modules so it can see them. #}
+<script src="/static/js/detail-cleanup.js?v={{ v }}" defer></script>
 {# Session-replay analytics — only shipped when the operator opts in via
    ANALYTICS_ENABLED, so "disabled" means these scripts aren't on the page.
    Served under neutral names (recorder.min.js / ux_recorder.js, not "rrweb" /
