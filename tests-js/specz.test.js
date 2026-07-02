@@ -37,16 +37,19 @@ describe("loadSpecZOverlays", () => {
 
     // One layer per category (3 galaxies, 1 star); stars are ordered first.
     expect(added).toHaveLength(2);
-    expect(added.map((c) => c.opts.name)).toEqual(["Stars (1)", "Galaxies (3)"]);
+    // Aladin LAYER names keep the count (and the "specz" qualifier for hosts).
+    expect(added.map((c) => c.opts.name)).toEqual(["Stars (1)", "Galaxies (specz, 3)"]);
     const galaxies = added.find((c) => c.opts.name.startsWith("Galaxies"));
     expect(galaxies.opts.color).toBe("#2e7d32");
     expect(galaxies.sources).toHaveLength(3);
     // Each source carries structured click data (Source/ID/z) for the info bar.
     expect(galaxies.sources[0].data.Source).toBe("DESI");
     expect(galaxies.sources[0].data.z).toBe("0.34500");
-    // onLoad fires once per category with its label + count (drives the legend).
+    // onLoad passes the legend CHIP label — no count (chips must stay compact),
+    // but keeping the "specz" qualifier for galaxies. Count still supplied.
     expect(onLoad).toHaveBeenCalledTimes(2);
-    expect(onLoad).toHaveBeenCalledWith({ label: "Galaxies", color: "#2e7d32", count: 3 });
+    expect(onLoad).toHaveBeenCalledWith({ label: "Stars", color: "#4fc3f7", count: 1 });
+    expect(onLoad).toHaveBeenCalledWith({ label: "Galaxies (specz)", color: "#2e7d32", count: 3 });
   });
 
   test("queries the overlay endpoint with oid + survey", async () => {

@@ -47,6 +47,11 @@
     // AGN=red, galaxies=dark green) and one grouped legend entry each — instead
     // of a chip per external catalog.
     const LABELS = { stellar: "Stars", agn: "AGN/QSO", host: "Galaxies" };
+    // The host overlay is spec-z galaxies ONLY — the server drops any host
+    // marker without a redshift (see xmatch.py overlay build), and the host
+    // catalogs are spectroscopic-redshift surveys. Qualify the galaxy layer /
+    // legend so the "Galaxies (specz, N)" label makes that explicit.
+    const QUALIFIER = { host: "specz" };
     const ORDER = ["stellar", "agn", "host"];
     const groups = new Map();
     for (const s of overlay) {
@@ -72,8 +77,17 @@
           Separation: s.sep != null ? `${fmt(s.sep, 2)}″` : null,
         }),
       );
+      // Two names: the Aladin layer control keeps the count (it has room and
+      // the count is useful there — "Galaxies (specz, 5)" / "Stars (3)"); the
+      // panel legend chip drops it (counts widen the chip row too much), so the
+      // chip reads just "Galaxies (specz)" / "Stars".
+      const qual = QUALIFIER[cat];
+      const name = qual
+        ? `${LABELS[cat]} (${qual}, ${sources.length})`
+        : `${LABELS[cat]} (${sources.length})`;
+      const chipLabel = qual ? `${LABELS[cat]} (${qual})` : LABELS[cat];
       const catalog = window.A.catalog({
-        name: `${LABELS[cat]} (${sources.length})`,
+        name,
         sourceSize: 12,
         color,
         shape: "circle",
@@ -82,7 +96,7 @@
       });
       aladin.addCatalog(catalog);
       catalog.addSources(sources);
-      if (onLoad) onLoad({ label: LABELS[cat], color, count: sources.length });
+      if (onLoad) onLoad({ label: chipLabel, color, count: sources.length });
     }
   };
 })();
