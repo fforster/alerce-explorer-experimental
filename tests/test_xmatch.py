@@ -282,6 +282,32 @@ def test_get_or_compute_no_coords_returns_empty():
     assert run(xmatch_cache.get_or_compute("A", None, None)) == xmatch_cache.EMPTY_RECORD
 
 
+def test_prefetch_cancellation_releases_inflight(monkeypatch):
+    """A cancelled prefetch (client closed the tab mid-fetch → CancelledError,
+    a BaseException the `except Exception` can't catch) must still release the
+    in-flight markers. Otherwise the oids are stranded: every later prefetch
+    skips them and get_or_compute waiters block, so they'd return EMPTY_RECORD
+    forever. Guards the `finally` in prefetch()."""
+    async def cancelled_bulk(positions):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(xmatch, "bulk_all", cancelled_bulk)
+    with pytest.raises(asyncio.CancelledError):
+        run(xmatch_cache.prefetch([("A", 1.0, 2.0), ("B", 3.0, 4.0)]))
+
+    # No stranded in-flight markers, and nothing was cached (fetch never ran).
+    assert xmatch_cache.stats()["inflight"] == 0
+    assert run(xmatch_cache.get("A")) is None
+    assert run(xmatch_cache.get("B")) is None
+
+    # The oids are re-fetchable — not poisoned into permanent EMPTY_RECORD.
+    rec = {"by_catalog": {}, "best_z": None, "simbad_type": None,
+           "counts": {"X": 1}, "overlay": []}
+    monkeypatch.setattr(xmatch, "bulk_all", _fake_bulk({"A": rec}))
+    got = run(xmatch_cache.get_or_compute("A", 1.0, 2.0))
+    assert got["counts"] == {"X": 1}
+
+
 # --- endpoints --------------------------------------------------------------
 
 def test_prefetch_endpoint_invokes_cache(client, monkeypatch):
