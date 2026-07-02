@@ -110,6 +110,37 @@
     return false;
   }
 
+  // Galactic latitude (deg) — reuse dust.js's helper when present (same IAU
+  // 1958 pole), with an inline fallback so we never depend on script order.
+  function galacticLat(ra, dec) {
+    if (window.dust && typeof window.dust.galacticLatitude === "function") {
+      return window.dust.galacticLatitude(ra, dec);
+    }
+    const toRad = Math.PI / 180;
+    const decNGP = 27.12825 * toRad, raNGP = 192.85948 * toRad;
+    const sinB = Math.sin(dec * toRad) * Math.sin(decNGP)
+               + Math.cos(dec * toRad) * Math.cos(decNGP) * Math.cos(ra * toRad - raNGP);
+    return Math.asin(sinB) / toRad;
+  }
+
+  // Provisional survey to boot on before the coverage probe resolves, picked
+  // from the sky position so first paint usually shows the right imagery:
+  //   1. Dec > -30°            → PanSTARRS DR1 (covers the northern ~3/4 sky)
+  //   2. else |b| ≤ 18°        → SkyMapper DR4 (DESI masks the Galactic plane)
+  //   3. else                  → DESI DR10 (deep southern coverage off-plane)
+  const HIPS_PANSTARRS = HIPS_SURVEYS[0];
+  const HIPS_DESI      = HIPS_SURVEYS[1];
+  const HIPS_SKYMAPPER = HIPS_SURVEYS[2];
+  function pickInitialSurvey(ra, dec) {
+    if (dec > -30) return HIPS_PANSTARRS;
+    if (Math.abs(galacticLat(ra, dec)) <= 18) return HIPS_SKYMAPPER;
+    return HIPS_DESI;
+  }
+  // Exposed for unit testing (tests-js/aladin.test.js). The viewer boot path
+  // itself needs a WebGL2 context and is covered by the e2e suite / manual QA;
+  // this pure position→survey decision is what the unit test pins down.
+  window.__aladinPickInitialSurvey = pickInitialSurvey;
+
   async function chooseBestHiPS(ra, dec) {
     const results = await Promise.all(HIPS_SURVEYS.map((s) => probeHiPS(s.id, ra, dec)));
     console.log(
@@ -135,11 +166,23 @@
       const A = await waitForAladinGlobal();
       await A.init;
 
-      const survey = await chooseBestHiPS(ra, dec);
+      // Boot the viewer immediately on a provisional survey instead of
+      // blocking on the HiPS coverage probe first. chooseBestHiPS fetches a
+      // 16×16 FITS cutout per survey (up to an 8 s timeout each) before it
+      // can pick the best-covered imagery — awaiting it here meant the panel
+      // showed nothing but "loading sky view…" for that whole window. We
+      // boot on a provisional survey picked from the sky position (see
+      // pickInitialSurvey), then probe coverage in the background and swap
+      // the base layer + legend label to the best survey if it differs. This
+      // is the "show Aladin first, do the look-ups in parallel" path: the
+      // spec-z / crossmatch overlays (fired below) and the coverage probe all
+      // resolve after the viewer is already on screen.
+      const initialSurvey = pickInitialSurvey(ra, dec);
+      let surveyChip = null;
       if (legendEl) {
         legendEl.innerHTML = "";
         legendEl.classList.add("tw-flex", "tw-flex-wrap", "tw-gap-2", "tw-justify-end");
-        addLegendChip(legendEl, survey.label, null);
+        surveyChip = addLegendChip(legendEl, initialSurvey.label, null);
       }
 
       // Aladin needs a concrete div id to attach to; inject one.
@@ -156,11 +199,22 @@
       const aladin = A.aladin(`#${innerId}`, {
         target: `${ra} ${dec}`,
         fov: 0.025,
-        survey: survey.id,
+        survey: initialSurvey.id,
         showReticle: true,
         showZoomControl: true,
         showLayersControl: true,
       });
+
+      // Background coverage probe → upgrade the base layer once the best
+      // survey is known. Non-blocking (no await) so it can't delay first
+      // paint; on failure we silently keep the provisional layer.
+      chooseBestHiPS(ra, dec).then((best) => {
+        if (best.id !== initialSurvey.id) {
+          try { aladin.setImageSurvey(best.id); }
+          catch (e) { console.warn("Aladin base-layer swap failed:", e); }
+        }
+        if (surveyChip) surveyChip.textContent = best.label;
+      }).catch(() => { /* keep the provisional survey + label */ });
 
       const cat = A.catalog({ name: "Object", sourceSize: 14, color: "#1976d2" });
       aladin.addCatalog(cat);
@@ -424,6 +478,7 @@
     }
     chip.appendChild(document.createTextNode(label));
     legendEl.appendChild(chip);
+    return chip;
   }
 
   // Plot ALL crossmatch objects (every CDS/NED match with a position, plus all
