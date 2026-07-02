@@ -261,9 +261,10 @@
       // layer, so they can interleave safely.
       if (typeof window.loadSpecZOverlays === "function") {
         window.loadSpecZOverlays(aladin, oid, surveyId, (info) => {
-          // One grouped legend entry per category (Stars / AGN/QSO / Galaxies),
-          // not per external catalog.
-          addLegendChip(legendEl, `${info.label} (${info.count})`, info.color);
+          // One grouped legend entry per category (Stars / AGN/QSO /
+          // Galaxies (specz)). info.label already carries the count (and the
+          // spec-z qualifier for galaxies), matching the Aladin layer name.
+          addLegendChip(legendEl, info.label, info.color);
         });
       }
       loadLsstNeighbors(aladin, ra, dec, lastmjd, oid, legendEl);

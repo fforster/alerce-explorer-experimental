@@ -37,16 +37,19 @@ describe("loadSpecZOverlays", () => {
 
     // One layer per category (3 galaxies, 1 star); stars are ordered first.
     expect(added).toHaveLength(2);
-    expect(added.map((c) => c.opts.name)).toEqual(["Stars (1)", "Galaxies (3)"]);
+    // The host layer is qualified "specz" (spec-z galaxies only); the count
+    // folds into the same paren.
+    expect(added.map((c) => c.opts.name)).toEqual(["Stars (1)", "Galaxies (specz, 3)"]);
     const galaxies = added.find((c) => c.opts.name.startsWith("Galaxies"));
     expect(galaxies.opts.color).toBe("#2e7d32");
     expect(galaxies.sources).toHaveLength(3);
     // Each source carries structured click data (Source/ID/z) for the info bar.
     expect(galaxies.sources[0].data.Source).toBe("DESI");
     expect(galaxies.sources[0].data.z).toBe("0.34500");
-    // onLoad fires once per category with its label + count (drives the legend).
+    // onLoad fires once per category with the finished display label (which the
+    // legend chip renders verbatim) + count.
     expect(onLoad).toHaveBeenCalledTimes(2);
-    expect(onLoad).toHaveBeenCalledWith({ label: "Galaxies", color: "#2e7d32", count: 3 });
+    expect(onLoad).toHaveBeenCalledWith({ label: "Galaxies (specz, 3)", color: "#2e7d32", count: 3 });
   });
 
   test("queries the overlay endpoint with oid + survey", async () => {
