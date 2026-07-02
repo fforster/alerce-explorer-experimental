@@ -77,13 +77,15 @@
           Separation: s.sep != null ? `${fmt(s.sep, 2)}″` : null,
         }),
       );
-      // One display name, shared by the Aladin layer control and the panel
-      // legend chip. Fold any category qualifier + the count into a single
-      // paren: "Galaxies (specz, 5)" for host, "Stars (3)" otherwise.
+      // Two names: the Aladin layer control keeps the count (it has room and
+      // the count is useful there — "Galaxies (specz, 5)" / "Stars (3)"); the
+      // panel legend chip drops it (counts widen the chip row too much), so the
+      // chip reads just "Galaxies (specz)" / "Stars".
       const qual = QUALIFIER[cat];
       const name = qual
         ? `${LABELS[cat]} (${qual}, ${sources.length})`
         : `${LABELS[cat]} (${sources.length})`;
+      const chipLabel = qual ? `${LABELS[cat]} (${qual})` : LABELS[cat];
       const catalog = window.A.catalog({
         name,
         sourceSize: 12,
@@ -94,7 +96,7 @@
       });
       aladin.addCatalog(catalog);
       catalog.addSources(sources);
-      if (onLoad) onLoad({ label: name, color, count: sources.length });
+      if (onLoad) onLoad({ label: chipLabel, color, count: sources.length });
     }
   };
 })();

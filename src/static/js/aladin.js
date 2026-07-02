@@ -182,7 +182,7 @@
       if (legendEl) {
         legendEl.innerHTML = "";
         legendEl.classList.add("tw-flex", "tw-flex-wrap", "tw-gap-2", "tw-justify-end");
-        surveyChip = addLegendChip(legendEl, initialSurvey.label, null);
+        surveyChip = addLegendChip(legendEl, `HiPS: ${initialSurvey.label}`, null);
       }
 
       // A detail-view teardown (object navigation / Back) can detach this host
@@ -221,7 +221,7 @@
           try { aladin.setImageSurvey(best.id); }
           catch (e) { console.warn("Aladin base-layer swap failed:", e); }
         }
-        if (surveyChip) surveyChip.textContent = best.label;
+        if (surveyChip) surveyChip.textContent = `HiPS: ${best.label}`;
       }).catch(() => { /* keep the provisional survey + label */ });
 
       const cat = A.catalog({ name: "Object", sourceSize: 14, color: "#1976d2" });
@@ -261,9 +261,9 @@
       // layer, so they can interleave safely.
       if (typeof window.loadSpecZOverlays === "function") {
         window.loadSpecZOverlays(aladin, oid, surveyId, (info) => {
-          // One grouped legend entry per category (Stars / AGN/QSO /
-          // Galaxies (specz)). info.label already carries the count (and the
-          // spec-z qualifier for galaxies), matching the Aladin layer name.
+          // One grouped legend entry per non-empty category (Stars / AGN/QSO /
+          // Galaxies (specz)). info.label is the chip label WITHOUT the count
+          // (counts widen the chip row); the Aladin layer control keeps counts.
           addLegendChip(legendEl, info.label, info.color);
         });
       }
@@ -312,7 +312,8 @@
       return;
     }
     if (!Array.isArray(rows) || rows.length === 0) {
-      addLegendChip(legendEl, "LSST neighbours (0)", "#9ca3af");
+      // Zero neighbours → no markers on the map, so add no legend chip (a
+      // countless "LSST neighbours" chip would wrongly imply some exist).
       return;
     }
     const color = "#9ca3af";  // gray-400
@@ -330,7 +331,7 @@
       lastmjd: typeof r.lastmjd === "number" ? r.lastmjd.toFixed(5) : String(r.lastmjd),
     }));
     cat.addSources(sources);
-    addLegendChip(legendEl, `LSST neighbours (${rows.length})`, color);
+    addLegendChip(legendEl, "LSST neighbours", color);   // count kept on the layer, not the chip
   }
 
   // Stamp footprint overlay. `corners` is [[ra, dec], …] in degrees,
