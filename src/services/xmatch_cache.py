@@ -103,20 +103,34 @@ async def prefetch(positions: list[tuple[str, float, float]]) -> int:
         return 0
 
     try:
-        records = await xmatch.bulk_all(claimed)
-    except Exception:                    # pragma: no cover — bulk_all already guards per-catalog
-        log.exception("prefetch bulk_all failed")
-        records = {}
-
-    async with _lock:
-        for oid, _, _ in claimed:
-            _store(oid, records.get(oid, EMPTY_RECORD))
-        _evict_if_needed()
+        try:
+            records = await xmatch.bulk_all(claimed)
+        except Exception:                # bulk_all already guards per-catalog
+            log.exception("prefetch bulk_all failed")
+            records = {}
+        # Reached only when the fetch ran to completion (success or a handled
+        # failure) — NOT on cancellation, so we never cache a partial/empty
+        # result for an oid whose fetch was torn down.
+        async with _lock:
+            for oid, _, _ in claimed:
+                _store(oid, records.get(oid, EMPTY_RECORD))
+            _evict_if_needed()
+        return len(claimed)
+    finally:
+        # Release the in-flight markers no matter what — crucially including a
+        # BaseException the inner `except Exception` can't catch, above all
+        # asyncio.CancelledError raised when the request task is torn down (the
+        # client closed the tab mid-prefetch; the fire-and-forget POST fans out
+        # ~20 catalogs, so this window is real). This block is synchronous (no
+        # await), so it's atomic in the event loop and always completes. Without
+        # it, a cancelled prefetch would strand these oids in `_inflight`
+        # forever: get_or_compute waiters would block the full _INFLIGHT_WAIT and
+        # every later prefetch would skip them (`oid in _inflight`), so they'd
+        # return EMPTY_RECORD (no crossmatch) until the process restarts.
         for oid, _, _ in claimed:
             ev = _inflight.pop(oid, None)
             if ev is not None:
                 ev.set()
-    return len(claimed)
 
 
 async def get_or_compute(oid: str, ra: float | None, dec: float | None) -> dict:
