@@ -252,11 +252,9 @@ VIZIER_Z_CATALOGS = {
         "ra": "_RAJ2000", "dec": "_DEJ2000", "z": "z", "ez": None, "czConvert": False,
         "type": [], "filter": lambda r: (_vznum(r, "q_z") or 0) >= 3,
     },
-    "HECATE": {
-        "name": "HECATE", "tables": ["vizier:J/MNRAS/506/1896/hecate"],
-        "ra": "RAJ2000", "dec": "DEJ2000", "z": "HRV", "ez": None, "czConvert": True,
-        "type": [], "filter": lambda r: (_vznum(r, "RFlag") or 0) >= 1,
-    },
+    # HECATE is NOT here — it isn't xmatch-able on the CDS XMatch service
+    # ("not in the service"), so it's queried over VizieR TAP instead; see
+    # _bulk_hecate_tap_sync.
     "GLADE": {
         "name": "GLADE v2", "tables": ["vizier:VII/281/glade2"],
         "ra": "RAJ2000", "dec": "DEJ2000", "z": "z", "ez": None, "czConvert": False,
@@ -501,7 +499,7 @@ def _bulk_generic_sync(cat_key: str, positions: list[tuple[str, float, float]]) 
 
 # --- NED via TAP (not on CDS xmatch) ----------------------------------------
 
-NED_TAP_URL = "https://ned.ipac.caltech.edu/tap/"
+NED_TAP_URL = "https://ned.ipac.caltech.edu/tap"   # no trailing slash → clean …/tap/sync
 _ned_tap = None
 
 
@@ -568,6 +566,93 @@ def _bulk_ned_tap_sync(positions: list[tuple[str, float, float]],
     return grouped
 
 
+# --- HECATE via VizieR TAP (not xmatch-able on the CDS XMatch service) -------
+#
+# The Heraklion Extragalactic Catalogue (HECATE; Kovlakas+ 2021) is registered
+# in VizieR but was never ingested into the CDS *XMatch* positional backend, so
+# `vizier:J/MNRAS/506/1896/hecate` returns "Table … not in the service" there
+# (and so does the v2 table `J/MNRAS/548/G522/hecatev2`). VizieR's own TAP
+# endpoint *does* serve it, so we cone-search it over TAP instead — same shape
+# as the NED path above. We query v2, the current release. HRV is the
+# heliocentric radial velocity (km/s); z = HRV / c (non-relativistic, matching
+# the old czConvert=True behaviour).
+VIZIER_TAP_URL = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap"
+HECATE_TAP_TABLE = "J/MNRAS/548/G522/hecatev2"
+RADIUS_HECATE = RADIUS_EXTRA_Z
+_vizier_tap = None
+
+
+def _get_vizier_tap():
+    global _vizier_tap
+    if _vizier_tap is None:
+        import pyvo
+        _vizier_tap = pyvo.dal.TAPService(VIZIER_TAP_URL)
+    return _vizier_tap
+
+
+def _norm_hecate(raw: dict, ra: float, dec: float, sep: float) -> dict | None:
+    hrv = _num(raw.get("HRV"))
+    if hrv is None:                     # no radial velocity → no redshift to show
+        return None
+    e_hrv = _num(raw.get("e_HRV"))
+    objname = str(raw.get("OBJNAME") or "").strip() or None
+    activ = str(raw.get("ActivClass") or "").strip() or None
+    return {
+        "cat_name": "HECATE",
+        "ra": ra, "dec": dec,
+        "z": hrv / _C_KMS,
+        "z_err": (e_hrv / _C_KMS) if e_hrv is not None else None,
+        "photoz": None,
+        "type": activ,
+        "name": objname or _zcat_designation("HECATE", ra, dec),
+        "sep": sep,
+    }
+
+
+def _bulk_hecate_tap_sync(positions: list[tuple[str, float, float]],
+                          batch_size: int = 100, maxrec: int = 100000) -> dict[str, list[dict]]:
+    if not positions:
+        return {}
+    radius_deg = RADIUS_HECATE / 3600.0
+    grouped: dict[str, list[dict]] = {}
+    for start in range(0, len(positions), batch_size):
+        batch = positions[start:start + batch_size]
+        clauses = " OR ".join(
+            f"CONTAINS(POINT('ICRS', RAJ2000, DEJ2000), "
+            f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg}))=1"
+            for _, ra, dec in batch)
+        adql = ("SELECT OBJNAME, RAJ2000, DEJ2000, HRV, e_HRV, ActivClass "
+                f'FROM "{HECATE_TAP_TABLE}" WHERE {clauses}')
+        last_exc: Exception | None = None
+        table = None
+        for attempt in range(_RETRIES):
+            try:
+                table = _get_vizier_tap().search(adql, maxrec=maxrec).to_table()
+                break
+            except Exception as exc:       # noqa: BLE001
+                last_exc = exc
+                log.warning("HECATE TAP attempt %d failed: %s", attempt + 1, exc)
+                if attempt < _RETRIES - 1:
+                    time.sleep(3)
+        else:
+            raise CatalogQueryError(f"HECATE TAP unreachable: {last_exc}")
+
+        for i in range(len(table)):
+            rra, rdec = _cell(table["RAJ2000"][i]), _cell(table["DEJ2000"][i])
+            if rra is None or rdec is None:
+                continue
+            raw = None
+            for oid, cra, cdec in batch:
+                sep = _angsep_arcsec(cra, cdec, float(rra), float(rdec))
+                if sep <= RADIUS_HECATE:
+                    if raw is None:
+                        raw = _row_to_dict(table, i)
+                    norm = _norm_hecate(raw, float(rra), float(rdec), sep)
+                    if norm is not None:
+                        grouped.setdefault(str(oid), []).append(norm)
+    return grouped
+
+
 # --- overlay + panel display ------------------------------------------------
 
 # One colour per category, the single source of truth used everywhere — the
@@ -597,6 +682,7 @@ def queried_catalogs() -> dict:
     for name, cfg in USECASE_CATALOGS.items():
         by[cfg["category"]].append(name)
     by["host"].append("NED")
+    by["host"].append("HECATE")   # queried over VizieR TAP, not CDS XMatch
     groups = [
         ("Stellar", CATEGORY_COLOR["stellar"], by["stellar"]),
         ("AGN / QSO", CATEGORY_COLOR["agn"], by["agn"]),
@@ -828,6 +914,7 @@ async def bulk_all(positions: list[tuple[str, float, float]]) -> dict[str, dict]
     tasks += [run(_bulk_xmatch_vizier_sync, cid, positions) for cid in VIZIER_Z_CATALOGS]
     tasks += [run(_bulk_generic_sync, k, positions) for k in USECASE_CATALOGS]
     tasks.append(run(_bulk_ned_tap_sync, positions))
+    tasks.append(run(_bulk_hecate_tap_sync, positions))
     per_catalog_results = await asyncio.gather(*tasks)
 
     merged: dict[str, dict[str, list[dict]]] = {}
