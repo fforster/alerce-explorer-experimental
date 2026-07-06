@@ -158,7 +158,16 @@
       <select
         class="tw-bg-bg-secondary tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text-primary"
         name="identifier"
-        onchange="window.updateStampsForIdentifier && window.updateStampsForIdentifier(this.value)"
+        {#
+          Route the change through setSelectedIdentifier (not just
+          updateStampsForIdentifier) so picking a detection here also moves
+          the highlight ring on the light curve + position-residuals panels
+          and updates window._selectedIdentifier / the shareable URL.
+          setSelectedIdentifier repaints the stamps internally, so this
+          still refreshes the images. Falls back to the stamps-only path if
+          selection.js somehow isn't loaded.
+        #}
+        onchange="(window.setSelectedIdentifier || window.updateStampsForIdentifier)(this.value)"
       >
         {#
           Each option labels the band with its survey ("LSST g", "ZTF r")
