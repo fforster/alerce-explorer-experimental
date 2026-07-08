@@ -343,7 +343,15 @@ async def search_form(
     # one. Resolving here (instead of inside the template) means the same
     # value flows through `selected_classifier` to the dependent class
     # list and version dropdown — no separate "default" code paths.
-    if classifier is None:
+    #
+    # BUT: an explicit OID-list deep-link is a request for exactly those
+    # objects, not a filtered search. The initial listing carries no
+    # classifier, so pre-selecting the default here would let it leak into
+    # `send_form_Data()` on the next pagination click and silently drop every
+    # OID that hasn't been run through that classifier (recent objects often
+    # haven't) — page 1 shows everything, page 2 comes back empty. Skip the
+    # default entirely when an OID list is present so the form stays neutral.
+    if classifier is None and not oids:
         default = SC(survey).default_classifier
         if default and any(c["classifier_name"] == default for c in tidy):
             classifier = default
