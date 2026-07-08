@@ -24,9 +24,9 @@ module.exports = {
         },
         border: { DEFAULT: "#333333" },
         text: {
-          primary: "#ededed",
-          secondary: "#a6a6a6",
-          muted: "#6e6e6e",
+          primary: "#ffffff",
+          secondary: "#dcdcdc",
+          muted: "#a8a8a8",
         },
         accent: { DEFAULT: "#1976d2", hover: "#42a5f5" },
         // ALeRCE semantic/brand colors, available across the UI.

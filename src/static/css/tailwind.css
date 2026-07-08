@@ -5,7 +5,7 @@
 @layer base {
   html, body {
     background-color: #121212;
-    color: #ededed;
+    color: #ffffff;
     font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
     height: 100%;
   }
