@@ -1716,11 +1716,15 @@ def test_stamps_renders_picker_and_canvases(client, monkeypatch):
     assert 'value="111"' in r.text
     assert 'value="222"' in r.text
     # Client-side identifier sync: legacy URL templates emitted as data attrs,
-    # and the picker's onchange calls the global helper (no htmx roundtrip).
+    # and the picker's onchange routes through onStampsPickerChange, which
+    # reads the option's data-survey/data-oid (no htmx roundtrip).
     assert 'data-url-template-science="https://x/science?id=__IDENT__"' in r.text
     assert 'data-url-template-template=' in r.text
     assert 'data-url-template-difference=' in r.text
-    assert "updateStampsForIdentifier" in r.text
+    assert "onStampsPickerChange" in r.text
+    # Every picker option is tagged with its survey + OID so cross- and
+    # in-survey epochs dispatch to the right stamp service uniformly.
+    assert 'data-survey="ztf"' in r.text
     # Per-survey URL templates carry both __OID__ and __IDENT__ placeholders
     # so cross-survey clicks can dispatch to the matching survey's stamp
     # service (the JS pulls the matched OID off the LC chart's $lcXOid).

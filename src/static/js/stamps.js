@@ -553,6 +553,9 @@
 
   function initAll(root) {
     (root || document).querySelectorAll("canvas.stamp-canvas").forEach(initCanvas);
+    // If the cross-survey fragment already resolved before this stamps panel
+    // swapped in, its picker options are waiting in the stash — apply them now.
+    applyPendingXStampOptions();
   }
 
   // Zero-round-trip identifier swap: the server emits stamp URL templates
@@ -615,6 +618,99 @@
       if (picker.value !== String(ident)) picker.value = String(ident);
     }
   };
+
+  // Picker onchange handler. Reads the chosen option's data-survey /
+  // data-oid — cross-survey options carry the matched survey + OID, primary
+  // options carry this panel's — and routes through setSelectedIdentifier so
+  // the LC + residual highlight rings follow, the correct survey's stamps
+  // render, and the shareable URL updates. Falls back to the stamps-only path
+  // when selection.js isn't loaded.
+  window.onStampsPickerChange = function (select) {
+    if (!select) return;
+    const opt = select.options[select.selectedIndex];
+    const survey = (opt && opt.dataset.survey) || undefined;
+    const oid = (opt && opt.dataset.oid) || undefined;
+    const fn = window.setSelectedIdentifier || window.updateStampsForIdentifier;
+    if (fn) fn(select.value, survey, oid);
+  };
+
+  function surveyLabelFor(survey) {
+    return survey === "lsst" ? "LSST"
+      : survey === "ztf" ? "ZTF"
+      : String(survey || "").toUpperCase();
+  }
+
+  // Build the picker label the same way the server does for primary rows:
+  // "MJD 60123.456 (2023-01-01 00:00:00 UTC) · ZTF g".
+  function stampOptionLabel(mjd, mjdUtc, surveyLabel, band) {
+    let s = `MJD ${Number(mjd).toFixed(3)}`;
+    if (mjdUtc) s += ` (${mjdUtc})`;
+    if (band) s += ` · ${surveyLabel} ${band}`;
+    return s;
+  }
+
+  // Latest cross-survey picker payload, stashed so a stamps panel that swaps
+  // in AFTER the cross-survey fragment resolved still picks it up on init.
+  // Keyed (by primaryOid) so a stale payload can't smear onto a new object.
+  let pendingXStampOptions = null;
+
+  // Add the matched cross-survey detections to the stamps picker so the
+  // dropdown lists epochs from BOTH surveys once a crossmatch lands. Called
+  // from lcSetCrossSurvey (lightcurve.js) with the already-parsed detection
+  // list ({identifier, mjd, mjd_utc, band}), the matched survey, and its OID.
+  // Idempotent + re-runnable.
+  window.setCrossSurveyStampOptions = function (payload) {
+    if (!payload || !payload.primaryOid) return;
+    pendingXStampOptions = payload;
+    applyXStampOptions(payload);
+  };
+
+  function applyXStampOptions(payload) {
+    const panel = document.getElementById("stamps-panel");
+    if (!panel) return;
+    // Guard against a stale stash smearing onto a different object mid-swap.
+    if (panel.dataset.oid !== payload.primaryOid) return;
+    const select = panel.querySelector('select[name="identifier"]');
+    if (!select) return;
+    const dets = (payload.detections || []).filter((d) => d && d.identifier != null);
+    if (!dets.length) return;
+
+    // Wrap the primary (server-rendered) options in a labeled optgroup once,
+    // so the "LSST" and "ZTF" blocks are clearly separated in the dropdown.
+    // No-op in the common (no crossmatch) case, so a single-survey picker
+    // keeps its flat look.
+    if (!select.querySelector("optgroup")) {
+      const grp = document.createElement("optgroup");
+      grp.label = surveyLabelFor(panel.dataset.survey || "");
+      grp.dataset.primary = "1";
+      Array.from(select.querySelectorAll(":scope > option")).forEach((o) =>
+        grp.appendChild(o),
+      );
+      select.appendChild(grp);
+    }
+
+    // Replace any prior cross-survey group (re-runnable).
+    const prior = select.querySelector('optgroup[data-xsurvey="1"]');
+    if (prior) prior.remove();
+
+    const xLabel = surveyLabelFor(payload.survey);
+    const grp = document.createElement("optgroup");
+    grp.label = xLabel;
+    grp.dataset.xsurvey = "1";
+    dets.forEach((d) => {
+      const opt = document.createElement("option");
+      opt.value = String(d.identifier);
+      opt.dataset.survey = payload.survey;
+      opt.dataset.oid = payload.oid || "";
+      opt.textContent = stampOptionLabel(d.mjd, d.mjd_utc, xLabel, d.band);
+      grp.appendChild(opt);
+    });
+    select.appendChild(grp);
+  }
+
+  function applyPendingXStampOptions() {
+    if (pendingXStampOptions) applyXStampOptions(pendingXStampOptions);
+  }
 
   // Download the underlying FITS bytes for the stamp this button sits next
   // to. Re-fetches `data-stamp-url` rather than reaching into the cached
@@ -793,5 +889,6 @@
   window.__stampsTest = {
     parseFitsHeader, readFitsImageData, effectiveCDMatrix, pixelToWorldTAN,
     computeStampFootprint, computeNorthAngle, zscaleStretch, detectSurveyFromStampUrl,
+    surveyLabelFor, stampOptionLabel, applyXStampOptions,
   };
 })();
