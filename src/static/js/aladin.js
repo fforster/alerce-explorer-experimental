@@ -4,12 +4,14 @@
 // data-dec / data-oid. We:
 //   1. Lazy-load Aladin Lite v3 from CDS CDN (~1 MB) the first time an
 //      aladin host appears — not on every page view.
-//   2. Probe HiPS surveys in priority order (PanSTARRS DR1 → DESI DR10 →
-//      SkyMapper DR4) against the object's RA/Dec using the hips2fits FITS
-//      cutout service. A tiny 16×16 cutout is enough to tell coverage from
+//   2. Boot on a provisional survey picked from the sky position, then probe
+//      HiPS surveys in priority order (PanSTARRS DR1 → DESI DR10 → SkyMapper
+//      DR4) against the object's RA/Dec using the hips2fits FITS cutout
+//      service. A tiny 16×16 cutout is enough to tell coverage from
 //      background: if any pixel is finite and non-zero, the survey has data
-//      there. Fall back to DSS Color if none of the priority surveys cover
-//      the target.
+//      there. Fall back to DSS Color ONLY when a survey definitively has no
+//      coverage — a failed/timed-out probe is inconclusive and keeps the
+//      provisional layer (see probeHiPS / decideBestHiPS).
 //   3. Init Aladin on the host, add a marker for the object.
 //
 // We use hips2fits (not JPEG) because the hips2fits service returns
@@ -59,6 +61,13 @@
     throw new Error("Aladin global A not present after load");
   }
 
+  // Returns a TRISTATE:
+  //   true  — the survey definitively has data here (finite non-zero pixels)
+  //   false — the survey definitively has NO data here (in-coverage empty FITS)
+  //   null  — the probe was inconclusive (timeout / network / server error)
+  // The null case matters: a failed probe must NOT be read as "no coverage",
+  // or a transient hips2fits hiccup downgrades a perfectly good provisional
+  // survey to DSS (the reported PanSTARRS→DSS flicker). See decideBestHiPS.
   async function probeHiPS(hipsId, ra, dec) {
     const url =
       "https://alasky.cds.unistra.fr/hips-image-services/hips2fits?" +
@@ -66,11 +75,11 @@
       `&ra=${ra}&dec=${dec}&projection=TAN&format=fits`;
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!resp.ok) return false;
+      if (!resp.ok) return null;          // server/rate-limit error → inconclusive
       const buf = await resp.arrayBuffer();
-      return fitsHasData(buf);
+      return fitsHasData(buf);            // definitive true / false
     } catch {
-      return false;
+      return null;                        // timeout / network error → inconclusive
     }
   }
 
@@ -141,14 +150,37 @@
   // this pure position→survey decision is what the unit test pins down.
   window.__aladinPickInitialSurvey = pickInitialSurvey;
 
-  async function chooseBestHiPS(ra, dec) {
+  // Pure decision: given the per-survey probe tristates (aligned with
+  // HIPS_SURVEYS) and the provisional survey we're already showing, pick the
+  // base layer. Priority-first among definitively-covered surveys; otherwise
+  // KEEP the position-picked provisional survey — falling back to DSS ONLY
+  // when the provisional's own probe came back a definitive negative. A
+  // failed/inconclusive probe (null) never downgrades the provisional: that
+  // was the bug where a transient hips2fits error flipped a good PanSTARRS
+  // view to (much worse) DSS.
+  function decideBestHiPS(results, initial) {
+    const idx = results.indexOf(true);
+    if (idx >= 0) return HIPS_SURVEYS[idx];
+    const initialIdx = initial
+      ? HIPS_SURVEYS.findIndex((s) => s.id === initial.id)
+      : -1;
+    const initialDefinitivelyEmpty =
+      initialIdx >= 0 && results[initialIdx] === false;
+    if (initial && !initialDefinitivelyEmpty) return initial;
+    return HIPS_FALLBACK;
+  }
+  // Exposed for unit testing (tests-js/aladin.test.js) — same rationale as
+  // __aladinPickInitialSurvey: the network probe needs a live service, but the
+  // decision logic it feeds is pure and worth pinning down.
+  window.__aladinDecideBestHiPS = decideBestHiPS;
+
+  async function chooseBestHiPS(ra, dec, initial) {
     const results = await Promise.all(HIPS_SURVEYS.map((s) => probeHiPS(s.id, ra, dec)));
     console.log(
       "HiPS probes — " +
         HIPS_SURVEYS.map((s, i) => `${s.label}:${results[i]}`).join(", "),
     );
-    const idx = results.indexOf(true);
-    return idx >= 0 ? HIPS_SURVEYS[idx] : HIPS_FALLBACK;
+    return decideBestHiPS(results, initial);
   }
 
   async function initHost(host) {
@@ -215,8 +247,9 @@
 
       // Background coverage probe → upgrade the base layer once the best
       // survey is known. Non-blocking (no await) so it can't delay first
-      // paint; on failure we silently keep the provisional layer.
-      chooseBestHiPS(ra, dec).then((best) => {
+      // paint; passing the provisional survey lets the probe KEEP it on an
+      // inconclusive result instead of downgrading to DSS.
+      chooseBestHiPS(ra, dec, initialSurvey).then((best) => {
         if (best.id !== initialSurvey.id) {
           try { aladin.setImageSurvey(best.id); }
           catch (e) { console.warn("Aladin base-layer swap failed:", e); }

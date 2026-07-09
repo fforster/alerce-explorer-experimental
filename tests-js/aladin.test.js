@@ -50,3 +50,48 @@ describe("aladin.pickInitialSurvey", () => {
     expect(pick(45, -30)).toBe(expected);
   });
 });
+
+/* decideBestHiPS(results, initial): the pure coverage-probe decision.
+ *
+ * `results` is aligned with the survey priority list [PanSTARRS, DESI,
+ * SkyMapper]; each entry is a tristate — true (has data), false (definitively
+ * empty), null (probe inconclusive: timeout / network / server error).
+ * Regression target: an inconclusive probe must NOT downgrade the provisional
+ * survey to DSS (the reported PanSTARRS→DSS flicker).
+ */
+describe("aladin.decideBestHiPS", () => {
+  // Resolved inside tests: beforeAll loads the scripts, but the describe body
+  // runs at collection time (before that).
+  const PAN = () => window.__aladinPickInitialSurvey(180, 20);   // PanSTARRS DR1
+  const DESI = () => window.__aladinPickInitialSurvey(30, -60);  // DESI DR10
+  const decide = (results, initial) =>
+    window.__aladinDecideBestHiPS(results, initial).label;
+
+  test("priority-first among definitively-covered surveys", () => {
+    expect(decide([true, true, true], PAN())).toBe("PanSTARRS DR1");
+    expect(decide([false, true, true], PAN())).toBe("DESI DR10");
+    expect(decide([false, false, true], PAN())).toBe("SkyMapper DR4");
+  });
+
+  test("all probes inconclusive → KEEP the provisional (never DSS)", () => {
+    expect(decide([null, null, null], PAN())).toBe("PanSTARRS DR1");
+    expect(decide([null, null, null], DESI())).toBe("DESI DR10");
+  });
+
+  test("provisional's own probe failing (others empty) still keeps it", () => {
+    // PanSTARRS probe timed out (null); DESI + SkyMapper came back empty.
+    // Downgrading here would be wrong — we haven't confirmed PanSTARRS is empty.
+    expect(decide([null, false, false], PAN())).toBe("PanSTARRS DR1");
+  });
+
+  test("DSS only when the provisional is DEFINITIVELY empty and nothing covers", () => {
+    expect(decide([false, false, false], PAN())).toBe("DSS Color");
+    // Provisional definitively empty, others inconclusive → still DSS (we know
+    // the provisional is wrong and have no confirmed alternative).
+    expect(decide([false, null, null], PAN())).toBe("DSS Color");
+  });
+
+  test("a definitively-covered survey wins even if the provisional is empty", () => {
+    expect(decide([false, true, null], PAN())).toBe("DESI DR10");
+  });
+});
