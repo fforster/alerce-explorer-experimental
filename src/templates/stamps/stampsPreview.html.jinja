@@ -159,29 +159,35 @@
         class="tw-bg-bg-secondary tw-border tw-border-border tw-rounded tw-px-2 tw-py-1 tw-text-xs tw-text-text-primary"
         name="identifier"
         {#
-          Route the change through setSelectedIdentifier (not just
-          updateStampsForIdentifier) so picking a detection here also moves
-          the highlight ring on the light curve + position-residuals panels
-          and updates window._selectedIdentifier / the shareable URL.
-          setSelectedIdentifier repaints the stamps internally, so this
-          still refreshes the images. Falls back to the stamps-only path if
-          selection.js somehow isn't loaded.
+          Route the change through onStampsPickerChange, which reads the
+          chosen option's data-survey / data-oid (cross-survey options carry
+          the matched survey + OID; primary options carry this panel's) and
+          forwards them to setSelectedIdentifier — so picking a detection here
+          also moves the highlight ring on the light curve + position-
+          residuals panels, repaints the right survey's stamps, and updates
+          window._selectedIdentifier / the shareable URL. Falls back to the
+          stamps-only path if selection.js somehow isn't loaded.
         #}
-        onchange="(window.setSelectedIdentifier || window.updateStampsForIdentifier)(this.value)"
+        onchange="window.onStampsPickerChange && window.onStampsPickerChange(this)"
       >
         {#
           Each option labels the band with its survey ("LSST g", "ZTF r")
           so the band letter is unambiguous when a cross-survey overlay is
           loaded — `g` means different things on the two telescopes. The
           UTC date/time rides alongside the MJD so the user can map an
-          epoch to a calendar date without leaving the panel. Picker
-          entries today come from the primary survey only, but the per-
-          row tagging is forward-compatible with a future cross-survey
-          picker extension.
+          epoch to a calendar date without leaving the panel. These entries
+          are the primary survey's detections; when a cross-survey match
+          lands, lcSetCrossSurvey → setCrossSurveyStampOptions appends the
+          matched survey's epochs as a second, labeled optgroup. `data-survey`
+          / `data-oid` on every option let onStampsPickerChange dispatch the
+          stamp swap to the right survey's service regardless of which group
+          the picked epoch came from.
         #}
         {% for d in ctx.detections %}
           <option
             value="{{ d.identifier }}"
+            data-survey="{{ survey_id }}"
+            data-oid="{{ oid }}"
             {% if ctx.selected and d.identifier == ctx.selected.identifier %}selected{% endif %}
           >
             MJD {{ "%.3f"|format(d.mjd) }}{% if d.mjd_utc %} ({{ d.mjd_utc }}){% endif %}{% if d.band %} · {{ survey_id|upper }} {{ d.band }}{% endif %}

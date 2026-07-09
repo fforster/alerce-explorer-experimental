@@ -170,3 +170,92 @@ describe("detectSurveyFromStampUrl", () => {
     expect(S.detectSurveyFromStampUrl(null)).toBe("");
   });
 });
+
+describe("cross-survey picker options", () => {
+  test("stampOptionLabel mirrors the server row format", () => {
+    expect(S.stampOptionLabel(60123.456, "2023-01-01 00:00:00 UTC", "ZTF", "g"))
+      .toBe("MJD 60123.456 (2023-01-01 00:00:00 UTC) · ZTF g");
+    // Missing UTC / band degrade gracefully.
+    expect(S.stampOptionLabel(60123.4, "", "LSST", null)).toBe("MJD 60123.400");
+  });
+
+  test("surveyLabelFor maps the two surveys, upper-cases the rest", () => {
+    expect(S.surveyLabelFor("lsst")).toBe("LSST");
+    expect(S.surveyLabelFor("ztf")).toBe("ZTF");
+    expect(S.surveyLabelFor("des")).toBe("DES");
+  });
+
+  // Minimal stamps panel: a picker <select> with two primary options, as the
+  // server renders for an LSST primary view.
+  function buildPanel(primarySurvey, primaryOid) {
+    document.body.innerHTML = `
+      <div id="stamps-panel" data-oid="${primaryOid}" data-survey="${primarySurvey}">
+        <select name="identifier">
+          <option value="100" data-survey="${primarySurvey}" data-oid="${primaryOid}">MJD 60002.000 · LSST g</option>
+          <option value="101" data-survey="${primarySurvey}" data-oid="${primaryOid}">MJD 60001.000 · LSST r</option>
+        </select>
+      </div>`;
+    return document.querySelector('select[name="identifier"]');
+  }
+
+  test("appends a labeled cross-survey optgroup and wraps the primary options", () => {
+    const select = buildPanel("lsst", "LSSTOID");
+    S.applyXStampOptions({
+      primaryOid: "LSSTOID",
+      survey: "ztf",
+      oid: "ZTF26abc",
+      detections: [
+        { identifier: "900", mjd: 60003.5, mjd_utc: "2023-04-01 12:00:00 UTC", band: "g" },
+        { identifier: "901", mjd: 60000.5, mjd_utc: "", band: "r" },
+      ],
+    });
+
+    const groups = select.querySelectorAll("optgroup");
+    expect(groups.length).toBe(2);
+    // Primary options wrapped in an "LSST" group, order preserved.
+    expect(groups[0].label).toBe("LSST");
+    expect(groups[0].dataset.primary).toBe("1");
+    expect(Array.from(groups[0].querySelectorAll("option")).map((o) => o.value))
+      .toEqual(["100", "101"]);
+    // Cross-survey group carries the matched survey + OID on each option.
+    expect(groups[1].label).toBe("ZTF");
+    expect(groups[1].dataset.xsurvey).toBe("1");
+    const xopts = groups[1].querySelectorAll("option");
+    expect(xopts.length).toBe(2);
+    expect(xopts[0].value).toBe("900");
+    expect(xopts[0].dataset.survey).toBe("ztf");
+    expect(xopts[0].dataset.oid).toBe("ZTF26abc");
+    expect(xopts[0].textContent).toBe("MJD 60003.500 (2023-04-01 12:00:00 UTC) · ZTF g");
+    expect(xopts[1].textContent).toBe("MJD 60000.500 · ZTF r");
+  });
+
+  test("is re-runnable — replaces the prior cross group, keeps one primary group", () => {
+    const select = buildPanel("lsst", "LSSTOID");
+    const payload = {
+      primaryOid: "LSSTOID", survey: "ztf", oid: "ZTF26abc",
+      detections: [{ identifier: "900", mjd: 60003.5, mjd_utc: "", band: "g" }],
+    };
+    S.applyXStampOptions(payload);
+    S.applyXStampOptions(payload);
+    expect(select.querySelectorAll('optgroup[data-primary="1"]').length).toBe(1);
+    expect(select.querySelectorAll('optgroup[data-xsurvey="1"]').length).toBe(1);
+    expect(select.querySelectorAll('optgroup[data-xsurvey="1"] option').length).toBe(1);
+  });
+
+  test("ignores a payload whose primaryOid doesn't match the current panel", () => {
+    const select = buildPanel("lsst", "LSSTOID");
+    S.applyXStampOptions({
+      primaryOid: "OTHEROID", survey: "ztf", oid: "ZTF26abc",
+      detections: [{ identifier: "900", mjd: 60003.5, mjd_utc: "", band: "g" }],
+    });
+    expect(select.querySelectorAll("optgroup").length).toBe(0);
+    expect(select.querySelectorAll("option").length).toBe(2);
+  });
+
+  test("no-op (flat picker preserved) when there are no cross-survey detections", () => {
+    const select = buildPanel("lsst", "LSSTOID");
+    S.applyXStampOptions({ primaryOid: "LSSTOID", survey: "ztf", oid: "ZTF26abc", detections: [] });
+    expect(select.querySelectorAll("optgroup").length).toBe(0);
+    expect(select.querySelectorAll("option").length).toBe(2);
+  });
+});

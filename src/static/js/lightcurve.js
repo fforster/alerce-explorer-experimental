@@ -2500,6 +2500,35 @@
     updateSourceAvailability(chart);
     applyModes(chart);
     emitDataChanged(chart);
+    // Feed the matched detections to the stamps picker so its dropdown lists
+    // epochs from BOTH surveys (the picker is server-rendered from the primary
+    // survey only). Only detections that carry a stamp + identifier can be
+    // shown; the matched OID (chart.$lcXOid) fills the __OID__ slot in the
+    // per-survey stamp URL template when the user picks a cross-survey epoch.
+    if (window.setCrossSurveyStampOptions && chart.$lcXOid) {
+      const xdets = [];
+      for (const b of (bundle.bands || [])) {
+        const band = b.name;
+        for (const p of (b.points || [])) {
+          if (!p || !p.has_stamp || p.identifier == null) continue;
+          xdets.push({
+            identifier: String(p.identifier),
+            mjd: p.mjd,
+            mjd_utc: mjdToUtcString(p.mjd, survey),
+            band,
+          });
+        }
+      }
+      if (xdets.length) {
+        xdets.sort((a, b) => b.mjd - a.mjd); // most recent first, like the primary
+        window.setCrossSurveyStampOptions({
+          primaryOid: canvasId.replace(/^lc-canvas-/, ""),
+          survey,
+          oid: chart.$lcXOid,
+          detections: xdets,
+        });
+      }
+    }
     // Basic-info placeholder lives in a sibling panel of the LC; safe to
     // skip silently if the panel isn't in the DOM (e.g. listing view) or if
     // the placeholder is wired to a different OID (stale fragment during a
