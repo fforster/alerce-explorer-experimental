@@ -26,6 +26,7 @@ from ..services import coord_residuals as coord_residuals_service
 from ..services import crossmatch as crossmatch_service
 from ..services import features as features_service
 from ..services import lightcurve as lightcurve_service
+from ..services import magstats as magstats_service
 from ..services import object_info as object_info_service
 from ..services import object_list as object_list_service
 from ..services import probability as probability_service
@@ -512,6 +513,35 @@ async def list_objects(
         page=page,
     )
     return resp
+
+
+@router.get("/htmx/list_magstats", response_class=HTMLResponse)
+async def list_magstats(
+    request: Request, survey: str, oids: str | None = None
+) -> HTMLResponse:
+    """Deferred fill for the results table's Peak/Last mag columns.
+
+    Runs ONE bulk TAP query for the whole page's oids and returns
+    `hx-swap-oob` spans that swap into each row's placeholder cells. Fired via
+    the hidden `#magstats-loader` on `hx-trigger="load"`; any failure degrades
+    to "—" cells (never a 500 in the fragment).
+    """
+    _validate_survey(survey)
+    oid_list = object_list_service.parse_oid_list(oids)
+    try:
+        mags = (
+            await magstats_service.fetch_magstats_bulk(oid_list, survey)
+            if oid_list
+            else {}
+        )
+    except Exception:
+        log.exception("list_magstats failed")
+        mags = {}
+    return templates.TemplateResponse(
+        request,
+        "main_table_objects/magstats_oob.html.jinja",
+        {"oids": oid_list, "mags": mags, "survey": survey},
+    )
 
 
 @router.get("/htmx/detail", response_class=HTMLResponse)

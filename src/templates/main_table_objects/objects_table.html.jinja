@@ -120,6 +120,8 @@
             <th class="tw-px-3 tw-py-2 col-mobile-hide">Dec</th>
             <th class="tw-px-3 tw-py-2 col-mobile-hide">First MJD</th>
             <th class="tw-px-3 tw-py-2 col-mobile-hide">Last MJD</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">Peak mag</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">Last mag</th>
           </tr>
         </thead>
         <tbody>
@@ -151,11 +153,31 @@
             <td class="tw-px-3 tw-py-2 mono col-mobile-hide">
               {% if obj.get('lastmjd') is not none %}{{ "%.3f"|format(obj['lastmjd']) }}{% else %}-{% endif %}
             </td>
+            {# Filled out-of-band by #magstats-loader → /htmx/list_magstats (one bulk TAP query per page). #}
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="peakmag-{{ obj.get('oid', '') }}">…</span></td>
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="lastmag-{{ obj.get('oid', '') }}">…</span></td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
+
+    {#
+      Lazy fill for the Peak mag / Last mag columns. Fires one bulk TAP query
+      for this page's oids once the table has painted; the response is pure
+      hx-swap-oob spans that drop into each row's placeholder cells, so
+      hx-swap="none" here. Page oids are serialized server-side (same
+      items|map(attribute='oid') the data-nav above uses); LSST 64-bit oids are
+      already strings via safe_json_loads, so join(',') keeps their precision.
+    #}
+    {%- set page_oids = objects_list['items'] | map(attribute='oid') | join(',') %}
+    <div
+      id="magstats-loader"
+      class="tw-hidden"
+      hx-get="{{ API_URL }}/htmx/list_magstats?survey={{ survey }}&oids={{ page_oids|urlencode }}"
+      hx-trigger="load"
+      hx-swap="none"
+    ></div>
 
     <div class="tw-flex tw-items-center tw-justify-end tw-gap-3 tw-px-3 tw-py-2 tw-text-sm tw-text-text-secondary tw-border-t tw-border-border">
       {% if objects_list['has_prev'] %}

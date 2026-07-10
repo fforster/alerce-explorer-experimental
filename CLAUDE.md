@@ -194,6 +194,11 @@ src/
                              # for api_base/paths/bands/extinction_r/extra_params per survey
     classifiers.py           # tidy_classifiers: dedupe by name, merge class lists, priority-sort
     object_list.py           # build_search_params, shape_response (ZTF field remap to LSST schema)
+    magstats.py              # bulk peak/last magnitude for the results table via one TAP query
+                             # per page (tap.alerce.online/tap/sync, plain httpx GET, FORMAT=json).
+                             # ZTF: ztf.magstat (fid, magmin=peak, maglast=last); LSST:
+                             # alerce_tap.lsst_dia_object ({b}_psffluxmax → mag; no last mag).
+                             # Guards the VOTable-XML error body TAP returns even under FORMAT=json
     object_info.py           # shape_object_info (ZTF ndet/ncovhist; LSST n_det/n_non_det/n_forced)
     coordinates.py           # ra_to_hms / dec_to_dms / equatorial_to_galactic / equatorial_to_ecliptic
     other_archives.py        # external archive URL builders (ALeRCE, NED, SIMBAD, TNS, …)
@@ -234,7 +239,11 @@ src/
     index.html.jinja                          # app shell (header, sidebar slot, main slot)
     input.html.jinja                          # shared input() macro
     search_form/                              # filter form + dependent class select
-    main_table_objects/objects_table.html.jinja   # results table (rows are hx-get to /htmx/detail)
+    main_table_objects/objects_table.html.jinja   # results table (rows are hx-get to /htmx/detail);
+                             # Peak mag / Last mag cells render as "…" placeholders + a hidden
+                             # #magstats-loader (hx-trigger=load) that fetches /htmx/list_magstats
+    main_table_objects/magstats_oob.html.jinja    # hx-swap-oob spans that fill the Peak/Last mag
+                             # cells by id (peakmag-{oid} / lastmag-{oid}); "—" when absent
     basic_information/basicInformationPreview.html.jinja   # populated object info panel:
                              # 2-col layout (RA/Dec/MJDs | counts/flags), inline HMS/Deg toggle +
                              # copy icon (green ✓ feedback) on the RA/Dec rows; Show features +
@@ -364,4 +373,18 @@ tests/                       # pytest; each service file has a matching test fil
   normalizers ported nearly verbatim from the ALeRCE TNS pipeline
   (`../TNS_report/alerce_tns_project/alerce_tns/clients/catalogs.py`). Adds the
   `astroquery` + `pyvo` deps (astropy transitive). Cache is runtime-only.
+- **Peak/Last mag columns** — two `col-mobile-hide` columns in the results table filled
+  lazily out-of-band: the table paints with `…` placeholders, then a single hidden
+  `#magstats-loader` (`hx-trigger="load"`) fires ONE bulk TAP query per page
+  (`WHERE oid IN (...)` against `tap.alerce.online/tap/sync`, plain httpx GET,
+  `FORMAT=json`) via `GET /htmx/list_magstats`, whose response is `hx-swap-oob` spans
+  that drop into each row's `peakmag-{oid}` / `lastmag-{oid}` cell. `services/magstats.py`
+  builds the ADQL, parses the JSON (guarding the VOTable-XML error body TAP returns even
+  under `FORMAT=json`), and reduces per object. **ZTF** uses `ztf.magstat` (per-band `fid`;
+  peak = brightest = min `magmin`; last = `maglast` of the band with the latest `lastmjd`) —
+  NOT `alerce_tap.magstat` (whose integer internal oids don't match ZTF names). **LSST** uses
+  `alerce_tap.lsst_dia_object` per-band `{b}_psffluxmax` → mag via the AB ZP (31.4); LSST has
+  no per-band last magnitude, so Last mag is ZTF-only (LSST shows `—`). Uncorrected
+  `magmin`/`maglast` are used (difference-image), consistent with the LC panel's default.
+  Any TAP failure degrades to `—` cells; both search paths (generic + OID-list) inherit it.
 - **Deferred** — name resolver.

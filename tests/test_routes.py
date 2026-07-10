@@ -225,6 +225,15 @@ def test_list_objects_renders_row(client, stub_services):
     # Pagination: page 1 → only Next is present.
     assert "Next →" in r.text
     assert "Prev" not in r.text
+    # Peak/Last mag columns: headers + placeholder cells + the deferred loader
+    # that will fill them out-of-band via one bulk TAP query.
+    assert ">Peak mag<" in r.text
+    assert ">Last mag<" in r.text
+    assert 'id="peakmag-LSST-1"' in r.text
+    assert 'id="lastmag-LSST-1"' in r.text
+    assert "…" in r.text  # placeholder before the OOB fill lands
+    assert 'id="magstats-loader"' in r.text
+    assert "/htmx/list_magstats?survey=lsst&oids=LSST-1" in html_lib.unescape(r.text)
 
 
 def test_list_objects_shows_prev_from_page_2(client, stub_services):
@@ -232,6 +241,44 @@ def test_list_objects_shows_prev_from_page_2(client, stub_services):
     assert r.status_code == 200
     assert "← Prev" in r.text
     assert "Next →" in r.text
+
+
+def test_list_magstats_emits_oob_spans(client, monkeypatch):
+    async def fake_mags(oids, survey):
+        return {
+            "ZTFa": {"peak_mag": 18.37, "peak_band": "r",
+                     "last_mag": 18.39, "last_band": "r"},
+            # ZTFb: peak only (LSST-style / no last mag) → last cell shows "—".
+            "ZTFb": {"peak_mag": 19.02, "peak_band": "g",
+                     "last_mag": None, "last_band": None},
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.magstats_service.fetch_magstats_bulk", fake_mags
+    )
+    r = client.get("/htmx/list_magstats?survey=ztf&oids=ZTFa,ZTFb")
+    assert r.status_code == 200
+    assert 'id="peakmag-ZTFa"' in r.text
+    assert 'hx-swap-oob="true"' in r.text
+    assert "18.37 r" in r.text
+    assert "18.39 r" in r.text
+    # ZTFb has no last mag → em dash in that cell.
+    assert 'id="lastmag-ZTFb"' in r.text
+    assert "—" in r.text
+
+
+def test_list_magstats_degrades_to_dashes_on_failure(client, monkeypatch):
+    async def boom(oids, survey):
+        raise RuntimeError("TAP down")
+
+    monkeypatch.setattr(
+        "src.routes.htmx.magstats_service.fetch_magstats_bulk", boom
+    )
+    r = client.get("/htmx/list_magstats?survey=ztf&oids=ZTFa")
+    assert r.status_code == 200
+    # No data for the oid → both cells resolve to the em dash placeholder.
+    assert 'id="peakmag-ZTFa"' in r.text
+    assert "—" in r.text
 
 
 def test_list_objects_without_survey_shows_hint(client):

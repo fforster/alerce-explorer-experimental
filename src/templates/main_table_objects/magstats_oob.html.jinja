@@ -1,0 +1,12 @@
+{#
+  Out-of-band fill for the results table's Peak mag / Last mag cells.
+  One request per page (fired by #magstats-loader on load) returns two
+  hx-swap-oob spans per object whose ids match the placeholder spans in
+  objects_table.html.jinja (`peakmag-{oid}` / `lastmag-{oid}`). htmx places
+  each by id regardless of the request's target. Missing data → em dash.
+#}
+{% for oid in oids -%}
+  {%- set m = mags.get(oid) -%}
+  <span id="peakmag-{{ oid }}" hx-swap-oob="true">{% if m and m.get('peak_mag') is not none %}{{ "%.2f"|format(m['peak_mag']) }}{% if m.get('peak_band') %} {{ m['peak_band'] }}{% endif %}{% else %}—{% endif %}</span>
+  <span id="lastmag-{{ oid }}" hx-swap-oob="true">{% if m and m.get('last_mag') is not none %}{{ "%.2f"|format(m['last_mag']) }}{% if m.get('last_band') %} {{ m['last_band'] }}{% endif %}{% else %}—{% endif %}</span>
+{% endfor %}
