@@ -225,6 +225,29 @@ def test_list_objects_renders_row(client, stub_services):
     # Pagination: page 1 → only Next is present.
     assert "Next →" in r.text
     assert "Prev" not in r.text
+    # Two magnitude columns (peak difference + mean total) + placeholder cells +
+    # the deferred loader that fills them out-of-band via one bulk TAP query.
+    assert ">Peak diff mag<" in r.text
+    assert ">Mean tot mag<" in r.text
+    assert 'id="peakdiff-LSST-1"' in r.text
+    assert 'id="meantot-LSST-1"' in r.text
+    assert "…" in r.text  # placeholder before the OOB fill lands
+    assert 'id="magstats-loader"' in r.text
+    assert "/htmx/list_magstats?survey=lsst&oids=LSST-1" in html_lib.unescape(r.text)
+    # Column headers carry hover explanations (native title tooltips).
+    assert 'title="Object identifier (OID)' in r.text
+    assert "tw-cursor-help" in r.text
+    assert "the relevant peak for transients" in r.text
+
+
+def test_list_objects_ztf_shows_both_mag_columns(client, stub_services):
+    # Both magnitude columns render for ZTF too (peak diff + mean total).
+    r = client.get("/htmx/list_objects?survey=ztf&page=1")
+    assert r.status_code == 200
+    assert ">Peak diff mag<" in r.text
+    assert ">Mean tot mag<" in r.text
+    assert 'id="peakdiff-LSST-1"' in r.text  # fixture oid
+    assert 'id="meantot-LSST-1"' in r.text
 
 
 def test_list_objects_shows_prev_from_page_2(client, stub_services):
@@ -232,6 +255,44 @@ def test_list_objects_shows_prev_from_page_2(client, stub_services):
     assert r.status_code == 200
     assert "← Prev" in r.text
     assert "Next →" in r.text
+
+
+def test_list_magstats_emits_oob_spans(client, monkeypatch):
+    async def fake_mags(oids, survey):
+        return {
+            "ZTFa": {"peak_diff_mag": 18.37, "peak_diff_band": "r",
+                     "mean_tot_mag": 16.92, "mean_tot_band": "r"},
+            # ZTFb: diff only (uncorrected) → total cell shows "—".
+            "ZTFb": {"peak_diff_mag": 19.02, "peak_diff_band": "g",
+                     "mean_tot_mag": None, "mean_tot_band": None},
+        }
+
+    monkeypatch.setattr(
+        "src.routes.htmx.magstats_service.fetch_magstats_bulk", fake_mags
+    )
+    r = client.get("/htmx/list_magstats?survey=ztf&oids=ZTFa,ZTFb")
+    assert r.status_code == 200
+    assert 'id="peakdiff-ZTFa"' in r.text
+    assert 'hx-swap-oob="true"' in r.text
+    assert "18.37 r" in r.text
+    assert "16.92 r" in r.text
+    # ZTFb has no total mag → em dash in that cell.
+    assert 'id="meantot-ZTFb"' in r.text
+    assert "—" in r.text
+
+
+def test_list_magstats_degrades_to_dashes_on_failure(client, monkeypatch):
+    async def boom(oids, survey):
+        raise RuntimeError("TAP down")
+
+    monkeypatch.setattr(
+        "src.routes.htmx.magstats_service.fetch_magstats_bulk", boom
+    )
+    r = client.get("/htmx/list_magstats?survey=ztf&oids=ZTFa")
+    assert r.status_code == 200
+    # No data for the oid → both cells resolve to the em dash placeholder.
+    assert 'id="peakdiff-ZTFa"' in r.text
+    assert "—" in r.text
 
 
 def test_list_objects_without_survey_shows_hint(client):

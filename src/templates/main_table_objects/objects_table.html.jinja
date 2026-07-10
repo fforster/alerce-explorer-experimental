@@ -110,16 +110,34 @@
     <div class="tw-overflow-x-auto">
       <table class="tw-w-full tw-text-sm">
         <thead class="tw-text-left tw-text-text-secondary tw-text-xs tw-uppercase">
+          {# Native `title` tooltips (same pattern as the airmass/crossmatch
+             panels) explain each column on hover; tw-cursor-help hints they're
+             there. #}
           <tr class="tw-border-b tw-border-border">
-            <th class="tw-px-3 tw-py-2">Object ID</th>
-            <th class="tw-px-3 tw-py-2 col-mobile-hide">N det</th>
-            <th class="tw-px-3 tw-py-2 col-mobile-hide">Classifier</th>
-            <th class="tw-px-3 tw-py-2">Class</th>
-            <th class="tw-px-3 tw-py-2">Prob</th>
-            <th class="tw-px-3 tw-py-2 col-mobile-hide">RA</th>
-            <th class="tw-px-3 tw-py-2 col-mobile-hide">Dec</th>
-            <th class="tw-px-3 tw-py-2 col-mobile-hide">First MJD</th>
-            <th class="tw-px-3 tw-py-2 col-mobile-hide">Last MJD</th>
+            <th class="tw-px-3 tw-py-2 tw-cursor-help"
+                title="Object identifier (OID) — the ZTF name string or the LSST 64-bit id. Click a row to open the object's detail view.">Object ID</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="Number of detections — real alerts above the survey threshold for this object (excludes forced photometry and non-detections).">N det</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="ALeRCE classifier that produced the Class and Prob shown in this row.">Classifier</th>
+            <th class="tw-px-3 tw-py-2 tw-cursor-help"
+                title="Most probable class for this object from the selected classifier.">Class</th>
+            <th class="tw-px-3 tw-py-2 tw-cursor-help"
+                title="Probability (0–1) of the most likely class from that classifier.">Prob</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="Right ascension — mean position, J2000, in degrees.">RA</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="Declination — mean position, J2000, in degrees.">Dec</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="Modified Julian Date of the first detection.">First MJD</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="Modified Julian Date of the most recent detection.">Last MJD</th>
+            {# Difference peak (transient-relevant) and mean total / apparent
+               brightness (star-relevant). Filled out-of-band by #magstats-loader. #}
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="Brightest difference-image magnitude across bands (band shown beside the value) — the relevant peak for transients. ZTF: magmin. LSST: from the peak difference PSF flux.">Peak diff mag</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
+                title="Mean total (apparent) magnitude in the brightest band (band shown beside the value) — the relevant brightness for stars and variables. ZTF: magmean_corr (blank if the object is uncorrected). LSST: from the mean science flux.">Mean tot mag</th>
           </tr>
         </thead>
         <tbody>
@@ -151,11 +169,31 @@
             <td class="tw-px-3 tw-py-2 mono col-mobile-hide">
               {% if obj.get('lastmjd') is not none %}{{ "%.3f"|format(obj['lastmjd']) }}{% else %}-{% endif %}
             </td>
+            {# Filled out-of-band by #magstats-loader → /htmx/list_magstats (one bulk TAP query per page). #}
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="peakdiff-{{ obj.get('oid', '') }}">…</span></td>
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="meantot-{{ obj.get('oid', '') }}">…</span></td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
     </div>
+
+    {#
+      Lazy fill for the Peak mag / Last mag columns. Fires one bulk TAP query
+      for this page's oids once the table has painted; the response is pure
+      hx-swap-oob spans that drop into each row's placeholder cells, so
+      hx-swap="none" here. Page oids are serialized server-side (same
+      items|map(attribute='oid') the data-nav above uses); LSST 64-bit oids are
+      already strings via safe_json_loads, so join(',') keeps their precision.
+    #}
+    {%- set page_oids = objects_list['items'] | map(attribute='oid') | join(',') %}
+    <div
+      id="magstats-loader"
+      class="tw-hidden"
+      hx-get="{{ API_URL }}/htmx/list_magstats?survey={{ survey }}&oids={{ page_oids|urlencode }}"
+      hx-trigger="load"
+      hx-swap="none"
+    ></div>
 
     <div class="tw-flex tw-items-center tw-justify-end tw-gap-3 tw-px-3 tw-py-2 tw-text-sm tw-text-text-secondary tw-border-t tw-border-border">
       {% if objects_list['has_prev'] %}
