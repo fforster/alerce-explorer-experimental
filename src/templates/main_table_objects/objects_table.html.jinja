@@ -120,10 +120,10 @@
             <th class="tw-px-3 tw-py-2 col-mobile-hide">Dec</th>
             <th class="tw-px-3 tw-py-2 col-mobile-hide">First MJD</th>
             <th class="tw-px-3 tw-py-2 col-mobile-hide">Last MJD</th>
-            <th class="tw-px-3 tw-py-2 col-mobile-hide">Peak mag</th>
-            {# Last mag only exists per-band for ZTF (magstat); LSST has no last
-               magnitude, so the column is omitted rather than shown empty. #}
-            {% if survey == 'ztf' %}<th class="tw-px-3 tw-py-2 col-mobile-hide">Last mag</th>{% endif %}
+            {# Two peak magnitudes: difference (transient-relevant) and total /
+               apparent (star-relevant). Filled out-of-band by #magstats-loader. #}
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">Peak diff mag</th>
+            <th class="tw-px-3 tw-py-2 col-mobile-hide">Peak tot mag</th>
           </tr>
         </thead>
         <tbody>
@@ -156,8 +156,8 @@
               {% if obj.get('lastmjd') is not none %}{{ "%.3f"|format(obj['lastmjd']) }}{% else %}-{% endif %}
             </td>
             {# Filled out-of-band by #magstats-loader → /htmx/list_magstats (one bulk TAP query per page). #}
-            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="peakmag-{{ obj.get('oid', '') }}">…</span></td>
-            {% if survey == 'ztf' %}<td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="lastmag-{{ obj.get('oid', '') }}">…</span></td>{% endif %}
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="peakdiff-{{ obj.get('oid', '') }}">…</span></td>
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="peaktot-{{ obj.get('oid', '') }}">…</span></td>
           </tr>
         {% endfor %}
         </tbody>

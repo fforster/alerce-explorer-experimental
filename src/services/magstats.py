@@ -1,25 +1,28 @@
-"""Bulk peak/last magnitude lookup via the ALeRCE TAP service.
+"""Bulk peak-magnitude lookup via the ALeRCE TAP service.
 
 The object-list and object-info endpoints carry no brightness, so the results
-table's "Peak mag" / "Last mag" columns are filled from precomputed per-band
-magnitude statistics served over TAP (IVOA Table Access Protocol) at
+table's "Peak diff mag" / "Peak tot mag" columns are filled from precomputed
+per-band magnitude statistics served over TAP (IVOA Table Access Protocol) at
 `https://tap.alerce.online/tap/sync`. One bulk ADQL query per page
 (`WHERE oid IN (...)`) covers every visible object — no per-object round trips.
 
+Two peak magnitudes are shown because the relevant one depends on the object:
+for a **transient** the peak of the *difference* light curve matters; for a
+**star / variable** the peak of the *total* (science / apparent) flux matters.
+
 Per-survey sources (field names verified against the live service):
-  ZTF  → `ztf.magstat`               oid = the ZTF name string; per-band key
-                                     `fid` (1=g, 2=r, 3=i); `magmin` (brightest
-                                     mag), `maglast`, `lastmjd`.
-  LSST → `alerce_tap.lsst_dia_object` oid = 64-bit int; per-band `{b}_psffluxmax`
-                                     (difference PSF peak flux, nJy). No per-band
-                                     last magnitude exists.
-
-`alerce_tap.magstat` is deliberately NOT used for ZTF: it keys on an internal
-integer oid that does not match the Explorer's ZTF names.
-
-Peak = brightest across bands (ZTF: min `magmin`; LSST: max flux → mag via the
-AB zero-point). Last = `maglast` of the band with the latest `lastmjd` (ZTF
-only; LSST has no per-band last magnitude → None → "—" in the table).
+  ZTF  → `ztf.magstat` (oid = ZTF name string, per-band key `fid` 1=g/2=r/3=i)
+         diff  = `magmin`       (brightest difference magnitude)
+         total = `magmin_corr`  (brightest corrected/apparent magnitude; null
+                                 when `corrected` is false)
+  LSST → `alerce_tap.lsst_dia_object` (oid = 64-bit int)
+         diff  = brightest per-band `{b}_psffluxmax`     (peak difference flux)
+         total = brightest per-band `{b}_sciencefluxmean` (mean science/total
+                 flux — the DIA-object table stores no per-band science *max*,
+                 so LSST "peak total" is the brightest-band mean, not a true
+                 peak; adequate for the near-constant stellar case).
+  Fluxes (nJy) → mag via the AB zero-point (31.4). `alerce_tap.magstat` is NOT
+  used for ZTF: it keys on an internal integer oid that doesn't match ZTF names.
 
 TAP `/sync` returns a VOTable **XML** error document even when `FORMAT=json` is
 requested (malformed query / service error), so parsing never assumes JSON — a
@@ -42,8 +45,10 @@ log = logging.getLogger(__name__)
 TAP_SYNC_URL = "https://tap.alerce.online/tap/sync"
 _TIMEOUT = httpx.Timeout(30.0)
 
-# LSST difference-PSF peak-flux columns in `alerce_tap.lsst_dia_object`, by band.
-_LSST_FLUX_BANDS = ("u", "g", "r", "i", "z", "y")
+# LSST per-band flux columns in `alerce_tap.lsst_dia_object`, by band.
+_LSST_BANDS = ("u", "g", "r", "i", "z", "y")
+_LSST_DIFF_SUFFIX = "psffluxmax"       # peak difference flux
+_LSST_TOTAL_SUFFIX = "sciencefluxmean"  # mean science (total) flux
 
 
 def _build_adql(oids: list[str], survey: str) -> str:
@@ -55,14 +60,18 @@ def _build_adql(oids: list[str], survey: str) -> str:
         # ZTF oids are name strings ('ZTF...') — single-quote each.
         in_list = ", ".join("'{}'".format(o.replace("'", "")) for o in oids)
         return (
-            "SELECT oid,fid,magmin,maglast,lastmjd "
+            "SELECT oid,fid,magmin,magmin_corr "
             "FROM ztf.magstat WHERE oid IN ({})".format(in_list)
         )
     if survey == "lsst":
         # LSST oids are bare 64-bit integers — keep only digit strings so the
         # ADQL stays an integer IN-list (page oids arrive as strings).
         in_list = ", ".join(o for o in oids if o.lstrip("-").isdigit())
-        cols = ",".join("{}_psffluxmax".format(b) for b in _LSST_FLUX_BANDS)
+        cols = ",".join(
+            "{}_{}".format(b, suffix)
+            for b in _LSST_BANDS
+            for suffix in (_LSST_DIFF_SUFFIX, _LSST_TOTAL_SUFFIX)
+        )
         return (
             "SELECT oid,{} "
             "FROM alerce_tap.lsst_dia_object WHERE oid IN ({})".format(cols, in_list)
@@ -73,9 +82,7 @@ def _build_adql(oids: list[str], survey: str) -> str:
 async def _tap_query(adql: str) -> list[dict[str, Any]]:
     """Run one ADQL query and return rows as column-name→value dicts.
 
-    Monkeypatch seam for the unit tests. Guards against the VOTable-XML error
-    body TAP returns on failure: anything that isn't JSON with `columns`+`data`
-    yields an empty list.
+    Monkeypatch seam for the unit tests.
     """
     params = {
         "REQUEST": "doQuery",
@@ -112,9 +119,28 @@ def _parse_tap_rows(body: str | bytes) -> list[dict[str, Any]]:
     return rows
 
 
+def _brightest_mag(pairs: list[tuple[float | None, str]]) -> tuple[float | None, str | None]:
+    """Given (mag, band) pairs, return the brightest (smallest mag) + its band,
+    skipping None mags."""
+    best_mag = None
+    best_band = None
+    for mag, band in pairs:
+        if mag is not None and (best_mag is None or mag < best_mag):
+            best_mag = mag
+            best_band = band
+    return best_mag, best_band
+
+
+def _flux_to_mag(flux: float | None) -> float | None:
+    """nJy → AB magnitude; None / non-positive flux → None."""
+    if flux is None or flux <= 0:
+        return None
+    return AB_ZP_NJY - 2.5 * math.log10(flux)
+
+
 def _reduce_ztf(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per object: peak = min `magmin` across bands (with its band); last =
-    `maglast` of the band observed most recently (max `lastmjd`)."""
+    """Per object: peak diff = min `magmin`; peak total = min `magmin_corr`
+    (both brightest-across-bands, each with its band)."""
     by_oid: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         oid = r.get("oid")
@@ -124,57 +150,40 @@ def _reduce_ztf(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
     out: dict[str, dict[str, Any]] = {}
     for oid, band_rows in by_oid.items():
-        peak_mag = None
-        peak_band = None
-        last_mag = None
-        last_band = None
-        last_mjd = None
-        for r in band_rows:
-            band = ZTF_FID_TO_BAND.get(r.get("fid"))
-            magmin = r.get("magmin")
-            if magmin is not None and (peak_mag is None or magmin < peak_mag):
-                peak_mag = magmin
-                peak_band = band
-            mjd = r.get("lastmjd")
-            maglast = r.get("maglast")
-            if maglast is not None and mjd is not None and (
-                last_mjd is None or mjd > last_mjd
-            ):
-                last_mjd = mjd
-                last_mag = maglast
-                last_band = band
+        diff_mag, diff_band = _brightest_mag(
+            [(r.get("magmin"), ZTF_FID_TO_BAND.get(r.get("fid"))) for r in band_rows]
+        )
+        tot_mag, tot_band = _brightest_mag(
+            [(r.get("magmin_corr"), ZTF_FID_TO_BAND.get(r.get("fid"))) for r in band_rows]
+        )
         out[oid] = {
-            "peak_mag": peak_mag,
-            "peak_band": peak_band,
-            "last_mag": last_mag,
-            "last_band": last_band,
+            "peak_diff_mag": diff_mag,
+            "peak_diff_band": diff_band,
+            "peak_tot_mag": tot_mag,
+            "peak_tot_band": tot_band,
         }
     return out
 
 
 def _reduce_lsst(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per object: peak = brightest = largest positive `{b}_psffluxmax` across
-    bands, converted to a magnitude. LSST has no per-band last magnitude."""
+    """Per object: peak diff = brightest `{b}_psffluxmax`; peak total =
+    brightest `{b}_sciencefluxmean` (each converted to a magnitude)."""
     out: dict[str, dict[str, Any]] = {}
     for r in rows:
         oid = r.get("oid")
         if oid is None:
             continue
-        best_flux = None
-        best_band = None
-        for band in _LSST_FLUX_BANDS:
-            flux = r.get("{}_psffluxmax".format(band))
-            if flux is not None and flux > 0 and (best_flux is None or flux > best_flux):
-                best_flux = flux
-                best_band = band
-        peak_mag = (
-            AB_ZP_NJY - 2.5 * math.log10(best_flux) if best_flux is not None else None
+        diff_mag, diff_band = _brightest_mag(
+            [(_flux_to_mag(r.get("{}_{}".format(b, _LSST_DIFF_SUFFIX))), b) for b in _LSST_BANDS]
+        )
+        tot_mag, tot_band = _brightest_mag(
+            [(_flux_to_mag(r.get("{}_{}".format(b, _LSST_TOTAL_SUFFIX))), b) for b in _LSST_BANDS]
         )
         out[str(oid)] = {
-            "peak_mag": peak_mag,
-            "peak_band": best_band,
-            "last_mag": None,
-            "last_band": None,
+            "peak_diff_mag": diff_mag,
+            "peak_diff_band": diff_band,
+            "peak_tot_mag": tot_mag,
+            "peak_tot_band": tot_band,
         }
     return out
 
@@ -182,9 +191,9 @@ def _reduce_lsst(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 async def fetch_magstats_bulk(
     oids: list[str], survey: str
 ) -> dict[str, dict[str, float | str | None]]:
-    """{oid_str: {"peak_mag","peak_band","last_mag","last_band"}} for the given
-    oids. Any TAP failure (network, timeout, query error) degrades to {} so the
-    table's mag cells resolve to "—" rather than erroring."""
+    """{oid_str: {"peak_diff_mag","peak_diff_band","peak_tot_mag","peak_tot_band"}}
+    for the given oids. Any TAP failure (network, timeout, query error) degrades
+    to {} so the table's mag cells resolve to "—" rather than erroring."""
     adql = _build_adql(oids, survey)
     if not adql:
         return {}
