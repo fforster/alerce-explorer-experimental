@@ -243,7 +243,8 @@ src/
                              # Peak mag / Last mag cells render as "…" placeholders + a hidden
                              # #magstats-loader (hx-trigger=load) that fetches /htmx/list_magstats
     main_table_objects/magstats_oob.html.jinja    # hx-swap-oob spans that fill the Peak/Last mag
-                             # cells by id (peakmag-{oid} / lastmag-{oid}); "—" when absent
+                             # cells by id (peakmag-{oid} / lastmag-{oid}); "—" when absent.
+                             # lastmag span emitted for ZTF only (LSST has no last-mag column)
     basic_information/basicInformationPreview.html.jinja   # populated object info panel:
                              # 2-col layout (RA/Dec/MJDs | counts/flags), inline HMS/Deg toggle +
                              # copy icon (green ✓ feedback) on the RA/Dec rows; Show features +
@@ -384,7 +385,8 @@ tests/                       # pytest; each service file has a matching test fil
   peak = brightest = min `magmin`; last = `maglast` of the band with the latest `lastmjd`) —
   NOT `alerce_tap.magstat` (whose integer internal oids don't match ZTF names). **LSST** uses
   `alerce_tap.lsst_dia_object` per-band `{b}_psffluxmax` → mag via the AB ZP (31.4); LSST has
-  no per-band last magnitude, so Last mag is ZTF-only (LSST shows `—`). Uncorrected
+  no per-band last magnitude, so the **Last mag column is omitted entirely for LSST** (survey-gated
+  in the template — Peak mag shows for both surveys). Uncorrected
   `magmin`/`maglast` are used (difference-image), consistent with the LC panel's default.
   Any TAP failure degrades to `—` cells; both search paths (generic + OID-list) inherit it.
 - **Deferred** — name resolver.

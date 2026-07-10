@@ -225,15 +225,25 @@ def test_list_objects_renders_row(client, stub_services):
     # Pagination: page 1 → only Next is present.
     assert "Next →" in r.text
     assert "Prev" not in r.text
-    # Peak/Last mag columns: headers + placeholder cells + the deferred loader
-    # that will fill them out-of-band via one bulk TAP query.
+    # Peak mag column + placeholder cell + the deferred loader that fills it
+    # out-of-band via one bulk TAP query. LSST has no last magnitude, so the
+    # Last mag column is omitted entirely (not shown empty).
     assert ">Peak mag<" in r.text
-    assert ">Last mag<" in r.text
+    assert ">Last mag<" not in r.text
     assert 'id="peakmag-LSST-1"' in r.text
-    assert 'id="lastmag-LSST-1"' in r.text
+    assert 'id="lastmag-LSST-1"' not in r.text
     assert "…" in r.text  # placeholder before the OOB fill lands
     assert 'id="magstats-loader"' in r.text
     assert "/htmx/list_magstats?survey=lsst&oids=LSST-1" in html_lib.unescape(r.text)
+
+
+def test_list_objects_ztf_shows_last_mag_column(client, stub_services):
+    # ZTF magstat has a per-band last magnitude, so the Last mag column renders.
+    r = client.get("/htmx/list_objects?survey=ztf&page=1")
+    assert r.status_code == 200
+    assert ">Peak mag<" in r.text
+    assert ">Last mag<" in r.text
+    assert 'id="lastmag-LSST-1"' in r.text  # fixture oid; column present for ZTF
 
 
 def test_list_objects_shows_prev_from_page_2(client, stub_services):

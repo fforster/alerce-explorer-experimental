@@ -8,5 +8,6 @@
 {% for oid in oids -%}
   {%- set m = mags.get(oid) -%}
   <span id="peakmag-{{ oid }}" hx-swap-oob="true">{% if m and m.get('peak_mag') is not none %}{{ "%.2f"|format(m['peak_mag']) }}{% if m.get('peak_band') %} {{ m['peak_band'] }}{% endif %}{% else %}—{% endif %}</span>
-  <span id="lastmag-{{ oid }}" hx-swap-oob="true">{% if m and m.get('last_mag') is not none %}{{ "%.2f"|format(m['last_mag']) }}{% if m.get('last_band') %} {{ m['last_band'] }}{% endif %}{% else %}—{% endif %}</span>
+  {# Last mag column only exists for ZTF; don't emit an orphan OOB span otherwise. #}
+  {% if survey == 'ztf' %}<span id="lastmag-{{ oid }}" hx-swap-oob="true">{% if m and m.get('last_mag') is not none %}{{ "%.2f"|format(m['last_mag']) }}{% if m.get('last_band') %} {{ m['last_band'] }}{% endif %}{% else %}—{% endif %}</span>{% endif %}
 {% endfor %}
