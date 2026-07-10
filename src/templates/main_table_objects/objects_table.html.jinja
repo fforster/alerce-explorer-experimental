@@ -132,12 +132,12 @@
                 title="Modified Julian Date of the first detection.">First MJD</th>
             <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
                 title="Modified Julian Date of the most recent detection.">Last MJD</th>
-            {# Two peak magnitudes: difference (transient-relevant) and total /
-               apparent (star-relevant). Filled out-of-band by #magstats-loader. #}
+            {# Difference peak (transient-relevant) and mean total / apparent
+               brightness (star-relevant). Filled out-of-band by #magstats-loader. #}
             <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
                 title="Brightest difference-image magnitude across bands (band shown beside the value) — the relevant peak for transients. ZTF: magmin. LSST: from the peak difference PSF flux.">Peak diff mag</th>
             <th class="tw-px-3 tw-py-2 col-mobile-hide tw-cursor-help"
-                title="Brightest total (apparent) magnitude across bands (band shown beside the value) — the relevant peak for stars and variables. ZTF: magmin_corr (blank if the object is uncorrected). LSST: from the mean science flux (no per-band science max is stored).">Peak tot mag</th>
+                title="Mean total (apparent) magnitude in the brightest band (band shown beside the value) — the relevant brightness for stars and variables. ZTF: magmean_corr (blank if the object is uncorrected). LSST: from the mean science flux.">Mean tot mag</th>
           </tr>
         </thead>
         <tbody>
@@ -171,7 +171,7 @@
             </td>
             {# Filled out-of-band by #magstats-loader → /htmx/list_magstats (one bulk TAP query per page). #}
             <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="peakdiff-{{ obj.get('oid', '') }}">…</span></td>
-            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="peaktot-{{ obj.get('oid', '') }}">…</span></td>
+            <td class="tw-px-3 tw-py-2 mono col-mobile-hide"><span id="meantot-{{ obj.get('oid', '') }}">…</span></td>
           </tr>
         {% endfor %}
         </tbody>

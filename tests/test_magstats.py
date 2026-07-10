@@ -21,7 +21,7 @@ def _run(coro):
 def test_build_adql_ztf_uses_magstat_fid_and_quotes_oids():
     adql = magstats._build_adql(["ZTF21abmznop", "ZTF17aabopdz"], "ztf")
     assert "FROM ztf.magstat" in adql
-    assert "oid,fid,magmin,magmin_corr" in adql
+    assert "oid,fid,magmin,magmean_corr" in adql
     assert "'ZTF21abmznop'" in adql and "'ZTF17aabopdz'" in adql
     # Not the internal-integer-oid table.
     assert "alerce_tap.magstat" not in adql
@@ -46,26 +46,26 @@ def test_build_adql_empty_oids_short_circuits():
 # --- ZTF reduction --------------------------------------------------------
 
 
-def test_reduce_ztf_peak_diff_and_total_are_brightest_per_kind():
+def test_reduce_ztf_peak_diff_and_mean_total_are_brightest_per_kind():
     # Verified real shape for ZTF17aabopdz: diff magmin g=18.64 r=18.37,
-    # corrected magmin_corr g=17.15 r=16.63 → brightest diff=18.37 r, tot=16.63 r.
+    # mean-corr magmean_corr g=17.43 r=16.92 → brightest diff=18.37 r, tot=16.92 r.
     rows = [
-        {"oid": "ZTF17aabopdz", "fid": 1, "magmin": 18.6413, "magmin_corr": 17.145018},
-        {"oid": "ZTF17aabopdz", "fid": 2, "magmin": 18.36902, "magmin_corr": 16.62895},
+        {"oid": "ZTF17aabopdz", "fid": 1, "magmin": 18.6413, "magmean_corr": 17.431175},
+        {"oid": "ZTF17aabopdz", "fid": 2, "magmin": 18.36902, "magmean_corr": 16.917803},
     ]
     out = magstats._reduce_ztf(rows)
     m = out["ZTF17aabopdz"]
     assert m["peak_diff_mag"] == 18.36902 and m["peak_diff_band"] == "r"
-    assert m["peak_tot_mag"] == 16.62895 and m["peak_tot_band"] == "r"
+    assert m["mean_tot_mag"] == 16.917803 and m["mean_tot_band"] == "r"
 
 
 def test_reduce_ztf_total_none_when_uncorrected():
-    # corrected=False objects have magmin_corr null → total mag absent.
-    rows = [{"oid": "ZTF21abmznop", "fid": 2, "magmin": 19.02663, "magmin_corr": None}]
+    # corrected=False objects have magmean_corr null → total mag absent.
+    rows = [{"oid": "ZTF21abmznop", "fid": 2, "magmin": 19.02663, "magmean_corr": None}]
     out = magstats._reduce_ztf(rows)
     m = out["ZTF21abmznop"]
     assert m["peak_diff_mag"] == 19.02663 and m["peak_diff_band"] == "r"
-    assert m["peak_tot_mag"] is None and m["peak_tot_band"] is None
+    assert m["mean_tot_mag"] is None and m["mean_tot_band"] is None
 
 
 # --- LSST reduction -------------------------------------------------------
@@ -86,8 +86,8 @@ def test_reduce_lsst_diff_from_psffluxmax_total_from_sciencefluxmean():
     m = out["313897383716978699"]
     assert math.isclose(m["peak_diff_mag"], magstats.AB_ZP_NJY - 2.5 * math.log10(455.89905))
     assert m["peak_diff_band"] == "g"
-    assert math.isclose(m["peak_tot_mag"], magstats.AB_ZP_NJY - 2.5 * math.log10(309.02106))
-    assert m["peak_tot_band"] == "g"
+    assert math.isclose(m["mean_tot_mag"], magstats.AB_ZP_NJY - 2.5 * math.log10(309.02106))
+    assert m["mean_tot_band"] == "g"
 
 
 def test_reduce_lsst_picks_brightest_across_bands_and_rejects_nonpositive():
@@ -103,9 +103,9 @@ def test_reduce_lsst_picks_brightest_across_bands_and_rejects_nonpositive():
     m = out["1"]
     # Diff: 300 (r) brightest. Total: 800 (g) brightest.
     assert m["peak_diff_band"] == "r"
-    assert m["peak_tot_band"] == "g"
+    assert m["mean_tot_band"] == "g"
     assert math.isclose(m["peak_diff_mag"], magstats.AB_ZP_NJY - 2.5 * math.log10(300.0))
-    assert math.isclose(m["peak_tot_mag"], magstats.AB_ZP_NJY - 2.5 * math.log10(800.0))
+    assert math.isclose(m["mean_tot_mag"], magstats.AB_ZP_NJY - 2.5 * math.log10(800.0))
 
 
 def test_reduce_lsst_all_nonpositive_gives_none():
@@ -118,7 +118,7 @@ def test_reduce_lsst_all_nonpositive_gives_none():
              "z_sciencefluxmean": None, "y_sciencefluxmean": None}]
     out = magstats._reduce_lsst(rows)
     assert out["1"]["peak_diff_mag"] is None and out["1"]["peak_diff_band"] is None
-    assert out["1"]["peak_tot_mag"] is None and out["1"]["peak_tot_band"] is None
+    assert out["1"]["mean_tot_mag"] is None and out["1"]["mean_tot_band"] is None
 
 
 # --- TAP body parsing / VOTable-XML guard ---------------------------------
@@ -179,14 +179,14 @@ def test_fetch_bulk_empty_oids_skips_query(monkeypatch):
 def test_fetch_bulk_ztf_reduces(monkeypatch):
     async def _rows(adql):
         return [
-            {"oid": "Z", "fid": 1, "magmin": 20.0, "magmin_corr": 18.0},
-            {"oid": "Z", "fid": 2, "magmin": 19.0, "magmin_corr": 17.5},
+            {"oid": "Z", "fid": 1, "magmin": 20.0, "magmean_corr": 18.0},
+            {"oid": "Z", "fid": 2, "magmin": 19.0, "magmean_corr": 17.5},
         ]
 
     monkeypatch.setattr(magstats, "_tap_query", _rows)
     out = _run(magstats.fetch_magstats_bulk(["Z"], "ztf"))
     assert out["Z"]["peak_diff_mag"] == 19.0 and out["Z"]["peak_diff_band"] == "r"
-    assert out["Z"]["peak_tot_mag"] == 17.5 and out["Z"]["peak_tot_band"] == "r"
+    assert out["Z"]["mean_tot_mag"] == 17.5 and out["Z"]["mean_tot_band"] == "r"
 
 
 def test_fetch_bulk_returns_empty_on_query_error(monkeypatch):

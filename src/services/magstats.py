@@ -1,28 +1,30 @@
-"""Bulk peak-magnitude lookup via the ALeRCE TAP service.
+"""Bulk magnitude lookup via the ALeRCE TAP service.
 
 The object-list and object-info endpoints carry no brightness, so the results
-table's "Peak diff mag" / "Peak tot mag" columns are filled from precomputed
+table's "Peak diff mag" / "Mean tot mag" columns are filled from precomputed
 per-band magnitude statistics served over TAP (IVOA Table Access Protocol) at
 `https://tap.alerce.online/tap/sync`. One bulk ADQL query per page
 (`WHERE oid IN (...)`) covers every visible object — no per-object round trips.
 
-Two peak magnitudes are shown because the relevant one depends on the object:
-for a **transient** the peak of the *difference* light curve matters; for a
-**star / variable** the peak of the *total* (science / apparent) flux matters.
+Two magnitudes are shown because the relevant one depends on the object: for a
+**transient** the peak of the *difference* light curve matters; for a **star /
+variable** the *total* (science / apparent) brightness matters. The total is
+reported as a **mean** (not a peak) so the label is honest on both surveys —
+LSST stores no per-band science maximum, only a mean, so a "peak total" would
+be misleading; ZTF likewise uses its mean corrected magnitude for symmetry.
 
 Per-survey sources (field names verified against the live service):
   ZTF  → `ztf.magstat` (oid = ZTF name string, per-band key `fid` 1=g/2=r/3=i)
-         diff  = `magmin`       (brightest difference magnitude)
-         total = `magmin_corr`  (brightest corrected/apparent magnitude; null
-                                 when `corrected` is false)
+         diff       = `magmin`        (brightest difference magnitude)
+         mean total = `magmean_corr`  (mean corrected/apparent magnitude; null
+                                       when `corrected` is false)
   LSST → `alerce_tap.lsst_dia_object` (oid = 64-bit int)
-         diff  = brightest per-band `{b}_psffluxmax`     (peak difference flux)
-         total = brightest per-band `{b}_sciencefluxmean` (mean science/total
-                 flux — the DIA-object table stores no per-band science *max*,
-                 so LSST "peak total" is the brightest-band mean, not a true
-                 peak; adequate for the near-constant stellar case).
-  Fluxes (nJy) → mag via the AB zero-point (31.4). `alerce_tap.magstat` is NOT
-  used for ZTF: it keys on an internal integer oid that doesn't match ZTF names.
+         diff       = brightest per-band `{b}_psffluxmax`     (peak diff flux)
+         mean total = brightest per-band `{b}_sciencefluxmean` (mean science /
+                                                                total flux)
+  Fluxes (nJy) → mag via the AB zero-point (31.4). Both quantities report the
+  brightest band (with its letter). `alerce_tap.magstat` is NOT used for ZTF:
+  it keys on an internal integer oid that doesn't match ZTF names.
 
 TAP `/sync` returns a VOTable **XML** error document even when `FORMAT=json` is
 requested (malformed query / service error), so parsing never assumes JSON — a
@@ -60,7 +62,7 @@ def _build_adql(oids: list[str], survey: str) -> str:
         # ZTF oids are name strings ('ZTF...') — single-quote each.
         in_list = ", ".join("'{}'".format(o.replace("'", "")) for o in oids)
         return (
-            "SELECT oid,fid,magmin,magmin_corr "
+            "SELECT oid,fid,magmin,magmean_corr "
             "FROM ztf.magstat WHERE oid IN ({})".format(in_list)
         )
     if survey == "lsst":
@@ -139,7 +141,7 @@ def _flux_to_mag(flux: float | None) -> float | None:
 
 
 def _reduce_ztf(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per object: peak diff = min `magmin`; peak total = min `magmin_corr`
+    """Per object: peak diff = min `magmin`; mean total = min `magmean_corr`
     (both brightest-across-bands, each with its band)."""
     by_oid: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -154,19 +156,19 @@ def _reduce_ztf(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             [(r.get("magmin"), ZTF_FID_TO_BAND.get(r.get("fid"))) for r in band_rows]
         )
         tot_mag, tot_band = _brightest_mag(
-            [(r.get("magmin_corr"), ZTF_FID_TO_BAND.get(r.get("fid"))) for r in band_rows]
+            [(r.get("magmean_corr"), ZTF_FID_TO_BAND.get(r.get("fid"))) for r in band_rows]
         )
         out[oid] = {
             "peak_diff_mag": diff_mag,
             "peak_diff_band": diff_band,
-            "peak_tot_mag": tot_mag,
-            "peak_tot_band": tot_band,
+            "mean_tot_mag": tot_mag,
+            "mean_tot_band": tot_band,
         }
     return out
 
 
 def _reduce_lsst(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per object: peak diff = brightest `{b}_psffluxmax`; peak total =
+    """Per object: peak diff = brightest `{b}_psffluxmax`; mean total =
     brightest `{b}_sciencefluxmean` (each converted to a magnitude)."""
     out: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -182,8 +184,8 @@ def _reduce_lsst(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         out[str(oid)] = {
             "peak_diff_mag": diff_mag,
             "peak_diff_band": diff_band,
-            "peak_tot_mag": tot_mag,
-            "peak_tot_band": tot_band,
+            "mean_tot_mag": tot_mag,
+            "mean_tot_band": tot_band,
         }
     return out
 
@@ -191,7 +193,7 @@ def _reduce_lsst(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 async def fetch_magstats_bulk(
     oids: list[str], survey: str
 ) -> dict[str, dict[str, float | str | None]]:
-    """{oid_str: {"peak_diff_mag","peak_diff_band","peak_tot_mag","peak_tot_band"}}
+    """{oid_str: {"peak_diff_mag","peak_diff_band","mean_tot_mag","mean_tot_band"}}
     for the given oids. Any TAP failure (network, timeout, query error) degrades
     to {} so the table's mag cells resolve to "—" rather than erroring."""
     adql = _build_adql(oids, survey)

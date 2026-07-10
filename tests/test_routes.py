@@ -225,12 +225,12 @@ def test_list_objects_renders_row(client, stub_services):
     # Pagination: page 1 → only Next is present.
     assert "Next →" in r.text
     assert "Prev" not in r.text
-    # Two peak-mag columns (difference + total) + placeholder cells + the
-    # deferred loader that fills them out-of-band via one bulk TAP query.
+    # Two magnitude columns (peak difference + mean total) + placeholder cells +
+    # the deferred loader that fills them out-of-band via one bulk TAP query.
     assert ">Peak diff mag<" in r.text
-    assert ">Peak tot mag<" in r.text
+    assert ">Mean tot mag<" in r.text
     assert 'id="peakdiff-LSST-1"' in r.text
-    assert 'id="peaktot-LSST-1"' in r.text
+    assert 'id="meantot-LSST-1"' in r.text
     assert "…" in r.text  # placeholder before the OOB fill lands
     assert 'id="magstats-loader"' in r.text
     assert "/htmx/list_magstats?survey=lsst&oids=LSST-1" in html_lib.unescape(r.text)
@@ -240,14 +240,14 @@ def test_list_objects_renders_row(client, stub_services):
     assert "the relevant peak for transients" in r.text
 
 
-def test_list_objects_ztf_shows_both_peak_mag_columns(client, stub_services):
-    # Both peak-mag columns render for ZTF too (diff + total).
+def test_list_objects_ztf_shows_both_mag_columns(client, stub_services):
+    # Both magnitude columns render for ZTF too (peak diff + mean total).
     r = client.get("/htmx/list_objects?survey=ztf&page=1")
     assert r.status_code == 200
     assert ">Peak diff mag<" in r.text
-    assert ">Peak tot mag<" in r.text
+    assert ">Mean tot mag<" in r.text
     assert 'id="peakdiff-LSST-1"' in r.text  # fixture oid
-    assert 'id="peaktot-LSST-1"' in r.text
+    assert 'id="meantot-LSST-1"' in r.text
 
 
 def test_list_objects_shows_prev_from_page_2(client, stub_services):
@@ -261,10 +261,10 @@ def test_list_magstats_emits_oob_spans(client, monkeypatch):
     async def fake_mags(oids, survey):
         return {
             "ZTFa": {"peak_diff_mag": 18.37, "peak_diff_band": "r",
-                     "peak_tot_mag": 16.63, "peak_tot_band": "r"},
+                     "mean_tot_mag": 16.92, "mean_tot_band": "r"},
             # ZTFb: diff only (uncorrected) → total cell shows "—".
             "ZTFb": {"peak_diff_mag": 19.02, "peak_diff_band": "g",
-                     "peak_tot_mag": None, "peak_tot_band": None},
+                     "mean_tot_mag": None, "mean_tot_band": None},
         }
 
     monkeypatch.setattr(
@@ -275,9 +275,9 @@ def test_list_magstats_emits_oob_spans(client, monkeypatch):
     assert 'id="peakdiff-ZTFa"' in r.text
     assert 'hx-swap-oob="true"' in r.text
     assert "18.37 r" in r.text
-    assert "16.63 r" in r.text
+    assert "16.92 r" in r.text
     # ZTFb has no total mag → em dash in that cell.
-    assert 'id="peaktot-ZTFb"' in r.text
+    assert 'id="meantot-ZTFb"' in r.text
     assert "—" in r.text
 
 

@@ -194,11 +194,12 @@ src/
                              # for api_base/paths/bands/extinction_r/extra_params per survey
     classifiers.py           # tidy_classifiers: dedupe by name, merge class lists, priority-sort
     object_list.py           # build_search_params, shape_response (ZTF field remap to LSST schema)
-    magstats.py              # bulk peak diff/total magnitude for the results table via one TAP
-                             # query per page (tap.alerce.online/tap/sync, plain httpx GET,
-                             # FORMAT=json). ZTF: ztf.magstat (fid; diff=magmin, total=magmin_corr);
+    magstats.py              # bulk peak-diff / mean-total magnitude for the results table via one
+                             # TAP query per page (tap.alerce.online/tap/sync, plain httpx GET,
+                             # FORMAT=json). ZTF: ztf.magstat (fid; diff=magmin, total=magmean_corr);
                              # LSST: alerce_tap.lsst_dia_object (diff={b}_psffluxmax,
-                             # total={b}_sciencefluxmean) → mag via AB ZP 31.4. Guards the
+                             # total={b}_sciencefluxmean) → mag via AB ZP 31.4. Total is a MEAN on
+                             # both surveys (honest — LSST stores no science max). Guards the
                              # VOTable-XML error body TAP returns even under FORMAT=json
     object_info.py           # shape_object_info (ZTF ndet/ncovhist; LSST n_det/n_non_det/n_forced)
     coordinates.py           # ra_to_hms / dec_to_dms / equatorial_to_galactic / equatorial_to_ecliptic
@@ -244,7 +245,7 @@ src/
                              # Peak mag / Last mag cells render as "…" placeholders + a hidden
                              # #magstats-loader (hx-trigger=load) that fetches /htmx/list_magstats
     main_table_objects/magstats_oob.html.jinja    # hx-swap-oob spans that fill the Peak diff mag /
-                             # Peak tot mag cells by id (peakdiff-{oid} / peaktot-{oid}); "—" absent
+                             # Mean tot mag cells by id (peakdiff-{oid} / meantot-{oid}); "—" absent
     basic_information/basicInformationPreview.html.jinja   # populated object info panel:
                              # 2-col layout (RA/Dec/MJDs | counts/flags), inline HMS/Deg toggle +
                              # copy icon (green ✓ feedback) on the RA/Dec rows; Show features +
@@ -374,21 +375,21 @@ tests/                       # pytest; each service file has a matching test fil
   normalizers ported nearly verbatim from the ALeRCE TNS pipeline
   (`../TNS_report/alerce_tns_project/alerce_tns/clients/catalogs.py`). Adds the
   `astroquery` + `pyvo` deps (astropy transitive). Cache is runtime-only.
-- **Peak diff/tot mag columns** — two `col-mobile-hide` columns in the results table filled
-  lazily out-of-band: the table paints with `…` placeholders, then a single hidden
+- **Peak-diff / mean-tot mag columns** — two `col-mobile-hide` columns in the results table
+  filled lazily out-of-band: the table paints with `…` placeholders, then a single hidden
   `#magstats-loader` (`hx-trigger="load"`) fires ONE bulk TAP query per page
   (`WHERE oid IN (...)` against `tap.alerce.online/tap/sync`, plain httpx GET,
   `FORMAT=json`) via `GET /htmx/list_magstats`, whose response is `hx-swap-oob` spans
-  that drop into each row's `peakdiff-{oid}` / `peaktot-{oid}` cell. Two peak magnitudes
-  are shown because the relevant one is object-dependent: the **difference** peak matters
-  for transients, the **total / apparent** peak for stars & variables. `services/magstats.py`
-  builds the ADQL, parses the JSON (guarding the VOTable-XML error body TAP returns even
-  under `FORMAT=json`), and reduces per object (brightest-across-bands, each with its band
-  letter). **ZTF** uses `ztf.magstat` (per-band `fid`; diff = `magmin`, total = `magmin_corr`
-  which is null when `corrected` is false) — NOT `alerce_tap.magstat` (whose integer internal
-  oids don't match ZTF names). **LSST** uses `alerce_tap.lsst_dia_object`: diff = brightest
-  `{b}_psffluxmax`, total = brightest `{b}_sciencefluxmean` → mag via the AB ZP (31.4). NB the
-  DIA-object table stores no per-band science *max*, so LSST "peak total" is the brightest-band
-  mean science flux, not a true peak (fine for the near-constant stellar case). Any TAP failure
-  degrades to `—` cells; both search paths (generic + OID-list) inherit the columns.
+  that drop into each row's `peakdiff-{oid}` / `meantot-{oid}` cell. Two magnitudes are shown
+  because the relevant one is object-dependent: the **difference** peak matters for transients,
+  the **total / apparent** brightness for stars & variables. The total is reported as a **mean**
+  (not a peak) so the label is honest on both surveys — LSST stores no per-band science maximum,
+  only a mean. `services/magstats.py` builds the ADQL, parses the JSON (guarding the VOTable-XML
+  error body TAP returns even under `FORMAT=json`), and reduces per object (brightest-across-bands,
+  each with its band letter). **ZTF** uses `ztf.magstat` (per-band `fid`; diff = `magmin`,
+  mean total = `magmean_corr`, null when `corrected` is false) — NOT `alerce_tap.magstat` (whose
+  integer internal oids don't match ZTF names). **LSST** uses `alerce_tap.lsst_dia_object`: diff =
+  brightest `{b}_psffluxmax`, mean total = brightest `{b}_sciencefluxmean` → mag via the AB ZP
+  (31.4). Any TAP failure degrades to `—` cells; both search paths (generic + OID-list) inherit
+  the columns.
 - **Deferred** — name resolver.
