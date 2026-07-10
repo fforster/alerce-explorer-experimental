@@ -234,6 +234,10 @@ def test_list_objects_renders_row(client, stub_services):
     assert "…" in r.text  # placeholder before the OOB fill lands
     assert 'id="magstats-loader"' in r.text
     assert "/htmx/list_magstats?survey=lsst&oids=LSST-1" in html_lib.unescape(r.text)
+    # Column headers carry hover explanations (native title tooltips).
+    assert 'title="Object identifier (OID)' in r.text
+    assert "tw-cursor-help" in r.text
+    assert "the relevant peak for transients" in r.text
 
 
 def test_list_objects_ztf_shows_both_peak_mag_columns(client, stub_services):
