@@ -59,6 +59,17 @@
     return color + a;
   }
 
+  // ZTF DR marginal-histogram strip (ported from alerce-hunter). When the DR
+  // overlay is on, a vertical strip to the right of the plot shows each DR
+  // band's brightness distribution binned along the Y axis, with ▼/▲ markers
+  // at the band's extremes. The strip re-bins to whatever Y range is on
+  // screen because it lays its bars out through the chart's own Y scale.
+  const DR_HIST_W = 54;        // px reserved for the histogram strip
+  const DR_HIST_GAP = 6;       // px between the plot's right edge and the strip
+  const DR_HIST_BINS = 40;
+  const DR_TRI_W = 7;          // min/max marker triangles, tip on the value
+  const DR_TRI_H = 6;
+
   // Canvas element → Chart instance, so we can destroy before re-initializing.
   const charts = new WeakMap();
 
@@ -227,6 +238,194 @@
         });
         ctx.restore();
       });
+    },
+  };
+
+  // One extreme marker for the DR histogram. `dir` is "down" (body above the
+  // tip) or "up" (body below it); the tip lands exactly on the value's pixel
+  // and the body is drawn away from it, so the marker points *at* the value
+  // from outside the distribution rather than covering it. Skipped when the
+  // extreme is scrolled out of the visible Y range — a clamped marker would
+  // point at a lie.
+  function markExtreme(ctx, yScale, xc, value, dir, color, area, alpha) {
+    if (!isFinite(value)) return;
+    const py = yScale.getPixelForValue(value);
+    if (py < area.top || py > area.bottom) return;
+    const base = dir === "down" ? py - DR_TRI_H : py + DR_TRI_H;
+    ctx.save();
+    // The limit markers fade with the DR overlay too, so the whole strip
+    // (bars + extremes) shares one opacity and reads as a single DR object.
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.moveTo(xc, py); // the tip — on the value
+    ctx.lineTo(xc - DR_TRI_W / 2, base);
+    ctx.lineTo(xc + DR_TRI_W / 2, base);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+    // Hairline outline so a marker sitting on its own dense bars stays legible.
+    ctx.strokeStyle = "rgba(18,18,18,0.9)";
+    ctx.lineWidth = 0.75;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Small canvas tooltip explaining the DR histogram strip, drawn while the
+  // cursor is over it. Fully opaque (independent of the DR fade) and placed to
+  // the *left* of the cursor so it never spills off the canvas's right edge,
+  // where the strip lives. Clamped vertically to the plot area.
+  function drawHistTooltip(ctx, hov, lines, area) {
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.font = "11px sans-serif";
+    const padX = 6, padY = 5, lh = 14;
+    let w = 0;
+    lines.forEach((t) => { w = Math.max(w, ctx.measureText(t).width); });
+    const boxW = w + padX * 2;
+    const boxH = lines.length * lh + padY * 2;
+    let x = hov.x - 10 - boxW;
+    if (x < area.left) x = hov.x + 10; // no room on the left → flip to the right
+    let yTop = Math.max(area.top, Math.min(hov.y - boxH / 2, area.bottom - boxH));
+    const r = 4;
+    ctx.beginPath();
+    ctx.moveTo(x + r, yTop);
+    ctx.arcTo(x + boxW, yTop, x + boxW, yTop + boxH, r);
+    ctx.arcTo(x + boxW, yTop + boxH, x, yTop + boxH, r);
+    ctx.arcTo(x, yTop + boxH, x, yTop, r);
+    ctx.arcTo(x, yTop, x + boxW, yTop, r);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(20,20,20,0.92)";
+    ctx.strokeStyle = "rgba(200,200,200,0.5)";
+    ctx.lineWidth = 1;
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#ededed";
+    ctx.textBaseline = "top";
+    lines.forEach((t, i) => ctx.fillText(t, x + padX, yTop + padY + i * lh));
+    ctx.restore();
+  }
+
+  // Marginal distribution of the ZTF DR points, binned along the Y axis (flux
+  // or mag) and drawn as horizontal bars in a strip to the right of the plot —
+  // one column per DR band, each with ▼/▲ markers at its extremes. Bins are
+  // laid out with the chart's own Y scale, so the histogram stays registered
+  // with the light curve through pan and zoom and re-bins to whatever range is
+  // on screen.
+  //
+  // Source data is the DR datasets already on the chart rather than the raw
+  // bands: their `y` is projected through the same axis/source path as the
+  // points, so the histogram can't disagree with what's plotted, and it
+  // vanishes by itself in Diff mode (where DR yields empty datasets). Hidden
+  // DR bands (toggled off in the legend) drop their column too.
+  const drHistogramPlugin = {
+    id: "drHistogram",
+    // Track the cursor over the strip so afterDatasetsDraw can pop an
+    // explanatory tooltip. Only repaint on an actual enter/leave/move to
+    // avoid churning the chart on every hover event.
+    afterEvent(chart, args) {
+      const opts = chart.options.plugins && chart.options.plugins.drHistogram;
+      if (!opts || !opts.enabled || chart.$lcDrHistHidden) {
+        if (chart.$drHistHover) { chart.$drHistHover = null; args.changed = true; }
+        return;
+      }
+      const e = args.event;
+      const area = chart.chartArea;
+      const stripL = area.right + DR_HIST_GAP;
+      const stripR = stripL + DR_HIST_W;
+      const inside = e.type !== "mouseout"
+        && e.x >= stripL && e.x <= stripR && e.y >= area.top && e.y <= area.bottom;
+      const next = inside ? { x: e.x, y: e.y } : null;
+      const prev = chart.$drHistHover;
+      if (!next && !prev) return;
+      if (next && prev && next.x === prev.x && next.y === prev.y) return;
+      chart.$drHistHover = next;
+      args.changed = true;
+    },
+    afterDatasetsDraw(chart) {
+      const opts = chart.options.plugins && chart.options.plugins.drHistogram;
+      if (!opts || !opts.enabled || chart.$lcDrHistHidden) return;
+      const drSets = chart.data.datasets.filter(
+        (d, i) => d.$kind === "dr" && d.data.length && chart.isDatasetVisible(i),
+      );
+      if (!drSets.length) return;
+
+      const y = chart.scales.y;
+      const area = chart.chartArea;
+      const lo = y.min, hi = y.max;
+      if (!isFinite(lo) || !isFinite(hi) || hi <= lo) return;
+      const step = (hi - lo) / DR_HIST_BINS;
+
+      // Count per band over the visible range only, then normalize each band
+      // to its own peak so every column fills the same width. Bands differ
+      // wildly in epoch count (an i series can be a fifth of r), so a shared
+      // count scale would flatten the sparse bands into an unreadable sliver
+      // — the shapes are what's being compared here, not the totals.
+      const cols = drSets.map((ds) => {
+        const counts = new Array(DR_HIST_BINS).fill(0);
+        // Extremes are over the whole series, not just the visible bins, so
+        // the markers keep pointing at the band's real limits under zoom.
+        let mn = Infinity, mx = -Infinity;
+        ds.data.forEach((p) => {
+          if (!isFinite(p.y)) return;
+          if (p.y < mn) mn = p.y;
+          if (p.y > mx) mx = p.y;
+          const idx = Math.floor((p.y - lo) / step);
+          if (idx >= 0 && idx < DR_HIST_BINS) counts[idx] += 1;
+        });
+        return { counts, peak: Math.max(...counts), band: ds.$band, min: mn, max: mx };
+      });
+
+      const colW = DR_HIST_W / cols.length;
+      const ctx = chart.ctx;
+      // Bars carry the same opacity as the DR points themselves (the Alpha
+      // slider), so the strip reads as "these are the DR data" and fades in
+      // lockstep with the overlay rather than floating as an opaque legend.
+      const drAlpha = (typeof chart.$lcDrAlpha === "number" && isFinite(chart.$lcDrAlpha))
+        ? chart.$lcDrAlpha : 0.10;
+      ctx.save();
+      cols.forEach((col, ci) => {
+        const x0 = area.right + DR_HIST_GAP + ci * colW;
+        ctx.fillStyle = withAlpha(BAND_COLORS[col.band] || BAND_COLORS.unknown, drAlpha);
+        col.counts.forEach((n, i) => {
+          if (!n || !col.peak) return;
+          const pA = y.getPixelForValue(lo + i * step);
+          const pB = y.getPixelForValue(lo + (i + 1) * step);
+          const top = Math.min(pA, pB);
+          // Leave a hairline between bins so dense bars don't read as a block.
+          const h = Math.max(1, Math.abs(pB - pA) - 0.5);
+          ctx.fillRect(x0, top, (n / col.peak) * (colW - 2), h);
+        });
+        // Baseline each column grows from — without it a lone short bar is
+        // hard to place against its band.
+        ctx.fillStyle = "rgba(110,110,110,0.5)";
+        ctx.fillRect(x0, area.top, 1, area.bottom - area.top);
+
+        // Extreme markers, tip on the value. Direction follows the *screen*
+        // side the extreme lands on, not the number: the mag axis is reversed,
+        // so a band's max mag sits at the bottom of the plot and its marker
+        // has to point up at it, the mirror of flux mode. Keyed off the y
+        // scale's own `reverse` so the two can't drift apart.
+        const solid = BAND_COLORS[col.band] || BAND_COLORS.unknown;
+        const xc = x0 + (colW - 2) / 2;
+        const flipped = !!y.options.reverse;
+        markExtreme(ctx, y, xc, col.max, flipped ? "up" : "down", solid, area, drAlpha);
+        markExtreme(ctx, y, xc, col.min, flipped ? "down" : "up", solid, area, drAlpha);
+      });
+
+      // Hover explanation: which strip this is (flux vs mag follows the axis),
+      // the band under the cursor, and what the ▲▼ markers mean.
+      const hov = chart.$drHistHover;
+      if (hov) {
+        const unit = y.options.reverse ? "magnitude" : "flux";
+        const ci = Math.floor((hov.x - (area.right + DR_HIST_GAP)) / colW);
+        const band = (ci >= 0 && ci < cols.length) ? cols[ci].band : null;
+        const lines = [
+          `ZTF DR ${unit} histogram`,
+          band ? `${band} band · ▲▼ mark limits` : "▲▼ mark per-band limits",
+        ];
+        drawHistTooltip(ctx, hov, lines, area);
+      }
+      ctx.restore();
     },
   };
 
@@ -1217,6 +1416,20 @@
       y.title.text = `${absPrefix}Flux (nJy${at10pc}, ${sciLabel}${deredSuffix})`;
       y.reverse = false;
     }
+    // DR histogram strip: on only when DR datasets actually carry points (they
+    // yield nothing in Diff mode, where science-only DR flux is null). The
+    // reserved right padding tracks the same flag so the plot reclaims the
+    // width the moment DR is off / filtered out.
+    const hasDrPoints = chart.data.datasets.some(
+      (d) => d.$kind === "dr" && d.data.length,
+    );
+    chart.options.plugins.drHistogram = { enabled: hasDrPoints };
+    // The strip only claims its right padding when it's actually drawn — off
+    // in Diff mode (no DR points) or when the user hid it from the legend.
+    const stripActive = hasDrPoints && !chart.$lcDrHistHidden;
+    chart.options.layout = {
+      padding: { right: stripActive ? DR_HIST_W + DR_HIST_GAP + 2 : 0 },
+    };
     chart.update();
     // Notify the color-evolution panel: a re-projection can change the GP
     // variant (Diff↔Sci, fold) or the dereddening shift the panel applies.
@@ -1261,10 +1474,13 @@
     const chart = new Chart(canvas.getContext("2d"), {
       type: "scatter",
       data: { datasets: buildDatasets(bands, fpBands, [], initialAxisMode, initialSourceMode, null, null, null, null, data.survey || "") },
-      plugins: [errorBarPlugin],
+      plugins: [errorBarPlugin, drHistogramPlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        // Right padding reserves room for the DR histogram strip; applyModes
+        // toggles it on/off with the DR overlay. Starts collapsed (DR off).
+        layout: { padding: { right: 0 } },
         // Toggles re-project every point (flux↔mag, app↔abs, obs↔der); the
         // tween between old and new positions muddles the comparison, so
         // skip it entirely and let each state snap in.
@@ -1392,6 +1608,9 @@
           },
         },
         plugins: {
+          // DR marginal-histogram strip; enabled by applyModes when the DR
+          // overlay is on and has projectable (sci-mode) points.
+          drHistogram: { enabled: false },
           legend: {
             position: "top",
             // usePointStyle mirrors each dataset's actual marker into the
@@ -1407,6 +1626,22 @@
             // like Chart.js's default.
             onClick: (_e, legendItem, legend) => {
               const ci = legend.chart;
+              // DR histogram-strip toggle: a synthetic legend row (no dataset)
+              // that shows/hides the marginal strip without touching the DR
+              // points themselves. Reclaim / re-reserve the right padding so
+              // the plot width tracks the strip's presence.
+              if (legendItem.$histToggle) {
+                ci.$lcDrHistHidden = !ci.$lcDrHistHidden;
+                const hasDrPoints = ci.data.datasets.some(
+                  (d) => d.$kind === "dr" && d.data.length,
+                );
+                const stripActive = hasDrPoints && !ci.$lcDrHistHidden;
+                ci.options.layout = {
+                  padding: { right: stripActive ? DR_HIST_W + DR_HIST_GAP + 2 : 0 },
+                };
+                ci.update();
+                return;
+              }
               // Group header: toggle every dataset in that (survey, kind)
               // bucket as a unit. "Hide all" wins when any member is
               // currently visible (one click ⇒ everything off); "show all"
@@ -1425,10 +1660,26 @@
                     return i;
                   })
                   .filter((i) => i >= 0);
-                if (!indices.length) return;
-                const anyVisible = indices.some((i) => ci.isDatasetVisible(i));
+                // The DR group also owns the histogram strip (not a dataset).
+                // Fold its state into "anyVisible" so one click on "ZTF DR:"
+                // takes the whole group — points *and* strip — down together.
+                const isDrGroup = survey === "ztf" && kind === "dr";
+                const histShown = isDrGroup && !ci.$lcDrHistHidden
+                  && ci.data.datasets.some((d) => d.$kind === "dr" && d.data.length);
+                if (!indices.length && !isDrGroup) return;
+                const anyVisible = indices.some((i) => ci.isDatasetVisible(i)) || histShown;
                 for (const i of indices) {
                   ci.getDatasetMeta(i).hidden = anyVisible ? true : false;
+                }
+                if (isDrGroup) {
+                  ci.$lcDrHistHidden = anyVisible;
+                  const hasDrPoints = ci.data.datasets.some(
+                    (d) => d.$kind === "dr" && d.data.length,
+                  );
+                  const stripActive = hasDrPoints && !ci.$lcDrHistHidden;
+                  ci.options.layout = {
+                    padding: { right: stripActive ? DR_HIST_W + DR_HIST_GAP + 2 : 0 },
+                  };
                 }
                 ci.update();
                 emitVisibilityChanged(ci);
@@ -1556,14 +1807,38 @@
                   for (const k of kinds) {
                     const items = byKind.get(k);
                     if (!items || !items.length) continue;
+                    // Append a "Histogram" row inside the ZTF DR group so it
+                    // toggles the marginal strip. It lives within the group,
+                    // so clicking the "ZTF DR:" header takes it down with the
+                    // DR points. Only meaningful when DR points are plotted
+                    // (the strip can't draw otherwise).
+                    if (s === "ztf" && k === "dr") {
+                      const histHidden = !!ch.$lcDrHistHidden;
+                      items.push({
+                        text: "Histogram",
+                        fillStyle: histHidden ? DIMMED : "rgba(170,170,170,0.75)",
+                        strokeStyle: histHidden ? DIMMED : "rgba(170,170,170,0.9)",
+                        lineWidth: 1,
+                        pointStyle: "rect",
+                        fontColor: histHidden ? DIMMED : TEXT,
+                        hidden: false,
+                        $histToggle: true,
+                        // No datasetIndex — onClick routes on $histToggle.
+                      });
+                    }
                     if (s) {
                       // Header reflects group-visibility via the same dim
                       // color the disabled band entries use; clicking it
                       // toggles every member of the (survey, kind) bucket.
                       // $survey + $kind together are the key onClick uses
-                      // to look up the right datasets.
-                      const allHidden = items.every(
-                        (_it, idx) => !ch.isDatasetVisible(items[idx].datasetIndex),
+                      // to look up the right datasets. The DR group's
+                      // "Histogram" row has no datasetIndex, so fold its own
+                      // hidden state into the all-hidden test rather than
+                      // asking isDatasetVisible about a missing index.
+                      const allHidden = items.every((it) =>
+                        it.$histToggle
+                          ? !!ch.$lcDrHistHidden
+                          : !ch.isDatasetVisible(it.datasetIndex),
                       );
                       const headerLabel = KIND_LABEL[k] || k;
                       // Overlay models (GP / SPM / FLEET / TDE) aren't tied to a
@@ -1688,6 +1963,7 @@
     chart.$lcDrBands = [];
     chart.$lcDrShown = false;
     chart.$lcDrLoaded = false;
+    chart.$lcDrHistHidden = false; // DR histogram strip visible when DR is on
     chart.$lcDrAlpha = restored.drAlpha ?? LC_DEFAULTS.drAlpha;
     // Stash the restored-DR-intent so bindDrButton can flip it on after the
     // async fetch lands. We don't flip it here because the fetch hasn't run.
