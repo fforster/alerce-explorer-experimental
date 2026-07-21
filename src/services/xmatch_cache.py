@@ -78,12 +78,18 @@ async def get(oid: str) -> dict | None:
         return _fresh(str(oid))
 
 
-async def prefetch(positions: list[tuple[str, float, float]]) -> int:
+async def prefetch(
+    positions: list[tuple[str, float, float]],
+    progress_key: str | None = None,
+) -> int:
     """Warm the cache for *positions*. Skips oids already fresh or in-flight.
 
     Returns the number of oids newly fetched (0 if everything was cached). Every
     claimed oid is written — matched ones with their record, unmatched ones with
     EMPTY_RECORD — so they won't be re-queried until TTL expiry.
+
+    *progress_key* (the single-object detail path) is passed through to
+    ``xmatch.bulk_all`` so per-catalog progress is reported as it runs.
     """
     if not positions:
         return 0
@@ -104,7 +110,7 @@ async def prefetch(positions: list[tuple[str, float, float]]) -> int:
 
     try:
         try:
-            records = await xmatch.bulk_all(claimed)
+            records = await xmatch.bulk_all(claimed, progress_key=progress_key)
         except Exception:                # bulk_all already guards per-catalog
             log.exception("prefetch bulk_all failed")
             records = {}
@@ -133,12 +139,18 @@ async def prefetch(positions: list[tuple[str, float, float]]) -> int:
                 ev.set()
 
 
-async def get_or_compute(oid: str, ra: float | None, dec: float | None) -> dict:
+async def get_or_compute(
+    oid: str, ra: float | None, dec: float | None,
+    progress_key: str | None = None,
+) -> dict:
     """Cache-first lookup for a single object (detail view / overlay).
 
     Returns the cached record; on a miss it computes one via bulk_all (waiting on
     an in-flight prefetch for the same oid rather than firing a duplicate). Falls
     back to EMPTY_RECORD when coordinates are missing or the fetch fails.
+
+    *progress_key* (usually the oid) enables the per-catalog progress checklist
+    for the interactive detail path.
     """
     oid = str(oid)
     async with _lock:
@@ -157,5 +169,5 @@ async def get_or_compute(oid: str, ra: float | None, dec: float | None) -> dict:
     if ra is None or dec is None:
         return EMPTY_RECORD
     # Compute via the same prefetch path so a concurrent detail open coalesces.
-    await prefetch([(oid, ra, dec)])
+    await prefetch([(oid, ra, dec)], progress_key=progress_key)
     return await get(oid) or EMPTY_RECORD

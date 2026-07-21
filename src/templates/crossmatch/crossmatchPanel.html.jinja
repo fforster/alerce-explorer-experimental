@@ -15,89 +15,19 @@
   same list.
 #}
 {#
-  Bulk CDS/NED crossmatch (services/xmatch.py), folded in above catsHTM. `xm`
-  shape: {matches:[{cat_name,category,name,type,z,sep,fields:[{label,value,unit}],
-  color,signals}], hints:{stellar,agn,host}, best_z, simbad_type, counts, overlay}.
-  Matches are pre-ordered stellar → AGN → host (nearest first), since a tight-
-  radius star/AGN counterpart is the strongest classifier. Served from the
-  page-load prefetch cache, so this is usually instant.
+  CDS/NED crossmatch section (services/xmatch.py), folded in above catsHTM.
+  Served from the page-load prefetch cache when warm (rendered inline); on a
+  cold open the route hands back a polling placeholder here instead, so the
+  panel never blocks on the ~20-catalog batch. Both variants live in
+  crossmatch/xmatchSection.html.jinja + xmatchProgress.html.jinja.
 #}
-{# Button to plot ALL CDS/NED matches (not just the z-filtered sky overlay) plus
-   all catsHTM objects in the Aladin panel. Toggles; its data payload is built by
-   the route. Shown whenever there's anything to plot. #}
-{% set aladin_markers = aladin_markers | default({"cds": [], "catshtm": []}) %}
-{% set has_markers = (aladin_markers.cds | length) > 0 or (aladin_markers.catshtm | length) > 0 %}
-{% if has_markers %}
-  <div class="tw-mb-3">
-    <button type="button"
-      class="tw-px-2 tw-py-1 tw-text-xs tw-text-accent hover:tw-text-text-primary tw-border tw-border-border tw-rounded"
-      data-aladin-markers='{{ aladin_markers | tojson_compact }}'
-      onclick="(function(b){ if(!window.showAllCrossmatchInAladin)return; var s=window.showAllCrossmatchInAladin(JSON.parse(b.getAttribute('data-aladin-markers')||'{}')); if(s!==null&&s!==undefined){ b.textContent = s ? 'Hide all from sky view' : 'Show all in sky view'; } })(this)"
-      title="Plot every CDS/NED crossmatch and all catsHTM objects as markers in the Aladin sky view">
-      Show all in sky view ({{ (aladin_markers.cds | length) + (aladin_markers.catshtm | length) }})
-    </button>
-  </div>
-{% endif %}
-{% if xm and xm.matches %}
-  <div class="tw-mb-4">
-    <div class="tw-text-xs tw-font-semibold tw-text-accent tw-mb-2">
-      Crossmatch &mdash; CDS / NED
-    </div>
-    {# Classification hint banner: what kind of object this likely is. #}
-    {% if xm.hints and (xm.hints.stellar or xm.hints.agn or xm.hints.host) %}
-      <div class="tw-mb-3 tw-flex tw-flex-col tw-gap-1 tw-text-[11px]">
-        {% for cat, color in [("stellar", xmatch_colors["stellar"]), ("agn", xmatch_colors["agn"]), ("host", xmatch_colors["host"])] %}
-          {% if xm.hints[cat] %}
-            <div class="tw-flex tw-items-center tw-gap-1.5">
-              <span class="tw-inline-block tw-rounded-full" style="width:8px;height:8px;background:{{ color }}"></span>
-              <span class="tw-text-text-primary">{{ xm.hints[cat] }}</span>
-            </div>
-          {% endif %}
-        {% endfor %}
-      </div>
-    {% endif %}
-    {# Compact table of matches, ordered stars → AGN → host (nearest first):
-       distance · survey (colour-coded dot) · ID · properties. Layout is in raw
-       CSS below — the Tailwind spacing utilities (tw-pr-*, tw-max-w-[…]) are
-       purged from the prebuilt main.css and silently do nothing, so the wide
-       inter-column gutter is set here directly. #}
-    <style>
-      #crossmatch-body .xm-table { border-collapse: collapse; font-size: 11px; line-height: 1.3; }
-      #crossmatch-body .xm-table th { font-size: 9px; text-transform: uppercase; font-weight: 600; text-align: left; }
-      #crossmatch-body .xm-table th,
-      #crossmatch-body .xm-table td { padding: 1px 3rem 1px 0; vertical-align: baseline; white-space: nowrap; }
-      #crossmatch-body .xm-table th:last-child,
-      #crossmatch-body .xm-table td:last-child { padding-right: 0; }
-      #crossmatch-body .xm-table .xm-sep { text-align: right; }
-      /* IDs shown in full — the column widens to fit the longest one; the
-         wrapping div is overflow-x:auto so a very wide table scrolls. */
-    </style>
-    <div class="tw-overflow-x-auto">
-      <table class="xm-table mono">
-        <thead>
-          <tr class="tw-text-text-muted">
-            <th class="xm-sep">Sep&nbsp;[&Prime;]</th>
-            <th>Survey</th>
-            <th>ID</th>
-            <th>Properties</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for m in xm.matches %}
-            {%- set props %}{% for f in m.fields %}{{ f.label }}&nbsp;{% if f.value is number %}{{ "%.4g"|format(f.value) }}{% else %}{{ f.value }}{% endif %}{% if f.unit %}&nbsp;{{ f.unit }}{% endif %}{% if not loop.last %} &middot; {% endif %}{% endfor %}{% endset -%}
-            <tr>
-              <td class="xm-sep tw-text-text-secondary">{% if m.sep is not none %}{{ "%.2f"|format(m.sep) }}{% else %}&mdash;{% endif %}</td>
-              <td><span class="tw-inline-block tw-rounded-full tw-mr-1 tw-align-middle" style="width:7px;height:7px;background:{{ m.color }}"></span><span class="tw-text-text-primary">{{ m.cat_name }}</span></td>
-              <td class="xm-id tw-text-text-primary">{{ m.name if m.name else "&mdash;"|safe }}</td>
-              <td class="tw-text-text-secondary">{{ props|safe }}</td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <div class="tw-mt-3 tw-mb-1 tw-text-xs tw-font-semibold tw-text-accent">catsHTM</div>
-  </div>
-{% endif %}
+<div id="xmatch-section-{{ oid }}">
+  {% if xmatch_ready %}
+    {% include "crossmatch/xmatchSection.html.jinja" %}
+  {% elif xmatch_poll %}
+    {% include "crossmatch/xmatchProgress.html.jinja" %}
+  {% endif %}
+</div>
 {% if not ctx.available %}
   <div class="tw-text-text-muted tw-py-3">No coordinates available for crossmatch.</div>
 {% elif ctx.error %}

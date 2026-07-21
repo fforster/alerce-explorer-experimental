@@ -1,0 +1,33 @@
+{#
+  Bulk CDS/NED crossmatch section (services/xmatch.py). Rendered inline when the
+  record is cached (warm prefetch), or swapped in by /htmx/crossmatch_progress
+  once a cold compute finishes. `xm` shape:
+    {matches:[{cat_name,category,name,type,z,sep,fields:[{label,value,unit}],
+    color,signals}], hints:{stellar,agn,host}, best_z, simbad_type, counts, overlay}.
+  Matches are pre-ordered stellar → AGN → host (nearest first). `xm_failures` is
+  an optional [{name, reason}] list of catalogs that didn't answer.
+#}
+{% include "crossmatch/_xmatchAladinButton.html.jinja" %}
+{% if xm and xm.matches %}
+  <div class="tw-mb-4">
+    <div class="tw-text-xs tw-font-semibold tw-text-accent tw-mb-2">
+      Crossmatch &mdash; CDS / NED
+    </div>
+    {% include "crossmatch/_xmatchMatches.html.jinja" %}
+  </div>
+{% elif xm is not none %}
+  {# Record exists but no CDS/NED matches — say so, so the section doesn't just
+     vanish and read as "still loading". #}
+  <div class="tw-mb-3 tw-text-text-muted tw-text-[11px]">No CDS / NED crossmatch within the search radius.</div>
+{% endif %}
+{# Failure note: which catalogs didn't answer and why, so a sparse/empty result
+   is distinguishable from "the query broke". #}
+{% if xm_failures %}
+  <div class="tw-mb-3 tw-text-[11px] tw-text-amber-400/90">
+    <span class="tw-font-semibold">{{ xm_failures | length }} catalog{{ "" if xm_failures | length == 1 else "s" }} unavailable:</span>
+    {% for f in xm_failures %}{{ f.name }} ({{ f.reason }}){% if not loop.last %}, {% endif %}{% endfor %}
+  </div>
+{% endif %}
+{% if xm and xm.matches %}
+  <div class="tw-mt-1 tw-mb-1 tw-text-xs tw-font-semibold tw-text-accent">catsHTM</div>
+{% endif %}

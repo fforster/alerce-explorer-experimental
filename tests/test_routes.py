@@ -27,6 +27,18 @@ def _stub_tns(monkeypatch):
     monkeypatch.setattr("src.routes.htmx.tns_service.get_tns_info", no_match)
 
 
+@pytest.fixture(autouse=True)
+def _offline_xmatch(monkeypatch):
+    """Keep the crossmatch route offline: default every test to a warm (empty)
+    xmatch cache so /htmx/crossmatch renders the CDS/NED section inline instead
+    of launching the live ~20-catalog background compute the cold path polls."""
+    from src.services import xmatch_cache
+
+    async def _empty_get(oid):
+        return xmatch_cache.EMPTY_RECORD
+    monkeypatch.setattr("src.routes.htmx.xmatch_cache_service.get", _empty_get)
+
+
 @pytest.fixture
 def stub_services(monkeypatch):
     async def fake_classifiers(survey):

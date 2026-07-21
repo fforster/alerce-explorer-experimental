@@ -222,6 +222,10 @@ def test_bulk_all_regroups_and_tolerates_failure(monkeypatch):
     monkeypatch.setattr(xmatch, "_bulk_xmatch_sync", fake_simbad)
     monkeypatch.setattr(xmatch, "_bulk_xmatch_vizier_sync", fake_vizier)
     monkeypatch.setattr(xmatch, "_bulk_ned_tap_sync", boom_ned)
+    # Stub the remaining cores so bulk_all stays fully offline (the USECASE
+    # catalogs + HECATE TAP would otherwise hit the live network here).
+    monkeypatch.setattr(xmatch, "_bulk_generic_sync", lambda k, positions: {})
+    monkeypatch.setattr(xmatch, "_bulk_hecate_tap_sync", lambda positions: {})
 
     out = run(xmatch.bulk_all([("A", 1.0, 2.0)]))
     assert set(out) == {"A"}                      # NED failure didn't sink the batch
@@ -233,10 +237,35 @@ def test_bulk_all_empty_positions():
     assert run(xmatch.bulk_all([])) == {}
 
 
+def test_bulk_all_failure_reason_names_the_source(monkeypatch):
+    """A catalog failure records which upstream service it failed at, so the
+    progress panel can say e.g. 'CDS XMatch · timed out' vs 'NED TAP · …'."""
+    from src.services import xmatch_progress
+
+    def boom_xmatch(cat, positions):
+        raise TimeoutError("slow")             # CDS XMatch path
+
+    def boom_ned(positions):
+        raise xmatch.CatalogQueryError("NED TAP unreachable: 503")
+
+    monkeypatch.setattr(xmatch, "_bulk_xmatch_sync", boom_xmatch)
+    monkeypatch.setattr(xmatch, "_bulk_ned_tap_sync", boom_ned)
+    monkeypatch.setattr(xmatch, "_bulk_xmatch_vizier_sync", lambda cid, positions: {})
+    monkeypatch.setattr(xmatch, "_bulk_generic_sync", lambda k, positions: {})
+    monkeypatch.setattr(xmatch, "_bulk_hecate_tap_sync", lambda positions: {})
+
+    xmatch_progress.start("K", xmatch.catalog_labels())
+    run(xmatch.bulk_all([("K", 1.0, 2.0)], progress_key="K"))
+    failed = {f["name"]: f["reason"] for f in xmatch_progress.get("K")["failed"]}
+    assert failed["Simbad"] == "CDS XMatch · timed out"
+    assert failed["NED"] == "NED TAP · unreachable"
+    xmatch_progress.clear()
+
+
 # --- cache ------------------------------------------------------------------
 
 def _fake_bulk(records):
-    async def _inner(positions):
+    async def _inner(positions, progress_key=None):
         return {oid: records[oid] for oid, _, _ in positions if oid in records}
     return _inner
 
@@ -267,7 +296,7 @@ def test_get_or_compute_uses_cache(monkeypatch):
     rec = {"by_catalog": {}, "best_z": None, "simbad_type": None, "counts": {"X": 1}, "overlay": []}
     calls = {"n": 0}
 
-    async def counting_bulk(positions):
+    async def counting_bulk(positions, progress_key=None):
         calls["n"] += 1
         return {oid: rec for oid, _, _ in positions}
 
@@ -288,7 +317,7 @@ def test_prefetch_cancellation_releases_inflight(monkeypatch):
     in-flight markers. Otherwise the oids are stranded: every later prefetch
     skips them and get_or_compute waiters block, so they'd return EMPTY_RECORD
     forever. Guards the `finally` in prefetch()."""
-    async def cancelled_bulk(positions):
+    async def cancelled_bulk(positions, progress_key=None):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(xmatch, "bulk_all", cancelled_bulk)
@@ -354,19 +383,23 @@ def test_crossmatch_route_folds_xmatch_summary(client, monkeypatch):
         return {"available": True, "ra": ra, "dec": dec, "radius": radius,
                 "catalogs": [], "n_catalogs": 0, "error": None}
 
-    async def fake_xm(oid, ra, dec):
-        return xmatch._build_object_record({
-            "Gaia DR3": [{"cat_name": "Gaia DR3", "category": "stellar", "ra": 10.0, "dec": 20.0,
-                          "sep": 0.5, "name": "Gaia X", "type": "star", "z": None,
-                          "fields": [{"label": "Plx", "value": 5.0, "unit": "mas"}],
-                          "signals": {"parallax": 5.0, "parallax_snr": 12.0, "dist_pc": 200.0}}],
-            "DESI": [{"cat_name": "DESI", "ra": 10.0, "dec": 20.0, "z": 0.05, "z_err": None,
-                      "type": "GALAXY", "name": "d", "sep": 0.8}],
-        })
+    record = xmatch._build_object_record({
+        "Gaia DR3": [{"cat_name": "Gaia DR3", "category": "stellar", "ra": 10.0, "dec": 20.0,
+                      "sep": 0.5, "name": "Gaia X", "type": "star", "z": None,
+                      "fields": [{"label": "Plx", "value": 5.0, "unit": "mas"}],
+                      "signals": {"parallax": 5.0, "parallax_snr": 12.0, "dist_pc": 200.0}}],
+        "DESI": [{"cat_name": "DESI", "ra": 10.0, "dec": 20.0, "z": 0.05, "z_err": None,
+                  "type": "GALAXY", "name": "d", "sep": 0.8}],
+    })
+
+    # Warm cache → the route renders the CDS/NED section inline (no background
+    # compute / polling). A cold miss is covered by the progress-poll tests.
+    async def fake_get(oid):
+        return record
 
     monkeypatch.setattr("src.routes.htmx.object_info_service.get_object_info", fake_info)
     monkeypatch.setattr("src.routes.htmx.crossmatch_service.get_crossmatch", fake_catshtm)
-    monkeypatch.setattr("src.routes.htmx.xmatch_cache_service.get_or_compute", fake_xm)
+    monkeypatch.setattr("src.routes.htmx.xmatch_cache_service.get", fake_get)
 
     resp = client.get("/htmx/crossmatch", params={"oid": "A", "survey_id": "lsst"})
     assert resp.status_code == 200
@@ -375,3 +408,107 @@ def test_crossmatch_route_folds_xmatch_summary(client, monkeypatch):
     assert "Galactic candidate" in html      # stellar hint banner
     assert "Gaia DR3" in html and "DESI" in html   # ordered match column
     assert "Plx" in html                     # catalog-specific field rendered
+
+
+def test_crossmatch_cold_open_polls_progress(client, monkeypatch):
+    """Cold (un-prefetched) open: the CDS/NED section is a polling placeholder
+    (not a blocking wait), and the background compute is launched."""
+    from src.services import xmatch_progress
+
+    async def fake_info(*, survey, oid):
+        return {"ra": 10.0, "dec": 20.0}
+
+    async def fake_catshtm(*, ra, dec, radius=30.0):
+        return {"available": True, "ra": ra, "dec": dec, "radius": radius,
+                "catalogs": [], "n_catalogs": 0, "error": None}
+
+    launched = {}
+
+    async def fake_goc(oid, ra, dec, progress_key=None):
+        launched["args"] = (oid, ra, dec, progress_key)
+
+    monkeypatch.setattr("src.routes.htmx.object_info_service.get_object_info", fake_info)
+    monkeypatch.setattr("src.routes.htmx.crossmatch_service.get_crossmatch", fake_catshtm)
+    monkeypatch.setattr("src.routes.htmx.xmatch_cache_service.get_or_compute", fake_goc)
+
+    resp = client.get("/htmx/crossmatch", params={"oid": "COLD", "survey_id": "lsst"})
+    assert resp.status_code == 200
+    html = resp.text
+    # A self-polling progress element, not a blocking wait or final table.
+    assert 'id="xmatch-progress-COLD"' in html
+    assert "/htmx/crossmatch_progress?oid=COLD" in html
+    assert "Querying catalogs" in html
+    # Compute was kicked off with the progress key = oid.
+    assert launched["args"] == ("COLD", 10.0, 20.0, "COLD")
+    assert xmatch_progress.get("COLD") is not None
+
+
+def test_crossmatch_progress_terminal_renders_failures(client, monkeypatch):
+    """Once the record is cached, the poll returns the terminal section and
+    surfaces which catalogs failed and why."""
+    from src.services import xmatch_progress
+
+    record = xmatch._build_object_record({
+        "DESI": [{"cat_name": "DESI", "ra": 10.0, "dec": 20.0, "z": 0.05, "z_err": None,
+                  "type": "GALAXY", "name": "d", "sep": 0.8}],
+    })
+    xmatch_cache._store("DONE", record)
+    xmatch_progress.start("DONE", ["NED", "DESI"])
+    xmatch_progress.mark_failed("DONE", "NED", "NED TAP · timed out")
+    xmatch_progress.mark_done("DONE", "DESI", 1)
+
+    resp = client.get("/htmx/crossmatch_progress",
+                      params={"oid": "DONE", "survey_id": "lsst"})
+    assert resp.status_code == 200
+    html = resp.text
+    assert "DESI" in html                       # matched row rendered
+    # Failure names the upstream service it failed at.
+    assert "unavailable" in html and "NED" in html and "NED TAP" in html and "timed out" in html
+    # Terminal — no further polling element.
+    assert 'id="xmatch-progress-DONE"' not in html
+    xmatch_progress.clear()
+
+
+def test_crossmatch_progress_shows_partial_table_before_done(client, monkeypatch):
+    """While catalogs are still answering (no cache record yet), the poll renders
+    a partial table from whatever has matched so far, so the user sees results
+    before the slow tail finishes."""
+    from src.services import xmatch_progress
+
+    # In-flight: NED has answered, the rest are still pending; no cache record.
+    xmatch_progress.start("MID", ["NED", "Simbad", "DESI"])
+    xmatch_progress.record_matches("MID", [
+        {"cat_name": "NED", "category": "host", "ra": 10.0, "dec": 20.0,
+         "z": 0.07, "z_err": None, "type": "G", "name": "NED J1", "sep": 1.2},
+    ])
+    xmatch_progress.mark_done("MID", "NED", 1)
+
+    resp = client.get("/htmx/crossmatch_progress",
+                      params={"oid": "MID", "survey_id": "lsst"})
+    assert resp.status_code == 200
+    html = resp.text
+    assert "NED J1" in html                       # partial table row
+    assert "Querying catalogs" in html            # still polling
+    assert 'id="xmatch-progress-MID"' in html      # poll element still present
+    assert "Show all in sky view" in html          # Aladin button shows mid-flight
+    xmatch_progress.clear()
+
+
+def test_crossmatch_progress_keeps_catshtm_markers_in_button(client, monkeypatch):
+    """The 'show all in sky view' button keeps the catsHTM markers through the
+    poll (stashed at start), so it stays visible with catsHTM objects even
+    before any CDS/NED match has arrived."""
+    from src.services import xmatch_progress
+
+    xmatch_progress.start("CAT", ["NED", "Simbad"])
+    xmatch_progress.set_catshtm_markers("CAT", [{"ra": 1.0, "dec": 2.0}, {"ra": 3.0, "dec": 4.0}])
+    # No CDS/NED matches yet, no cache record.
+
+    resp = client.get("/htmx/crossmatch_progress",
+                      params={"oid": "CAT", "survey_id": "lsst"})
+    assert resp.status_code == 200
+    html = resp.text
+    # Button present and its count reflects the 2 catsHTM markers.
+    assert "Show all in sky view (2)" in html
+    assert 'id="xmatch-progress-CAT"' in html       # still polling
+    xmatch_progress.clear()

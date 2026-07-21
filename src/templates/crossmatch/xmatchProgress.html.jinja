@@ -1,0 +1,51 @@
+{#
+  Live CDS/NED crossmatch progress — polled by /htmx/crossmatch_progress on a
+  cold (un-prefetched) detail open. Self-re-polls every ~900 ms via hx-get on
+  this same element (outerHTML swap on itself), until the route returns the
+  terminal xmatchSection instead. `progress` shape (may be None early):
+    {total, pending:[names], done:[{name,matched}], failed:[{name,reason}]}.
+
+  Catalogs that matched show a green ✓ with the match count; failures show an
+  amber ✕ with the reason; the rest are pending (spinner). This is the "what's
+  happening / why is it slow" view for the ~20-catalog batch.
+#}
+{%- set done = (progress.done if progress else []) or [] %}
+{%- set failed = (progress.failed if progress else []) or [] %}
+{%- set pending = (progress.pending if progress else []) or [] %}
+{%- set total = (progress.total if progress else 0) or 0 %}
+{%- set settled = (done | length) + (failed | length) %}
+<div
+  id="xmatch-progress-{{ oid }}"
+  hx-get="{{ API_URL }}/htmx/crossmatch_progress?oid={{ oid }}&survey_id={{ survey_id }}{% if xmatch_ra is not none and xmatch_dec is not none %}&ra={{ xmatch_ra }}&dec={{ xmatch_dec }}{% endif %}"
+  hx-trigger="load delay:900ms"
+  hx-swap="outerHTML"
+  class="tw-mb-4"
+>
+  <div class="tw-text-xs tw-font-semibold tw-text-accent tw-mb-2">Crossmatch &mdash; CDS / NED</div>
+  {# "Show all in sky view" as soon as there are markers — no waiting for the
+     whole batch. Markers are the partial CDS matches so far (built by the
+     route); the button re-renders each poll as more land. #}
+  {% include "crossmatch/_xmatchAladinButton.html.jinja" %}
+  {# Partial table: whatever's matched so far (NED lands first), rendered with
+     the same markup as the final section so it just fills in as catalogs
+     answer. `partial` is None until the first match arrives. #}
+  {% if partial and partial.matches %}
+    {% set xm = partial %}
+    <div class="tw-mb-3">{% include "crossmatch/_xmatchMatches.html.jinja" %}</div>
+  {% endif %}
+  <div class="tw-flex tw-items-center tw-gap-2 tw-text-text-primary tw-text-[11px] tw-mb-2">
+    <span class="tw-inline-block tw-animate-spin" style="width:12px;height:12px;border:2px solid rgba(237,237,237,0.25);border-top-color:#42a5f5;border-radius:9999px;flex-shrink:0"></span>
+    <span>Querying catalogs &mdash; {{ settled }}/{{ total }} done{% if failed %}, {{ failed | length }} unavailable{% endif %}&hellip;</span>
+  </div>
+  <div class="tw-flex tw-flex-wrap tw-gap-x-3 tw-gap-y-0.5 tw-text-[11px]">
+    {%- for d in done %}
+      <span class="tw-text-green-400">&check; {{ d.name }}{% if d.matched %} ({{ d.matched }}){% endif %}</span>
+    {%- endfor %}
+    {%- for f in failed %}
+      <span class="tw-text-amber-400/90" title="{{ f.reason }}">&cross; {{ f.name }} ({{ f.reason }})</span>
+    {%- endfor %}
+    {%- for name in pending %}
+      <span class="tw-text-text-muted">&hellip; {{ name }}</span>
+    {%- endfor %}
+  </div>
+</div>
