@@ -34,6 +34,7 @@ from ..services import stamps as stamps_service
 from ..services import tns as tns_service
 from ..services import xmatch as xmatch_service
 from ..services import xmatch_cache as xmatch_cache_service
+from ..services import xmatch_progress as xmatch_progress_service
 from ..services.survey_config import SC, TAI_MINUS_UTC_SECONDS, known_surveys
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,31 @@ def _xmatch_positions(items: list[dict]) -> list[dict]:
 
 
 templates.env.filters["xmatch_positions"] = _xmatch_positions
+
+# Detached background tasks (e.g. the crossmatch compute the panel polls on).
+# Held in a set so the event loop keeps a strong ref — otherwise create_task's
+# only referent is a local and the task can be GC'd mid-flight.
+_bg_tasks: set = set()
+
+
+def _launch_bg(coro) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+
+def _cds_aladin_markers(record: dict) -> list[dict]:
+    """CDS/NED markers (every match with a position) for the "show all in sky
+    view" button, built from a cached xmatch record."""
+    return [
+        {"ra": m["ra"], "dec": m["dec"], "category": m.get("category"),
+         "color": m.get("color"), "cat_name": m.get("cat_name"),
+         "name": m.get("name"), "z": m.get("z"), "type": m.get("type"),
+         "sep": m.get("sep")}
+        for m in record.get("matches", [])
+        if m.get("ra") is not None and m.get("dec") is not None
+    ]
+
 
 STATIC_DIR = BASE_DIR / "static"
 
@@ -943,37 +969,92 @@ async def crossmatch(request: Request, oid: str, survey_id: str) -> HTMLResponse
         return HTMLResponse(
             f'<div class="tw-text-xs tw-text-red-400 tw-p-4">Upstream error: {e}</div>'
         )
-    ctx = await crossmatch_service.get_crossmatch(
-        ra=info.get("ra"), dec=info.get("dec"),
-    )
+    ra, dec = info.get("ra"), info.get("dec")
+    ctx = await crossmatch_service.get_crossmatch(ra=ra, dec=dec)
     # Fold the bulk CDS/NED crossmatch in beside catsHTM. Cache-first: the
-    # results page prefetch usually has this object warm already, so opening the
-    # panel is instant; a cold open computes it on demand (and caches it).
-    try:
-        xm = await xmatch_cache_service.get_or_compute(
-            oid, info.get("ra"), info.get("dec"),
-        )
-    except Exception:
-        log.exception("crossmatch xmatch lookup failed")
-        xm = xmatch_cache_service.EMPTY_RECORD
-    # Payload for the "show all in Aladin" button: every CDS/NED match with a
-    # position (not just the z-filtered sky overlay) + the catsHTM positions.
-    aladin_markers = {
-        "cds": [
-            {"ra": m["ra"], "dec": m["dec"], "category": m.get("category"),
-             "color": m.get("color"), "cat_name": m.get("cat_name"),
-             "name": m.get("name"), "z": m.get("z"), "type": m.get("type"),
-             "sep": m.get("sep")}
-            for m in xm.get("matches", [])
-            if m.get("ra") is not None and m.get("dec") is not None
-        ],
-        "catshtm": ctx.get("markers", []),
-    }
+    # results-page prefetch usually has this object warm already, so the panel
+    # renders the CDS/NED section inline and instantly. On a cold open we DON'T
+    # block the panel on the ~20-catalog batch (that's what left it "stuck");
+    # instead we launch the compute in the background and hand back a CDS/NED
+    # section that polls /htmx/crossmatch_progress for a live per-catalog
+    # checklist. catsHTM still renders synchronously below either way.
+    xm = await xmatch_cache_service.get(oid)
+    xmatch_ready = xm is not None
+    xmatch_poll = False
+    if xmatch_ready:
+        aladin_markers = {"cds": _cds_aladin_markers(xm),
+                          "catshtm": ctx.get("markers", [])}
+    else:
+        aladin_markers = {"cds": [], "catshtm": ctx.get("markers", [])}
+        if ra is not None and dec is not None:
+            xmatch_progress_service.start(oid, xmatch_service.catalog_labels())
+            # Stash catsHTM markers so the poll route (which doesn't re-fetch
+            # catsHTM) can keep them in the "show all in sky view" button.
+            xmatch_progress_service.set_catshtm_markers(oid, ctx.get("markers", []))
+            _launch_bg(xmatch_cache_service.get_or_compute(
+                oid, ra, dec, progress_key=oid))
+            xmatch_poll = True
     return templates.TemplateResponse(
         request,
         "crossmatch/crossmatchPanel.html.jinja",
         {"ctx": ctx, "xm": xm, "oid": oid, "survey_id": survey_id,
-         "aladin_markers": aladin_markers},
+         "aladin_markers": aladin_markers, "xmatch_ready": xmatch_ready,
+         "xmatch_poll": xmatch_poll, "xmatch_ra": ra, "xmatch_dec": dec,
+         "xm_failures": []},
+    )
+
+
+@router.get("/htmx/crossmatch_progress", response_class=HTMLResponse)
+async def crossmatch_progress(
+    request: Request, oid: str, survey_id: str,
+    ra: float | None = None, dec: float | None = None,
+) -> HTMLResponse:
+    """Poll target for the CDS/NED crossmatch section on a cold detail open.
+
+    The authoritative "done" signal is the cache record landing — not the
+    progress dict — so a lost/never-started progress entry can't wedge the poll.
+    While pending, returns a self-re-polling checklist; once the record is
+    cached, returns the terminal CDS/NED section (and any per-catalog failures).
+    """
+    _validate_survey(survey_id)
+    record = await xmatch_cache_service.get(oid)
+    if record is not None:
+        prog = xmatch_progress_service.get(oid) or {}
+        # Combine CDS/NED markers with the stashed catsHTM ones so the button
+        # plots everything, not just CDS.
+        aladin_markers = {"cds": _cds_aladin_markers(record),
+                          "catshtm": prog.get("catshtm_markers", [])}
+        return templates.TemplateResponse(
+            request,
+            "crossmatch/xmatchSection.html.jinja",
+            {"xm": record, "oid": oid, "aladin_markers": aladin_markers,
+             "xm_failures": prog.get("failed", [])},
+        )
+    prog = xmatch_progress_service.get(oid)
+    # Compute lost (server restart) or never launched — (re)start it if we were
+    # handed coordinates, so the poll can make progress instead of spinning.
+    if prog is None and ra is not None and dec is not None:
+        xmatch_progress_service.start(oid, xmatch_service.catalog_labels())
+        _launch_bg(xmatch_cache_service.get_or_compute(
+            oid, ra, dec, progress_key=oid))
+        prog = xmatch_progress_service.get(oid)
+    # Partial record from the catalogs that have answered so far (NED first),
+    # so a table — and the "show all in sky view" button — show up before the
+    # slow CDS/VizieR tail finishes. catsHTM markers come from the stash so the
+    # button keeps them through every poll (it doesn't re-fetch catsHTM).
+    partial = None
+    by_catalog = (prog or {}).get("by_catalog")
+    if by_catalog:
+        partial = xmatch_service.build_partial_record(by_catalog)
+    aladin_markers = {
+        "cds": _cds_aladin_markers(partial) if partial else [],
+        "catshtm": (prog or {}).get("catshtm_markers", []),
+    }
+    return templates.TemplateResponse(
+        request,
+        "crossmatch/xmatchProgress.html.jinja",
+        {"oid": oid, "survey_id": survey_id, "xmatch_ra": ra, "xmatch_dec": dec,
+         "progress": prog, "partial": partial, "aladin_markers": aladin_markers},
     )
 
 

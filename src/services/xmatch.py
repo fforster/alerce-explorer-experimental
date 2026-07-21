@@ -33,12 +33,22 @@ from astropy import coordinates
 from astropy.table import Table
 from astroquery.xmatch import XMatch
 
+from . import xmatch_progress
+
 log = logging.getLogger(__name__)
 
 _C_KMS = 299792.458          # speed of light, km/s (cz → z)
 _CONCURRENCY = 8             # polite cap on parallel CDS/NED requests
 _RETRIES = 2
-_XMATCH_TIMEOUT = 60
+_XMATCH_TIMEOUT = 30
+# pyvo issues its TAP HTTP requests with NO timeout (DALQuery.submit never
+# passes one), and requests.Session has no honored default — so a slow/wedged
+# NED or VizieR TAP endpoint blocks its worker thread forever, and bulk_all's
+# asyncio.gather never completes → the crossmatch panel spins indefinitely.
+# We give the pyvo sessions an explicit per-request timeout (below), and bound
+# each catalog task in bulk_all with a hard asyncio deadline as a backstop.
+_TAP_TIMEOUT = 30            # seconds, per TAP HTTP request (NED / VizieR)
+_CATALOG_DEADLINE = 30.0     # seconds, hard per-catalog cap in bulk_all
 
 # Per-catalog cone radii (arcsec) — the TNS defaults.
 RADIUS_SIMBAD = 36.0
@@ -503,11 +513,33 @@ NED_TAP_URL = "https://ned.ipac.caltech.edu/tap"   # no trailing slash → clean
 _ned_tap = None
 
 
+def _apply_session_timeout(service, timeout: float = _TAP_TIMEOUT) -> None:
+    """Force a default per-request timeout on a pyvo service's requests.Session.
+
+    pyvo calls ``session.get/post`` without a ``timeout``, and requests ignores
+    any attribute you set on the session — the only reliable hook is to wrap
+    ``Session.request`` so every call inherits a timeout unless one is given.
+    Without this a hung TAP endpoint blocks the worker thread forever.
+    """
+    session = getattr(service, "_session", None)
+    if session is None or getattr(session, "_xmatch_timeout_patched", False):
+        return
+    orig_request = session.request
+
+    def request_with_timeout(method, url, **kwargs):
+        kwargs.setdefault("timeout", timeout)
+        return orig_request(method, url, **kwargs)
+
+    session.request = request_with_timeout
+    session._xmatch_timeout_patched = True
+
+
 def _get_ned_tap():
     global _ned_tap
     if _ned_tap is None:
         import pyvo
         _ned_tap = pyvo.dal.TAPService(NED_TAP_URL)
+        _apply_session_timeout(_ned_tap)
     return _ned_tap
 
 
@@ -587,6 +619,7 @@ def _get_vizier_tap():
     if _vizier_tap is None:
         import pyvo
         _vizier_tap = pyvo.dal.TAPService(VIZIER_TAP_URL)
+        _apply_session_timeout(_vizier_tap)
     return _vizier_tap
 
 
@@ -883,12 +916,61 @@ def _build_object_record(by_catalog: dict[str, list[dict]]) -> dict:
             "best_z": best, "simbad_type": simbad_type, "counts": counts, "overlay": overlay}
 
 
-async def bulk_all(positions: list[tuple[str, float, float]]) -> dict[str, dict]:
+def catalog_labels() -> list[str]:
+    """Display names of every catalog bulk_all queries, in task order. Drives
+    the progress checklist so its rows line up with what actually ran."""
+    labels = list(XMATCH_CAT2.keys())
+    labels += [cfg["name"] for cfg in VIZIER_Z_CATALOGS.values()]
+    labels += list(USECASE_CATALOGS.keys())
+    labels += ["NED", "HECATE"]
+    return labels
+
+
+def build_partial_record(by_catalog: dict[str, list[dict]]) -> dict:
+    """Build an object record from the catalogs answered *so far* (progress
+    accumulation), so the panel can render a growing table before the whole
+    batch finishes. Same shaping as the final record — just fed a subset — so
+    the partial table can't disagree with the terminal one."""
+    bc = {
+        cat: sorted(rows, key=lambda r: r["sep"] if r.get("sep") is not None else 1e9)
+        for cat, rows in by_catalog.items()
+    }
+    return _build_object_record(bc)
+
+
+# Upstream service each catalog is queried from, so a failure can name where it
+# happened (e.g. "CDS XMatch · timed out"). Simbad/SDSS/DESI, the VizieR spec-z
+# tables, and the use-case catalogs all go through the CDS XMatch service; NED
+# and HECATE have their own TAP endpoints.
+SOURCE_CDS = "CDS XMatch"
+SOURCE_NED = "NED TAP"
+SOURCE_VIZIER_TAP = "VizieR TAP"
+
+
+def _fail_cause(exc: BaseException) -> str:
+    """The bare cause of a catalog failure (no service name — the caller
+    prepends the upstream). 'timed out' / 'unreachable' / an error summary."""
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "timed out"
+    if isinstance(exc, CatalogQueryError):
+        return "unreachable"
+    msg = str(exc).strip()
+    return f"{type(exc).__name__}{': ' + msg[:80] if msg else ''}"
+
+
+async def bulk_all(
+    positions: list[tuple[str, float, float]],
+    progress_key: str | None = None,
+) -> dict[str, dict]:
     """Crossmatch every position against all catalogs concurrently.
 
     Returns ``{oid: object_record}`` for matched oids only (see
     ``_build_object_record``). Each catalog is independently fault-tolerant — a
     failed/unreachable catalog contributes nothing and never breaks the batch.
+
+    When *progress_key* is given (the single-object detail path), each catalog
+    reports done/failed into ``xmatch_progress`` as it settles, so the panel can
+    show a live checklist and explain any failures.
     """
     if not positions:
         return {}
@@ -902,19 +984,44 @@ async def bulk_all(positions: list[tuple[str, float, float]]) -> dict[str, dict]
         return {}
     sem = asyncio.Semaphore(_CONCURRENCY)
 
-    async def run(fn: Callable, *args) -> dict[str, list[dict]]:
+    async def run(label: str, source: str, fn: Callable, *args) -> dict[str, list[dict]]:
         async with sem:
             try:
-                return await asyncio.to_thread(fn, *args)
-            except Exception as exc:       # noqa: BLE001 — one catalog never sinks the batch
-                log.warning("xmatch catalog failed (%s): %s", getattr(fn, "__name__", fn), exc)
+                # Hard per-catalog deadline so one wedged endpoint can't hold the
+                # whole batch (and the panel) open past _CATALOG_DEADLINE. The
+                # per-request TAP/XMatch timeouts should fire first; this is the
+                # backstop for anything they miss. On timeout the orphaned thread
+                # still unwinds on its own request timeout — we just stop waiting.
+                res = await asyncio.wait_for(
+                    asyncio.to_thread(fn, *args), timeout=_CATALOG_DEADLINE,
+                )
+            except (Exception, asyncio.TimeoutError) as exc:  # noqa: BLE001 — one catalog never sinks the batch
+                log.warning("xmatch catalog failed (%s via %s): %s", label, source, exc)
+                if progress_key is not None:
+                    # e.g. "CDS XMatch · timed out" — names where it failed.
+                    reason = f"{source} · {_fail_cause(exc)}"
+                    xmatch_progress.mark_failed(progress_key, label, reason)
                 return {}
+            if progress_key is not None:
+                rows = res.get(str(progress_key), [])
+                # Feed matches into the progress record as soon as this catalog
+                # answers, so the panel can show a partial table before the slow
+                # CDS/VizieR tail finishes (see build_partial_record).
+                if rows:
+                    xmatch_progress.record_matches(progress_key, rows)
+                xmatch_progress.mark_done(progress_key, label, len(rows))
+            return res
 
-    tasks = [run(_bulk_xmatch_sync, cat, positions) for cat in XMATCH_CAT2]
-    tasks += [run(_bulk_xmatch_vizier_sync, cid, positions) for cid in VIZIER_Z_CATALOGS]
-    tasks += [run(_bulk_generic_sync, k, positions) for k in USECASE_CATALOGS]
-    tasks.append(run(_bulk_ned_tap_sync, positions))
-    tasks.append(run(_bulk_hecate_tap_sync, positions))
+    # NED first: it's the most reliable of the slow (TAP) catalogs and the
+    # richest source of host redshifts, and the CDS XMatch / VizieR endpoints
+    # sometimes stall in a batch — so kick NED off ahead of them (it lands in
+    # the first Semaphore wave) to get a useful table on screen early.
+    tasks = [run("NED", SOURCE_NED, _bulk_ned_tap_sync, positions)]
+    tasks += [run(cat, SOURCE_CDS, _bulk_xmatch_sync, cat, positions) for cat in XMATCH_CAT2]
+    tasks += [run(cfg["name"], SOURCE_CDS, _bulk_xmatch_vizier_sync, cid, positions)
+              for cid, cfg in VIZIER_Z_CATALOGS.items()]
+    tasks += [run(k, SOURCE_CDS, _bulk_generic_sync, k, positions) for k in USECASE_CATALOGS]
+    tasks.append(run("HECATE", SOURCE_VIZIER_TAP, _bulk_hecate_tap_sync, positions))
     per_catalog_results = await asyncio.gather(*tasks)
 
     merged: dict[str, dict[str, list[dict]]] = {}

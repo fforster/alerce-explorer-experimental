@@ -1,0 +1,20 @@
+{#
+  "Show all in sky view" button — plots every CDS/NED crossmatch (and any
+  catsHTM objects) as markers in the Aladin panel. Shared between the terminal
+  section and the live poll, so it appears as soon as there are markers to plot
+  rather than only when the whole batch finishes. Expects `aladin_markers`
+  = {cds:[…], catshtm:[…]}.
+#}
+{% set aladin_markers = aladin_markers | default({"cds": [], "catshtm": []}) %}
+{% set has_markers = (aladin_markers.cds | length) > 0 or (aladin_markers.catshtm | length) > 0 %}
+{% if has_markers %}
+  <div class="tw-mb-3">
+    <button type="button"
+      class="tw-px-2 tw-py-1 tw-text-xs tw-text-accent hover:tw-text-text-primary tw-border tw-border-border tw-rounded"
+      data-aladin-markers='{{ aladin_markers | tojson_compact }}'
+      onclick="(function(b){ if(!window.showAllCrossmatchInAladin)return; var s=window.showAllCrossmatchInAladin(JSON.parse(b.getAttribute('data-aladin-markers')||'{}')); if(s!==null&&s!==undefined){ b.textContent = s ? 'Hide all from sky view' : 'Show all in sky view'; } })(this)"
+      title="Plot every CDS/NED crossmatch and all catsHTM objects as markers in the Aladin sky view">
+      Show all in sky view ({{ (aladin_markers.cds | length) + (aladin_markers.catshtm | length) }})
+    </button>
+  </div>
+{% endif %}
