@@ -67,6 +67,10 @@
 
       const pixels = readFitsImageData(fitsBuf, fits);
       const northAngle = computeNorthAngle(fits.header);
+      // Snapshot the flip actually used to build the source canvas, so the
+      // blit's anchor can't disagree with the pixels (the header gets mutated
+      // later by the ZTF WCS synthesis).
+      const flipY = stampFlipY(fits.header);
       // Stretch once; cache the resulting source canvas so zoom is cheap.
       const srcCanvas = buildStretchedSrcCanvas(pixels, fits.naxis1, fits.naxis2, fits.header);
       cache.set(canvas, {
@@ -75,6 +79,13 @@
         ny: fits.naxis2,
         northAngle,
         header: fits.header,
+        flipY,
+        // Where the alert sits in the cutout. LSST ships a real WCS, so this
+        // is right immediately (and stays right for a clipped LSST cutout).
+        // ZTF has no WCS at all — null here means "assume geometric centre",
+        // which maybeRecoverClippedCenter corrects when the cutout was clipped.
+        crpix1: numOrNull(fits.header.CRPIX1),
+        crpix2: numOrNull(fits.header.CRPIX2),
       });
       redrawStamp(canvas);
 
@@ -84,6 +95,12 @@
           : "N↑ E←";
       }
       if (loadingEl) loadingEl.style.display = "none";
+
+      // A cutout truncated at a detector edge has the alert off its geometric
+      // centre. Recover the true reference pixel BEFORE the footprint block
+      // below, so the synthesised WCS and the Aladin polygon are built from the
+      // corrected value and we only dispatch once.
+      await maybeRecoverClippedCenter(canvas, url, fits);
 
       // Fire once per detection: the science / template / difference
       // stamps share the same WCS by construction, so re-broadcasting
@@ -311,31 +328,138 @@
     return [ra, dec];
   }
 
-  // ZTF cutouts ship a bare FITS header (no CRVAL, CRPIX, CD, etc.), so
-  // there's nothing for `pixelToWorldTAN` to work with. Synthesise a
-  // default WCS centred on the object's known position with a 1"/pix
-  // N-up E-left orientation — accurate enough for the Aladin footprint
-  // outline, which only needs to be sub-arcsec-correct on a stamp that's
-  // 63" wide. The detection's RA/Dec lives on the aladin-host element
-  // (the same source the panel was centred on).
+  function numOrNull(v) {
+    const n = typeof v === "number" ? v : parseFloat(v);
+    return isFinite(n) ? n : null;
+  }
+
+  // (oid, identifier, survey) out of a stamp URL. Both stamp services carry the
+  // object and the alert id as query params and differ by host, so this is the
+  // same extraction downloadStamp / openAvroModal already do by hand.
+  function parseStampUrl(url) {
+    const out = { oid: "", ident: "", survey: detectSurveyFromStampUrl(url) };
+    try {
+      const u = new URL(url, window.location.origin);
+      out.oid = u.searchParams.get("oid") || "";
+      out.ident = u.searchParams.get("candid")
+               || u.searchParams.get("measurement_id")
+               || "";
+    } catch (_e) { /* leave blank — callers bail on a missing field */ }
+    return out;
+  }
+
+  // One /api/stamp_center request per (survey, oid, identifier): the three
+  // canvases of an epoch share it, and revisiting an epoch reuses it. Memoises
+  // the PROMISE so concurrent callers coalesce instead of racing.
+  const stampCenterCache = new Map();
+
+  function fetchStampCenter({ survey, oid, ident }) {
+    const key = `${survey}|${oid}|${ident}`;
+    if (!stampCenterCache.has(key)) {
+      const q = `survey=${encodeURIComponent(survey)}`
+              + `&oid=${encodeURIComponent(oid)}`
+              + `&candid=${encodeURIComponent(ident)}`;
+      stampCenterCache.set(
+        key,
+        fetch(`/api/stamp_center?${q}`)
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+      );
+    }
+    return stampCenterCache.get(key);
+  }
+
+  // A cutout is truncated when the alert lands within half a cutout of a
+  // detector edge, leaving the source off the image's geometric centre. LSST
+  // records that in its WCS; ZTF ships no WCS, so the server reconstructs CRPIX
+  // from the alert's position on the CCD quadrant (services/stamp_center.py).
   //
-  // Mutates `header` in place so downstream callers (footprint, scale
-  // bar on a future redraw) all see the synthesised WCS. Skipped when
-  // the header already has WCS (LSST stamps).
-  function augmentZTFStampWCS(header, nx, ny, canvas) {
-    if (header.CRVAL1 != null && header.CRPIX1 != null) return;
-    const url = canvas.dataset.stampUrl || "";
-    if (url.indexOf("avro.alerce.online") === -1) return;
+  // Lazy by design: only a cutout smaller than the survey's nominal size can be
+  // clipped, so the overwhelmingly common path issues no extra request.
+  async function maybeRecoverClippedCenter(canvas, url, fits) {
+    const cached = cache.get(canvas);
+    if (!cached || cached.crpix1 != null) return;  // real WCS — nothing to do
+    const panel = canvas.closest("#stamps-panel");
+    if (!panel) return;
+    const info = parseStampUrl(url);
+    if (!info.survey || !info.oid || !info.ident) return;
+    const nominal = parseInt(
+      panel.getAttribute(`data-stamp-full-size-${info.survey}`) || "",
+      10,
+    );
+    if (!isFinite(nominal) || nominal <= 0) return;
+    if (fits.naxis1 >= nominal && fits.naxis2 >= nominal) return;  // not clipped
+
+    const pos = await fetchStampCenter(info);
+    if (!pos || !pos.available) return;
+    // The user may have picked a different epoch while this was in flight.
+    if (canvas.dataset.stampUrl !== url) return;
+    // Self-check: the reconstructed window must reproduce the size we actually
+    // received. A mismatch means the cutout convention isn't what we modelled,
+    // so keep the geometric centre rather than shifting by a wrong amount.
+    if (pos.nx !== fits.naxis1 || pos.ny !== fits.naxis2) {
+      console.warn(
+        `stamp_center: predicted ${pos.nx}×${pos.ny} but cutout is `
+        + `${fits.naxis1}×${fits.naxis2}; keeping geometric centre`, url,
+      );
+      return;
+    }
+    const c = cache.get(canvas);
+    if (!c) return;
+    c.crpix1 = pos.crpix1;
+    c.crpix2 = pos.crpix2;
+    c.header.CRPIX1 = pos.crpix1;
+    c.header.CRPIX2 = pos.crpix2;
+    redrawStamp(canvas);
+  }
+
+  // RA/Dec of the detection this stamp shows. The picker options carry
+  // per-alert astrometry (services/stamps.py); the object's MEAN position is
+  // only a fallback — it is a different quantity, and for a mover the two
+  // diverge by far more than the arcsec the footprint needs to be right to.
+  function selectedDetectionRaDec(panel, ident) {
+    const sel = panel && panel.querySelector('select[name="identifier"]');
+    if (sel && ident) {
+      const opt = Array.from(sel.options).find((o) => o.value === String(ident));
+      if (opt) {
+        const ra = numOrNull(opt.dataset.ra);
+        const dec = numOrNull(opt.dataset.dec);
+        if (ra != null && dec != null) return { ra, dec };
+      }
+    }
     const host = document.querySelector(".aladin-host");
-    if (!host) return;
-    const ra = parseFloat(host.dataset.ra);
-    const dec = parseFloat(host.dataset.dec);
-    if (!isFinite(ra) || !isFinite(dec)) return;
+    if (!host) return null;
+    const ra = numOrNull(host.dataset.ra);
+    const dec = numOrNull(host.dataset.dec);
+    return (ra != null && dec != null) ? { ra, dec } : null;
+  }
+
+  // ZTF cutouts ship a bare FITS header (no CRVAL, CRPIX, CD, etc.), so there's
+  // nothing for `pixelToWorldTAN` to work with. Synthesise a WCS anchored on
+  // THIS DETECTION's RA/Dec with a 1"/pix N-up E-left orientation — enough for
+  // the Aladin footprint outline on a 63"-wide stamp.
+  //
+  // The anchor must be the per-alert position, not the object's mean: they are
+  // different quantities, and using the mean is what made the footprint polygon
+  // disagree with the pixels. CRPIX is likewise the recovered reference pixel
+  // when the cutout was clipped, so the polygon lands both correctly placed and
+  // correctly sized.
+  //
+  // Mutates `header` in place so downstream callers (footprint, scale bar on a
+  // future redraw) all see it. Skipped when the header already has a WCS (LSST).
+  function augmentZTFStampWCS(header, nx, ny, canvas) {
+    if (header.CRVAL1 != null) return;
+    const info = parseStampUrl(canvas.dataset.stampUrl || "");
+    if (info.survey !== "ztf") return;
+    const pos = selectedDetectionRaDec(canvas.closest("#stamps-panel"), info.ident);
+    if (!pos) return;
     const PIX_DEG = 1.0 / 3600.0;          // ZTF pixel scale ~ 1″/pix
-    header.CRPIX1 = (nx + 1) / 2;          // 1-indexed image centre
-    header.CRPIX2 = (ny + 1) / 2;
-    header.CRVAL1 = ra;
-    header.CRVAL2 = dec;
+    // Keep a CRPIX recovered from the alert's detector position; only assume
+    // the geometric centre when the cutout wasn't clipped (or recovery failed).
+    if (header.CRPIX1 == null) header.CRPIX1 = (nx + 1) / 2;
+    if (header.CRPIX2 == null) header.CRPIX2 = (ny + 1) / 2;
+    header.CRVAL1 = pos.ra;
+    header.CRVAL2 = pos.dec;
     // Standard astronomical convention: RA decreases with column (E-left),
     // Dec increases with row (N-up, matching CD2_2 > 0 + the flipY path).
     header.CD1_1 = -PIX_DEG;
@@ -387,10 +511,49 @@
     return { vmin, vmax };
   }
 
+  // Does the source canvas store FITS rows bottom-up? FITS row 1 is the
+  // *bottom* of the sky image when the Dec axis increases with row, so we flip
+  // to get North roughly up before the CD rotation fine-tunes it.
+  //
+  // Extracted so blitStampCanvas can anchor against the SAME flip that built
+  // the source canvas. Don't recompute it from a header that may have been
+  // mutated later by the WCS synthesis — read it off the cache entry.
+  function stampFlipY(header) {
+    const cdelt2 = header.CD2_2 || header.CDELT2;
+    return (cdelt2 != null && cdelt2 > 0);
+  }
+
+  // Where the WCS reference pixel lands in SOURCE-CANVAS coordinates.
+  //
+  // FITS pixel (x, y) is 1-indexed with integers at pixel centres, so pixel
+  // x=1 is the centre of source-canvas column 0 — i.e. canvas x = 0.5. The row
+  // term mirrors buildStretchedSrcCanvas's `canvasRow = flipY ? ny-1-row : row`.
+  //
+  // This is the anchor that gets pinned to the canvas centre (and so to the
+  // crosshair). For an unclipped cutout CRPIX is the geometric centre and this
+  // returns exactly (nx/2, ny/2) — bit-identical to the pre-fix behaviour.
+  function stampAnchor(crpix1, crpix2, nx, ny, flipY) {
+    return {
+      ax: crpix1 - 0.5,
+      ay: flipY ? (ny + 0.5 - crpix2) : (crpix2 - 0.5),
+    };
+  }
+
+  // Largest scale at which the whole image still fits inside a box CENTRED ON
+  // THE ANCHOR. Using the anchor-symmetric half-extent (rather than
+  // outSize/max(nx,ny)) means a clipped cutout gets black padding on the
+  // truncated side instead of sliding the object off-centre.
+  //
+  // Reduces to outSize/max(nx,ny) whenever the anchor is the geometric centre,
+  // so unclipped stamps render at exactly the scale they always did.
+  function stampFitScale(outSize, ax, ay, nx, ny) {
+    const half = Math.max(ax, nx - ax, ay, ny - ay);
+    return half > 0 ? (outSize / 2) / half : 1;
+  }
+
   function buildStretchedSrcCanvas(pixels, nx, ny, header) {
     const { vmin, vmax } = zscaleStretch(pixels);
-    const cdelt2 = header.CD2_2 || header.CDELT2;
-    const flipY = (cdelt2 != null && cdelt2 > 0);
+    const flipY = stampFlipY(header);
 
     const srcCanvas = document.createElement("canvas");
     srcCanvas.width = nx;
@@ -421,28 +584,41 @@
   }
 
   function blitStampCanvas(canvas, cached, zoom) {
-    const { srcCanvas, nx, ny, northAngle, header } = cached;
-    const outSize = canvas.width;
+    const { srcCanvas, nx, ny, northAngle, header, crpix1, crpix2, flipY } = cached;
+    const w = canvas.width;
+    const h = canvas.height;
+    const outSize = Math.min(w, h);
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, outSize, outSize);
+    ctx.fillRect(0, 0, w, h);
 
-    // Fit-to-canvas baseline × user zoom. Because the transform scales about
-    // the canvas centre (translate then scale), the object — which sits at
-    // the cutout centre — stays anchored while the field of view shrinks.
-    const baseScale = outSize / Math.max(nx, ny);
+    // Anchor the WCS reference pixel — the alert position — at the canvas
+    // centre, which is where the CSS crosshair sits. NOT the image's geometric
+    // centre: a cutout clipped at a detector edge still has the source at the
+    // alert position, several arcsec off-centre (see services/stamp_center.py).
+    //
+    // Falling back to the geometric centre when CRPIX is unknown reproduces the
+    // historical behaviour exactly, so a WCS-less stamp renders as it always did.
+    const anchor = (crpix1 != null && crpix2 != null)
+      ? stampAnchor(crpix1, crpix2, nx, ny, !!flipY)
+      : { ax: nx / 2, ay: ny / 2 };
+
+    // Fit-to-canvas baseline × user zoom. Rotating and scaling about the
+    // anchor (translate → rotate → scale, then draw at -ax,-ay) keeps the
+    // alert pinned under the crosshair at every zoom level and rotation.
+    const baseScale = stampFitScale(outSize, anchor.ax, anchor.ay, nx, ny);
     const scale = baseScale * (zoom || 1);
 
     ctx.save();
-    ctx.translate(outSize / 2, outSize / 2);
+    ctx.translate(w / 2, h / 2);
     ctx.rotate(-northAngle);
     ctx.scale(scale, scale);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(srcCanvas, -nx / 2, -ny / 2, nx, ny);
+    ctx.drawImage(srcCanvas, -anchor.ax, -anchor.ay, nx, ny);
     ctx.restore();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    drawCompass(ctx, outSize);
+    drawCompass(ctx, w);
     drawScaleBar(ctx, outSize, scale, header);
   }
 
@@ -890,5 +1066,7 @@
     parseFitsHeader, readFitsImageData, effectiveCDMatrix, pixelToWorldTAN,
     computeStampFootprint, computeNorthAngle, zscaleStretch, detectSurveyFromStampUrl,
     surveyLabelFor, stampOptionLabel, applyXStampOptions,
+    stampFlipY, stampAnchor, stampFitScale, parseStampUrl,
+    selectedDetectionRaDec, augmentZTFStampWCS, blitStampCanvas,
   };
 })();
