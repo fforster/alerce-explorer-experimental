@@ -84,7 +84,7 @@
     recovered from /api/stamp_center. Only emitted for surveys whose stamps
     lack a WCS (ZTF); LSST answers the question from its own header.
   #}
-  {% for s, sz in ctx.stamp_full_size_by_survey.items() %}
+  {% for s, sz in (ctx.stamp_full_size_by_survey or {}).items() %}
     data-stamp-full-size-{{ s }}="{{ sz }}"
   {% endfor %}
 >
