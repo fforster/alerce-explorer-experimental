@@ -94,6 +94,12 @@ def shape_stamps_context(
                 # template doesn't need a Jinja filter or per-row maths.
                 "mjd_utc": _mjd_to_utc(mjd, scale),
                 "band": _band_letter(d, survey),
+                # Per-alert astrometry. ZTF stamps carry no WCS, so the client
+                # synthesises one; it must be anchored on THIS detection's
+                # position, not the object's mean — otherwise the Aladin
+                # footprint drifts from the pixels (badly, for a mover).
+                "ra": d.get("ra"),
+                "dec": d.get("dec"),
             }
         )
     picker.sort(key=lambda p: p["mjd"], reverse=True)  # most recent first
@@ -136,6 +142,17 @@ def shape_stamps_context(
         for s in known_surveys()
     }
 
+    # Nominal (unclipped) cutout size per survey. The client compares the FITS
+    # NAXIS against this to decide whether a cutout was clipped at a detector
+    # edge — and only then pays for the /api/stamp_center lookup that recovers
+    # the true CRPIX. Absent for surveys whose stamps carry a real WCS (LSST),
+    # where the header already answers the question.
+    stamp_full_size_by_survey = {
+        s: SC(s).stamp_full_size
+        for s in known_surveys()
+        if SC(s).stamp_full_size
+    }
+
     return {
         "oid": oid,
         "survey": survey,
@@ -145,6 +162,7 @@ def shape_stamps_context(
         "stamp_urls": stamp_urls,
         "stamp_url_templates": stamp_url_templates,
         "stamp_url_templates_by_survey": stamp_url_templates_by_survey,
+        "stamp_full_size_by_survey": stamp_full_size_by_survey,
     }
 
 

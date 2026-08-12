@@ -17,8 +17,11 @@
 <style>
   /*
     Center crosshair — four red, semi-transparent segments (two horizontal,
-    two vertical) pointing inward at the stamp centre, where the candidate
-    sits (the survey-cutout contract centres the object). They guide the eye
+    two vertical) pointing inward at the canvas centre, where the alert sits.
+    That is a property of the RENDERER, not of the cutout: blitStampCanvas
+    anchors the WCS reference pixel at the canvas centre, so this overlay marks
+    the alert position even for a cutout clipped at a detector edge (whose
+    geometric centre is somewhere else entirely). They guide the eye
     without covering the source: each segment spans radius 20%→40%, measured
     as a fraction of the half-size (edge = radius 100%), i.e. 10%→20% of the
     full dimension out from the centre — leaving the central 40%→60% clear.
@@ -74,6 +77,16 @@
     data-url-template-{{ t }}-{{ s }}="{{ by_type[t] }}"
     {% endfor %}
   {% endfor %}
+  {#
+    Nominal (unclipped) cutout size per survey. stamps.js compares the parsed
+    NAXIS against this: a smaller cutout was truncated at a detector edge, so
+    its geometric centre is NOT the alert position and the true CRPIX has to be
+    recovered from /api/stamp_center. Only emitted for surveys whose stamps
+    lack a WCS (ZTF); LSST answers the question from its own header.
+  #}
+  {% for s, sz in (ctx.stamp_full_size_by_survey or {}).items() %}
+    data-stamp-full-size-{{ s }}="{{ sz }}"
+  {% endfor %}
 >
   <div class="tw-flex tw-items-center tw-justify-between tw-mb-3 tw-gap-3">
     {% from "_panel_help.html.jinja" import panel_help %}
@@ -87,7 +100,8 @@
       <div class="tw-font-semibold tw-mb-1">Survey specifics</div>
       <ul class="tw-space-y-0.5 tw-mb-3 tw-list-disc tw-list-inside tw-text-text-secondary">
         <li>LSST: FITS cutouts parsed in-browser (asinh stretch, WCS rotated so north is up)</li>
-        <li>ZTF: PNG thumbnails from the ALeRCE stamp service</li>
+        <li>ZTF: FITS cutouts too, from the ALeRCE stamp service — these carry no WCS, so one is reconstructed from the alert's position</li>
+        <li>Near a detector edge the cutout is <em>clipped</em> and comes back non-square; it is padded so the alert still sits on the crosshair, not the image centre</li>
         <li>Top-right arrows on each stamp point North / East</li>
       </ul>
       <div class="tw-font-semibold tw-mb-1">Controls</div>
@@ -100,9 +114,10 @@
       </ul>
     {% endcall %}
     {% if ctx.detections %}
-      {# Zoom controls operate on all three stamps simultaneously. The object
-         sits at the centre of each stamp (survey-cutout contract), so a
-         pure scale-about-centre keeps it anchored. Handlers live in stamps.js. #}
+      {# Zoom controls operate on all three stamps simultaneously. blitStampCanvas
+         scales about the WCS reference pixel (which it pins to the canvas
+         centre), so the alert stays anchored under the crosshair at every zoom
+         level — including on a clipped cutout. Handlers live in stamps.js. #}
       <div class="tw-flex tw-items-center tw-gap-1">
         <button
           type="button"
@@ -188,6 +203,11 @@
             value="{{ d.identifier }}"
             data-survey="{{ survey_id }}"
             data-oid="{{ oid }}"
+            {# Per-alert astrometry — anchors the synthesised ZTF WCS (and so
+               the Aladin footprint) on THIS detection rather than the object
+               mean. Omitted when the upstream detection carried no position. #}
+            {% if d.ra is not none %}data-ra="{{ d.ra }}"{% endif %}
+            {% if d.dec is not none %}data-dec="{{ d.dec }}"{% endif %}
             {% if ctx.selected and d.identifier == ctx.selected.identifier %}selected{% endif %}
           >
             MJD {{ "%.3f"|format(d.mjd) }}{% if d.mjd_utc %} ({{ d.mjd_utc }}){% endif %}{% if d.band %} · {{ survey_id|upper }} {{ d.band }}{% endif %}

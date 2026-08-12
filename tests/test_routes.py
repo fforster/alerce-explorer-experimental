@@ -1772,6 +1772,9 @@ def test_stamps_renders_picker_and_canvases(client, monkeypatch):
                     "difference": "https://ztf/difference?oid=__OID__&id=__IDENT__",
                 },
             },
+            # Nominal cutout size per survey — the client uses it to spot a
+            # cutout clipped at a detector edge and go recover its true CRPIX.
+            "stamp_full_size_by_survey": {"ztf": 63},
         }
 
     monkeypatch.setattr(
@@ -1798,6 +1801,10 @@ def test_stamps_renders_picker_and_canvases(client, monkeypatch):
     # Every picker option is tagged with its survey + OID so cross- and
     # in-survey epochs dispatch to the right stamp service uniformly.
     assert 'data-survey="ztf"' in r.text
+    # Nominal cutout size: the client compares the parsed NAXIS against this to
+    # decide whether a cutout was clipped at a detector edge (and only then
+    # pays for the /api/stamp_center lookup that recovers the true CRPIX).
+    assert 'data-stamp-full-size-ztf="63"' in r.text
     # Per-survey URL templates carry both __OID__ and __IDENT__ placeholders
     # so cross-survey clicks can dispatch to the matching survey's stamp
     # service (the JS pulls the matched OID off the LC chart's $lcXOid).
@@ -1839,6 +1846,9 @@ def test_stamps_empty_shows_message(client, monkeypatch):
                 "difference": "https://x/difference?id=__IDENT__",
             },
             "stamp_url_templates_by_survey": {},
+            # `stamp_full_size_by_survey` is deliberately ABSENT here: it is
+            # optional metadata (LSST has no entry at all), so the template must
+            # tolerate a context without it rather than raising UndefinedError.
         }
 
     monkeypatch.setattr(
@@ -1849,6 +1859,7 @@ def test_stamps_empty_shows_message(client, monkeypatch):
     assert r.status_code == 200
     assert "No detections with stamps" in r.text
     assert "stamp-canvas" not in r.text
+    assert "data-stamp-full-size" not in r.text
 
 
 def test_stamps_rejects_unknown_survey(client):

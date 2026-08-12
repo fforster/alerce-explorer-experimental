@@ -12,6 +12,7 @@ from fastapi.responses import Response
 from ..services import analytics as analytics_service
 from ..services import lsst_neighbors as lsst_neighbors_service
 from ..services import object_info as object_info_service
+from ..services import stamp_center as stamp_center_service
 from ..services import xmatch_cache as xmatch_cache_service
 from ..services import ztf_dr as ztf_dr_service
 
@@ -114,3 +115,25 @@ async def lsst_neighbors(
     except Exception as e:
         log.exception("lsst_neighbors fetch failed")
         raise HTTPException(status_code=502, detail=f"Upstream error: {e}") from e
+
+
+@router.get("/stamp_center")
+async def stamp_center(
+    survey: str = Query(...),
+    oid: str = Query(...),
+    candid: str = Query(...),
+) -> dict:
+    """Reference pixel (CRPIX) of the alert inside a clipped stamp cutout.
+
+    Called by the stamps panel only when a cutout comes back smaller than the
+    survey's nominal size on some axis — i.e. it was truncated at a detector
+    edge and its geometric centre is no longer the alert position. Unclipped
+    stamps (the overwhelming majority) never reach this route.
+
+    Always 200: an unavailable answer is a normal outcome (LSST already has a
+    real WCS, the AVRO service may be down), and the client falls back to
+    geometric-centre anchoring rather than failing the render.
+    """
+    return await stamp_center_service.get_stamp_center(
+        survey=survey, oid=oid, candid=candid
+    )

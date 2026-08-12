@@ -56,6 +56,21 @@ class SurveyConfig:
     # conversion in recent Rubin alerts" — multiple brokers initially shipped
     # the unconverted TAI string).
     mjd_scale: str = "utc"
+    # Nominal (unclipped) stamp cutout size in pixels, and the shape of the
+    # detector plane the cutout is carved from — (x_limit, y_limit).
+    #
+    # These exist to recover where the alert actually sits inside a cutout that
+    # was CLIPPED at a detector edge. ZTF stamps ship with no WCS at all, so a
+    # clipped cutout is indistinguishable from a centred one by inspection: a
+    # 48x63 ZTF stamp still has the source at the alert position, which is no
+    # longer the geometric centre. Combined with the alert's `xpos`/`ypos` on
+    # the detector (from the AVRO record) these two numbers pin down CRPIX
+    # exactly — see services/stamp_center.py.
+    #
+    # None means "the survey's stamps carry a real WCS" (LSST), so CRPIX is read
+    # from the header and no reconstruction is needed.
+    stamp_full_size: int | None = None
+    detector_shape: tuple[int, int] | None = None
 
     def classifiers_url(self) -> str:
         return self.api_base + self.classifiers_path
@@ -200,6 +215,11 @@ SURVEY_CONFIG: dict[str, SurveyConfig] = {
         extinction_r={"g": 3.237, "r": 2.273, "i": 1.684},
         band_wavelengths={"g": 4746.0, "r": 6366.0, "i": 7829.0},
         extra_params=_ztf_extra_params,
+        # ZTF cutouts are 63x63 px carved out of a 3072x3080 CCD *quadrant*
+        # (each 6144x6160 CCD is read out as four quadrants). An alert closer
+        # than 31 px to a quadrant edge yields a clipped, off-centre cutout.
+        stamp_full_size=63,
+        detector_shape=(3072, 3080),
     ),
 }
 
