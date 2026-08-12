@@ -31,3 +31,10 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# Don't load zarr's pytest plugin. This project doesn't use zarr; it only gets
+# pulled in when the interpreter happens to share a venv with something that
+# does, and a zarr built against numpy>=2 then aborts COLLECTION for the whole
+# suite on a numpy 1.x install ("module 'numpy.dtypes' has no attribute
+# 'StringDType'"). `-p no:<name>` is a no-op when the plugin isn't installed,
+# so this is safe in CI and in a clean venv.
+addopts = "-p no:zarr"

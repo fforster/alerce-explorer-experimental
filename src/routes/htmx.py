@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlencode
 
+import jinja2
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -44,7 +45,26 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 
 router = APIRouter()
 
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR), autoescape=True, auto_reload=True)
+# Build the Jinja environment ourselves and hand it to Starlette via `env=`.
+#
+# Starlette used to forward **env_options (autoescape, auto_reload, …) straight
+# through to jinja2.Environment; Starlette 1.0 removed that passthrough, so
+# `Jinja2Templates(directory=..., autoescape=True)` raises TypeError on any
+# recent install. The `env=` parameter has existed since 0.35 and Starlette runs
+# its own `_setup_env_defaults()` on whatever env it is given (that's what wires
+# up `url_for`), so this is equivalent on both old and new versions.
+#
+# autoescape=True is DELIBERATE and must not be dropped when adapting this call.
+# Starlette's own default is jinja2.select_autoescape(), which decides from the
+# file extension and returns False for our `*.html.jinja` templates — so
+# removing it would silently disable HTML escaping across every fragment, with
+# upstream-controlled values (OIDs, class names, TNS text) rendered raw.
+_jinja_env = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(str(TEMPLATES_DIR)),
+    autoescape=True,
+    auto_reload=True,  # dev convenience: pick up template edits without a restart
+)
+templates = Jinja2Templates(env=_jinja_env)
 templates.env.globals["API_URL"] = os.getenv("API_URL", "http://localhost:8000")
 # `tojson` filter produces JS-safe JSON for embedding in data-* attributes.
 templates.env.filters["tojson_compact"] = lambda v: json.dumps(v, separators=(",", ":"))
