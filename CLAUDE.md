@@ -67,13 +67,29 @@ Key endpoint families already implemented in production (reuse these names):
 | `GET /htmx/lc_features` | Deferred features fragment (`Multiband_period` + parametric fits → `lcSetFeatures`) |
 | `GET /htmx/lc_info` | Deferred ra/dec fragment (drives ZTF DR + IRSA E(B-V); → `lcSetCoords`) |
 | `GET /htmx/lc_xsurvey` | Deferred cross-survey overlay (object_info → other-survey conesearch (3″) → matched LC + FP; → `lcSetCrossSurvey`) |
+| `GET /htmx/lc_gp` | **Lazy** multi-band GP overlay fragment (only when the GP overlay is picked; `fold_period`/`science` follow display mode; → `lcSetGp`) |
 | `GET /htmx/tns_lookup` | Deferred TNS panel + OOB redshift inject into the LC redshift input |
 | `GET /htmx/stamps` | Stamp picker + per-survey URL templates (`__OID__` + `__IDENT__` placeholders) so cross-survey clicks dispatch correctly |
 | `GET /htmx/coord_residuals` | Position-residuals **shell** — scatter is built client-side from the live LC; endpoint just renders the canvas + `data-lc-target` |
-| `GET /htmx/crossmatch` | catsHTM crossmatch panel body (prefetched on detail-view load) |
+| `GET /htmx/crossmatch` | catsHTM crossmatch panel body (prefetched on detail-view load) + the cached CDS/NED section, or a poll shell if the bulk crossmatch is still running |
+| `GET /htmx/crossmatch_progress` | Self-re-polling (`load delay:900ms`) per-catalog progress checklist + growing partial match table; swaps itself for the terminal section once the cache record lands |
+| `POST /htmx/xmatch_prefetch` | Fire-and-forget cache warm for a page of `{oid, ra, dec}` — **always 204** |
+| `GET /htmx/avro` | ZTF AVRO alert metadata modal for one detection (ZTF-only; LSST renders an explanatory message) |
 | `GET /htmx/airmass` | Airmass curve panel (shares grid cell with periodogram + residuals) |
 | `GET /htmx/probability` | Classifier-probability radar |
-| `GET /htmx/ztf_dr` | ZTF DR archival cone-search (1.5″) for the LC's ZTF DR overlay |
+| `GET /htmx/aladin` | Aladin sky-view panel, seeded with ra/dec/lastmjd from `object_info` |
+| `GET /htmx/list_magstats` | `hx-swap-oob` spans filling the results table's Peak/Mean mag cells from one bulk TAP query |
+
+REST endpoints (`src/routes/rest.py`, all under `/api`, JSON):
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/health` | `{"status": "ok"}` |
+| `GET /api/ztf_dr` | ZTF DR archival cone-search (default 1.5″, max 60″) for the LC's ZTF DR overlay |
+| `GET /api/xmatch_overlay` | Cached CDS/NED overlay markers for Aladin (`specz.js` no longer queries VizieR from the browser) |
+| `GET /api/lsst_neighbors` | LSST objects within 10′ and ±2 h of `lastmjd` — contemporaneous-neighbour overlay |
+| `GET /api/stamp_center` | CRPIX of the alert inside a cutout clipped at a detector edge; **always 200**, `available:false` when not applicable (LSST) or unavailable. Trap #18 |
+| `POST /api/ux_events` | rrweb session-replay beacon sink; **always 204**, no-ops unless `ANALYTICS_ENABLED` |
 
 ### Jinja template conventions
 
@@ -140,6 +156,29 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
     - `static/js/lightcurve.js::mjdToUtcString(mjd, survey)` — LC tooltip; picks the scale from `ctx.dataset.$survey`.
     - **Not** applied to the search form's `firstmjd_min/max` (`coords.js::smartDateToMJD`): the filter is calendar-day granularity, so the 37 s offset is below user-visible precision. Raw MJD displays (basic-info first/last MJD, LC X-axis ticks) stay unconverted on purpose — they're labeled "MJD", not "UTC".
     - The two TAI offset constants (Python + JS) must move together on the next leap second; grep for `TAI_MINUS_UTC_SECONDS`.
+14. **Multi-band Gaussian Process (`services/gp.py`)** — one joint GP over `(time, wavelength)`, not an ICM coregionalization matrix: `B[b,b'] = exp(-½(λ_b-λ_b')²/ℓ_λ²)` makes `k_t·k_λ` exactly one anisotropic 2-D RBF, so sklearn learns `(ℓ_t, ℓ_λ, σ_f)` and ugrizy+gr costs one extra hyperparameter. Traps:
+    - λ is carried in units of 1000 Å so ℓ_λ shares an optimiser scale with ℓ_t in days.
+    - **Two standardization regimes**, switched by `per_band_scale` (caller sets it to `use_science`): per-band mean/σ for science flux and folded fits; global zero-anchored (mean pinned at 0, pooled RMS about zero) for **difference** flux — diff flux has a physical zero and per-band centering would break "all bands → 0".
+    - Reported `sigma_f`/`jitter` are dimensionless (fractions of the band scatter); `l_t_days` is days in time mode but **cycles** when folded.
+    - Folded mode tiles the data ×3 (phase−1, phase, phase+1) so the RBF wraps the 0/1 boundary — which is why the point budget drops to `max_points//3` and the phase length-scale is capped at `(0.02, 0.3)`.
+    - Cost guards: `_MAX_POINTS=800` with uniform per-band thinning (Cholesky is O(N³) per likelihood eval), `_EFLUX_FLOOR=1e-3` nJy so a zero error can't blow up `alpha`.
+    - `cov_offdiag` (same-time band-band covariances, keys `"<band>|<band>"` **sorted lexicographically**) is best-effort — a failure yields `{}` and the mean curves still ship. `color_evolution.js` needs it for honest colour errors.
+    - Caller side (`lightcurve.py`): ZTF g and LSST g are **pooled into one band before the fit** (the wavelength axis only carries distinct filters), and FP is windowed to `GP_FP_WINDOW_DAYS = 30.0` around the detection span.
+    - Client side, the fetch is keyed per *variant* (`gpDesiredKey`: `"diff"` / `"sci"` / `"fold:<period>"`) and `lcSetGp` attributes a response to **its own** key rather than a shared loading flag — otherwise a folded fit landing after the user unfolds gets plotted on the time axis.
+15. **LSST neighbours query ordering (`services/lsst_neighbors.py`)** — upstream `list_objects` defaults to `probability DESC`, which full-scans (blows the 30 s httpx ceiling on dense fields) **and silently ignores the `lastmjd: [lo,hi]` filter**. Passing `order_by=lastmjd, order_mode=DESC` fixes both; `_PAGE_SIZE=100` (200 times out). Upstream also returns the same oid once per classifier, so `filter_neighbors` dedupes — otherwise the overlay double-marks. The query always hits the **LSST** endpoint regardless of the detail view's survey.
+16. **Deterministic offline e2e via `services/replay.py`** — Playwright runs need no network: `maybe_install()` monkey-patches `httpx.AsyncClient.__init__` with `kwargs.setdefault("transport", …)`, which works only because every upstream call goes through `AsyncClient` and none passes its own transport (so the FastAPI TestClient stays untouched). `EXPLORER_REPLAY_DIR` alone = replay; `+ EXPLORER_RECORD=1` = record. A replay miss returns a loud **HTTP 599** naming the URL to record rather than an empty body. Only `content-type` and `location` headers are stored — `location` specifically so ZTF's 308 bare-path redirect stays replayable.
+17. **Analytics is opt-in and adversarially named** — `POST /api/ux_events` **always answers 204**, even when disabled or unparseable, so the browser never retries and the response never leaks whether collection is on. The endpoint and the vendored bundle avoid the substrings "analytics"/"rrweb" (Brave/uBlock filter lists match on them); server-side Python keeps the clear naming. Client honors DNT/GPC. The client-supplied `identity` block is persisted **verbatim and untrusted** — see `TODO(login)` in `analytics.py`, which must be re-derived server-side once auth exists or a data-rights tier can be spoofed.
+18. **Stamp cutouts are not always centred on the alert** — a survey carves a fixed-size cutout around the alert, so an alert within half a cutout of a **detector edge** comes back truncated and *off-centre*. `blitStampCanvas` therefore anchors the **WCS reference pixel (CRPIX)** at the canvas centre, never the image's geometric centre. Traps:
+    - The centre crosshair is plain CSS at 50%/50% of the canvas box. It is correct **because** the renderer puts CRPIX there — the fix is to move the image, not the crosshair. Anchoring this way also makes zoom and rotation happen *about the alert*, so it stays put at every zoom level.
+    - `stampAnchor` reduces exactly to `(nx/2, ny/2)` when CRPIX is the geometric centre, so unclipped stamps render bit-identically to the pre-fix build. Keep that property — it's the regression lock in `tests-js/stamps_center.test.js`.
+    - Fit-to-canvas uses the **anchor-symmetric half-extent**, not `outSize/max(nx,ny)`, so a clipped cutout gains black padding on the truncated side instead of sliding sideways.
+    - **LSST needs nothing extra**: its stamps carry a real WCS whose CRPIX is already right when clipped. **ZTF stamps carry no WCS at all**, so `services/stamp_center.py` reconstructs CRPIX from the alert's CCD-quadrant position (`candidate.xpos`/`ypos` via the avro service — these are *not* in the detections payload) plus `SurveyConfig.stamp_full_size` (63) and `detector_shape` (3072×3080, a ZTF *quadrant*, not a full CCD).
+    - The quadrant shape is an assumption about ZTF hardware, not something read from the data. The client therefore **self-checks** the reconstructed size against the received `NAXIS` and falls back to the geometric centre on mismatch — so a wrong convention degrades instead of shifting by a wrong amount. Keep that check.
+    - The lookup is **lazy**: only a cutout smaller than nominal on some axis can be clipped, so the common path costs no request; the three canvases of an epoch share one memoised promise.
+    - `augmentZTFStampWCS` must anchor on the **selected detection's** ra/dec (carried on the picker `<option>`s), *not* the object's `meanra`/`meandec`. Using the mean is what made the Aladin footprint polygon disagree with the pixels — negligible for a static source, large for a mover.
+    - **Both synthesised ZTF CD terms are negative**: RA decreases with column (E-left, conventional) and **Dec decreases with row** (empirical — solved by matching stamp stars against Gaia DR3 on `ZTF23aajoiiz` candid `3143207742215010000`: `CD2_2 < 0` gives 8 matches at 0.47 px, `CD2_2 > 0` gives 1). A wrong Dec sign mirrors the Aladin footprint vertically about the alert — invisible on an unclipped cutout, since the rectangle is symmetric, but it puts the padding on the wrong side of a y-clipped one.
+    - The synthesis runs *after* `buildStretchedSrcCanvas`, and `northAngle`/`flipY` are derived from the RAW header (empty for ZTF) and cached, so the synthesised WCS never reaches the display path — it only drives the footprint and scale bar. **If you move the synthesis earlier**, `computeNorthAngle` will return π for ZTF and rotate every stamp 180°: it reads the Dec direction in FITS pixel space without accounting for the canvas row flip, and the two errors only cancel while `CD2_2 > 0`. Fix that function before moving the call.
+    - Reference case: `ZTF26abngxfo` candid `3510493201915015030` → 48×63 cutout, source at FITS (31.63, 32.21), geometric centre (24.50, 32.00) — a 7.1 px ≈ 7.1″ error. Its sibling candid `3509496196315015007` is 63×63 and unclipped: the regression control.
 
 ## External services the port depends on
 
@@ -164,10 +203,18 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
 poetry install              # Python
 npm install                 # Tailwind CLI only
 
-# Run tests (~256 total — services + route fragments; upstream calls monkeypatched)
+# Tier 1 — pytest (421 tests: services + route fragments; upstream calls monkeypatched)
 python3 -m pytest           # full suite
 python3 -m pytest tests/test_object_info.py -v   # single file
 python3 -m pytest -k "detail"                     # by keyword
+
+# Tier 2 — vitest over the client JS (164 tests, jsdom)
+npm run test:js             # single run
+npm run test:js:watch
+
+# Tier 3 — Playwright e2e (8 specs / 11 tests) against a replay-backed server
+npm run test:e2e
+npm run test:e2e:ui
 
 # Dev server (hot-reload templates via auto_reload=True)
 poetry run uvicorn src.app:app --reload --port 8000
@@ -177,7 +224,16 @@ npm run watch:css           # dev
 npm run build:css           # minified production build
 ```
 
-Tests run offline — upstream ALeRCE calls are monkeypatched in `tests/test_routes.py` via `src.routes.htmx.<service>.<fn>` attribute paths.
+Tiers 1 and 2 run offline — upstream ALeRCE calls are monkeypatched in `tests/test_routes.py` via `src.routes.htmx.<service>.<fn>` attribute paths. Tier 3 runs offline too, but through `services/replay.py` (`EXPLORER_REPLAY_DIR` → JSON fixtures in `tests-e2e/fixtures/upstream/`, re-record with `EXPLORER_RECORD=1`); see domain trap #16.
+
+All three commands run green as written; the counts above are real runs, not source counts. CI (`.github/workflows/tests.yml`) runs the same three tiers as separate jobs — **check it before merging**, since it catches things a local run can miss (see below).
+
+**Two environment hazards, both now handled in-repo — don't "clean them up":**
+
+- `pyproject.toml` sets `addopts = "-p no:zarr"`. The zarr pytest plugin is unrelated to this project and only appears when the interpreter shares a venv with something that uses it; built against numpy ≥ 2, it aborts **collection** for the whole suite on a numpy 1.x install (`AttributeError: module 'numpy.dtypes' has no attribute 'StringDType'`). `-p no:zarr` is a no-op where zarr isn't installed, so it is safe in CI and in a clean venv.
+- `routes/htmx.py` builds its own `jinja2.Environment` and passes it as `Jinja2Templates(env=...)` rather than `Jinja2Templates(directory=..., autoescape=True, auto_reload=True)`. Starlette 1.0 removed the `**env_options` passthrough, so the kwargs form raises `TypeError` on any recent install (this repo has been seen with Starlette 1.4.1 against a `poetry.lock` pinning 0.46.2). `env=` has existed since 0.35 and Starlette still runs `_setup_env_defaults()` on a supplied env, so one code path covers both. **`autoescape=True` there is load-bearing** — Starlette's default is `jinja2.select_autoescape()`, which keys off the file extension and returns **False** for our `*.html.jinja` names, i.e. dropping it silently disables HTML escaping across every fragment.
+
+Historical note worth remembering: before that second fix, `tests/test_routes.py`, `tests/test_xmatch.py` and `tests/test_analytics.py` failed at *import*, so ~140 tests silently never ran locally while still passing in CI. If a local suite looks suspiciously green, check for collection errors, not just the pass count.
 
 ## Repository layout
 
@@ -185,8 +241,10 @@ Tests run offline — upstream ALeRCE calls are monkeypatched in `tests/test_rou
 src/
   app.py                     # FastAPI(), CORS, static mount, router includes
   routes/
-    htmx.py                  # HTMLResponse endpoints (search form, list, detail, object info, classes select)
-    rest.py                  # JSON endpoints (e.g. /api/health)
+    htmx.py                  # HTMLResponse endpoints (search form, list, detail, object info, classes select,
+                             # LC deferred fragments, stamps, avro, crossmatch + progress poll, features)
+    rest.py                  # JSON endpoints (/api/health, /api/ztf_dr, /api/xmatch_overlay,
+                             # /api/lsst_neighbors, /api/stamp_center, /api/ux_events)
   services/
     alerce_client.py         # thin httpx wrapper (follow_redirects, 30s timeout, safe_json_loads)
     safe_json.py             # regex-wraps ≥16-digit ints so LSST OIDs survive JSON parsing
@@ -224,9 +282,22 @@ src/
                              # astrometric signature, not variability alone
     xmatch_cache.py          # in-memory TTL cache (oid→record) warmed by the page-load
                              # prefetch; in-flight de-dup; read by the crossmatch panel + overlay
+    xmatch_progress.py       # per-oid progress state for the ~20-catalog bulk crossmatch —
+                             # done/failed/pending checklist + accumulated partial matches +
+                             # stashed catsHTM markers (the poll route doesn't re-fetch catsHTM).
+                             # The authoritative "done" signal is the cache record landing, NOT
+                             # `finished`, so a lost entry (restart) can't wedge the poll.
+                             # No locking — all mutations happen on the event loop
     stamps.py                # stamp picker context + per-survey stamp_url_templates_by_survey
                              # (with __OID__ + __IDENT__ placeholders so cross-survey clicks
-                             # dispatch to the right survey's stamp service)
+                             # dispatch to the right survey's stamp service). Picker rows also
+                             # carry per-alert ra/dec (anchors the synthesised ZTF WCS) and the
+                             # context carries stamp_full_size_by_survey (clipped-cutout probe)
+    stamp_center.py          # reconstructs the alert's CRPIX inside a cutout clipped at a
+                             # detector edge, from the AVRO candidate.xpos/ypos plus
+                             # SurveyConfig.stamp_full_size / detector_shape. ZTF-only in
+                             # practice (LSST stamps carry a real WCS and short-circuit before
+                             # any HTTP call); every failure degrades to available=False. Trap #18
     ztf_dr.py                # ZTF DR archival cone-search (1.5″) for the LC's ZTF DR overlay
     tns.py                   # ALeRCE TNS htmx-bridge proxy (driven by /htmx/tns_lookup)
     features.py              # feature-table fetch + shape_features (per-version grouping, band labels);
@@ -235,11 +306,28 @@ src/
     lightcurve.py            # LC shaping + _extract_multiband_period + get_lc_fp_bundle (FP +
                              # ZTF v2 mag_corr re-merge) + get_lc_features_bundle (period + parametric
                              # fits) + get_lc_xsurvey_bundle (object_info → other-survey conesearch
-                             # XSURVEY_RADIUS_ARCSEC=3.0 → matched LC + FP)
+                             # XSURVEY_RADIUS_ARCSEC=3.0 → matched LC + FP) + get_lc_gp_bundle
+                             # (pools ZTF g with LSST g, windows FP to ±30 d, calls gp.fit_multiband_gp)
+    gp.py                    # multi-band Gaussian Process over (time, wavelength) → per-band
+                             # posterior flux mean ±1σ on a common grid + band-band cross-covariances
+                             # for the colour panel's error propagation. See domain trap #14
+    avro.py                  # ZTF AVRO alert metadata (avro.alerce.online/get_avro_info) flattened
+                             # into a sorted (name, value) table; ZTF-only — LSST short-circuits with
+                             # available=False before any HTTP call. Every failure mode returns a
+                             # human-readable `reason`, never a 500 in the fragment
+    lsst_neighbors.py        # contemporaneous-neighbour cone-search (10′, ±2 h of lastmjd) for
+                             # movers/trails; always queries LSST regardless of survey. Trap #15
+    analytics.py             # sink for the rrweb beacons — one JSON line per batch appended to a
+                             # gzipped daily log (logs/analytics/YYYY-MM-DD.jsonl.gz), off unless
+                             # ANALYTICS_ENABLED, salted-hash IP only. Trap #17
+    replay.py                # record/replay httpx transport for deterministic offline Playwright
+                             # runs (EXPLORER_REPLAY_DIR / EXPLORER_RECORD). Trap #16
   templates/
-    base.html.jinja                           # DOCTYPE shell + CSS/JS imports
+    base.html.jinja                           # DOCTYPE shell + CSS/JS imports; the analytics
+                                              # scripts are only emitted when ANALYTICS_ENABLED
     index.html.jinja                          # app shell (header, sidebar slot, main slot)
     input.html.jinja                          # shared input() macro
+    _panel_help.html.jinja                    # shared (?) tooltip macro used by 9 panels
     search_form/                              # filter form + dependent class select
     main_table_objects/objects_table.html.jinja   # results table (rows are hx-get to /htmx/detail);
                              # Peak mag / Last mag cells render as "…" placeholders + a hidden
@@ -255,25 +343,39 @@ src/
                              # version/band/filter picker, CSV download (oid_features_version_ts.csv),
                              # default version chosen via pick_default_version (strict N.N.N).
     object_detail/container.html.jinja        # detail view (back + info + LC/stamps/aladin/radar/residuals);
-                             # exposes #features-modal as an empty overlay slot — the Show features
-                             # button hx-get populates it, close button clears it.
+                             # exposes #features-modal and #avro-modal as empty overlay slots — the
+                             # Show features / AVRO buttons hx-get populate them, close clears them.
+                             # Also owns the drag-to-resize row handles (bindRowResize), persisted
+                             # in sessionStorage as {row1,row2} px; double-click resets and forgets.
     lightcurve/lightcurvePreview.html.jinja   # Chart.js light curve + cycle-button toggles + z/E(B-V) inputs;
                              # 4-loader status strip (FP, features, coords, xsurvey) that self-collapses
-                             # once every loader has finished via lcMaybeHideLoadingStrip.
+                             # once every loader has finished via lcMaybeHideLoadingStrip. The GP is
+                             # deliberately NOT one of the four loaders (it's lazy, fetched on demand).
     lightcurve/lcFpFragment.html.jinja        # script-only deferred FP fragment → lcSetBundle
     lightcurve/lcFeaturesFragment.html.jinja  # script-only deferred features fragment → lcSetFeatures
     lightcurve/lcInfoFragment.html.jinja      # script-only deferred ra/dec fragment → lcSetCoords
     lightcurve/lcXSurveyFragment.html.jinja   # script-only deferred cross-survey fragment → lcSetCrossSurvey
+    lightcurve/lcGpFragment.html.jinja        # script-only lazy GP fragment → lcSetGp (does not touch
+                             # the loading strip)
     stamps/stampsPreview.html.jinja           # science/template/difference triplet (FITS for LSST, PNG for ZTF);
                              # emits both legacy data-url-template-{type} (primary, __IDENT__ swap) and
                              # data-url-template-{type}-{survey} (per-survey, __OID__ + __IDENT__ swap)
                              # so cross-survey clicks dispatch to the matching survey's stamp service.
                              # Picker dropdown labels each option as "MJD … · LSST g".
     aladin/aladinPreview.html.jinja           # Aladin Lite sky viewer + spec-z overlay chips
+    avro/avroTable.html.jinja                 # AVRO candidate-field modal (into #avro-modal)
     radar/radarPreview.html.jinja             # classifier probability radar (Chart.js radar)
     coord_residuals/coordResidualsPreview.html.jinja  # static shell — scatter built client-side from the
                              # live LC chart's $lcRaw + $lcXRaw (no upstream fetch)
+    color_evolution/colorEvolutionPreview.html.jinja  # colour-vs-time + colour-colour panel derived from
+                             # the GP posterior; takes over the residuals grid cell when GP is selected
+    tns/tnsLookupFragment.html.jinja          # deferred TNS row + auto-fill of the LC redshift input
     crossmatch/crossmatchPanel.html.jinja     # catsHTM crossmatch panel body (prefetched on detail-view load)
+    crossmatch/xmatchProgress.html.jinja      # pending branch — self-re-polls every 900 ms
+    crossmatch/xmatchSection.html.jinja       # terminal branch once the cache record lands
+    crossmatch/_xmatchMatches.html.jinja      # hint banner + stars→AGN→host table, SHARED by the partial
+                             # and terminal branches so growing and final markup can't diverge
+    crossmatch/_xmatchAladinButton.html.jinja # "Show all in sky view" → window.showAllCrossmatchInAladin
     airmass/airmassPanel.html.jinja           # airmass curve panel (toggleAirmassPanel from basic-info)
     periodogram/periodogramPreview.html.jinja # multi-band MH-LS periodogram panel; inputs gated on the LC
                              # legend's band/survey visibility
@@ -281,6 +383,9 @@ src/
     htmx/htmx.min.js         # self-hosted htmx 1.9.12
     chart-js/chart.umd.js    # vendored Chart.js 4.x
     chart-js/chartjs-plugin-zoom.min.js, hammer.min.js  # zoom/pan gestures
+    vendor/recorder/recorder.min.js  # vendored rrweb 2.0.0-alpha.4 (record build only), deliberately
+                             # NOT named rrweb-* — filter lists substring-match the real name
+    img/alerce-logo.svg
     css/tailwind.css         # @tailwind directives (source)
     css/main.css             # compiled Tailwind output (npm run build:css)
     js/helpers.js            # send_form_Data, send_pagination_data, send_classes_data;
@@ -295,14 +400,28 @@ src/
                              # per-survey markers (LSST=circle, ZTF=square; ZTF FP rotated 180° for
                              # apex-down); legend grouped by (survey, kind) with header click-to-toggle;
                              # band-visibility memory across toggles via (survey, kind, label) snapshot;
-                             # lc:dataChanged + lc:visibilityChanged custom events for downstream panels;
-                             # CSV export with survey/oid/candid columns + cross-survey rows.
+                             # lc:dataChanged + lc:visibilityChanged + lc:gpChanged custom events for
+                             # downstream panels; CSV export with survey/oid/candid columns +
+                             # cross-survey rows. Also hosts two Chart.js plugins: errorBarPlugin and
+                             # drHistogramPlugin (the ZTF DR marginal histogram strip — bins the DR
+                             # datasets already on the chart through the live Y scale, so it re-bins
+                             # under pan/zoom and can't disagree with what's plotted; each band column
+                             # normalised to its OWN peak; ▼/▲ mark the series extremes; toggled by a
+                             # synthetic legend row inside the ZTF DR group). GP overlay handling —
+                             # ensureGpLoaded / gpDesiredKey / lcSetGp — is trap #14.
+                             # Public read API for other panels: lcGetChart, lcGpState, lcGpActive.
     js/stamps.js             # FITS parsing + asinh stretch + WCS rotation for LSST stamps;
                              # updateStampsForIdentifier(ident, survey, oid) fills both __OID__ and
-                             # __IDENT__ in per-survey URL templates.
+                             # __IDENT__ in per-survey URL templates. blitStampCanvas anchors the
+                             # WCS reference pixel (CRPIX) at the canvas centre — NOT the image's
+                             # geometric centre — so an edge-clipped cutout still puts the alert
+                             # under the crosshair; stampAnchor / stampFitScale hold that geometry
+                             # and maybeRecoverClippedCenter does the lazy CRPIX lookup. Trap #18
     js/aladin.js             # Aladin Lite v3 bootstrap + spec-z overlays + click→z handler;
                              # position-based provisional survey + background HiPS probe/swap;
-                             # honors host.dataset.torndown so an in-flight boot self-aborts
+                             # honors host.dataset.torndown so an in-flight boot self-aborts;
+                             # also draws the stamp footprint (applyStampFootprint) and the
+                             # contemporaneous LSST-neighbour overlay (loadLsstNeighbors)
     js/detail-cleanup.js     # detail-view teardown — destroys every Chart.js chart
                              # (via Chart.getChart) + Aladin instance ($aladin.destroy(),
                              # torndown flag) before #results-slot is swapped away, so
@@ -321,8 +440,30 @@ src/
     js/specz.js              # 10-catalog VizieR spec-z loader (VOTable parsing)
     js/periodogram.js        # multi-band MH-LS periodogram (chunked Cholesky-per-frequency-per-band);
                              # inputs come from the LC chart, filtered by the legend's visibility.
+    js/color_evolution.js    # colour-vs-time (±1σ bands) + colour-colour scatter with 1σ error
+                             # ELLIPSES and a viridis time colourbar, both derived from the GP
+                             # posterior. Errors use the full band-band covariance (gp.cov_offdiag),
+                             # so a shared band (r in g−r vs r−i) correctly tilts the ellipse.
+                             # Deliberately does not import lightcurve.js — reaches the chart at
+                             # runtime via window.lcGetChart / lcGpState to avoid load-order coupling.
+    js/panel_help.js         # positions the (?) tooltip cards; they must be position:fixed because
+                             # the detail grid rows use overflow:hidden for the resize handles, so
+                             # top/left are computed in JS. Delegated capture-phase mouseover/focusin
+                             # so htmx-swapped fragments need no rebinding.
+    js/scroll_shield.js      # mobile-only (pointer: coarse) tap-to-interact overlay on touch-trapping
+                             # panels, so a vertical swipe scrolls the page instead of panning a chart
+                             # or the Aladin map. Tap-vs-scroll is discriminated by listening for
+                             # `click` (browsers suppress it after a scroll-drag). One panel armed at
+                             # a time; re-scans on htmx:afterSettle and prunes detached shields.
+    js/ux_recorder.js        # rrweb recorder → batched sendBeacon → POST /api/ux_events.
+                             # recordCanvas:false, mousemove ~20 Hz, honors DNT/GPC + an opt-out key;
+                             # identity read through the overridable window.analyticsIdentity() hook
+                             # (the seam for the planned login / data-rights tiers). Trap #17
 
-tests/                       # pytest; each service file has a matching test file
+tests/                       # pytest (421) — each service file has a matching test file
+tests-js/                    # vitest + jsdom (164) over the client JS modules
+tests-e2e/                   # Playwright specs (8) + upstream replay fixtures; run offline
+                             # through services/replay.py
 ```
 
 ### ALeRCE API endpoints in use
@@ -392,4 +533,57 @@ tests/                       # pytest; each service file has a matching test fil
   brightest `{b}_psffluxmax`, mean total = brightest `{b}_sciencefluxmean` → mag via the AB ZP
   (31.4). Any TAP failure degrades to `—` cells; both search paths (generic + OID-list) inherit
   the columns.
-- **Deferred** — name resolver.
+- **ZTF DR marginal histogram strip** — a vertical strip right of the LC plot area, one column per
+  visible ZTF DR band, binning that band's brightness distribution along the **Y** axis (flux or
+  mag, whichever is plotted). Implemented as `drHistogramPlugin` in `lightcurve.js` (ported from
+  alerce-hunter). Bins are laid out through the chart's own Y scale so the strip re-bins under
+  pan/zoom; the source is the DR *datasets already on the chart* (so it can't disagree with what's
+  plotted, and it self-hides in Diff mode where DR yields nothing). Each column is normalised to its
+  own peak (band epoch counts differ ~5×), ▼/▲ mark the series extremes with direction keyed off
+  `y.options.reverse`, and a synthetic legend row inside the ZTF DR group toggles it.
+- **Multi-band Gaussian Process overlay** — `/htmx/lc_gp` + `services/gp.py`: one joint GP over
+  (time, wavelength) giving per-band posterior flux ±1σ, drawn as a mean line plus a shaded 2σ
+  envelope re-projected through the live Flux/Mag × App/Abs × Obs/Der × Fold state. Fetched
+  **lazily** and keyed per variant (`diff` / `sci` / `fold:<period>`) so a late-arriving folded fit
+  can't land on a time axis. See domain trap #14.
+- **Colour-evolution panel** — colour-vs-time with ±1σ bands and a colour-colour scatter with 1σ
+  error *ellipses* over a viridis time colourbar, both derived from the GP posterior; errors use the
+  full band-band covariance (`gp.cov_offdiag`), so ellipses tilt correctly when two colours share a
+  band. Takes over the residuals grid cell while the GP overlay is selected (yielding to periodogram
+  / airmass), with a dual-handle time-window slider that re-windows in place.
+- **AVRO metadata viewer** — `/htmx/avro` + `services/avro.py` flattens the ZTF alert's `candidate`
+  block into a sorted table in an `#avro-modal` overlay, launched per detection from the stamps
+  panel. ZTF-only: LSST short-circuits with an explanatory message before any HTTP call.
+- **Contemporaneous LSST neighbours** — `GET /api/lsst_neighbors` (10′, ±2 h of `lastmjd`) plotted
+  as grey squares in Aladin for spotting movers/trails; always queries LSST regardless of the
+  detail view's survey. The upstream ordering trap is #15.
+- **Crossmatch progress + bounded timeouts** — the bulk CDS/NED crossmatch now reports itself while
+  running: `/htmx/crossmatch` returns a poll shell, `/htmx/crossmatch_progress` self-re-polls every
+  900 ms rendering a per-catalog done/failed/pending checklist plus a *growing* match table, and
+  swaps itself for the terminal section once the cache record lands. Per-catalog failures surface as
+  an amber "N catalogs unavailable" note so a sparse result reads differently from a broken one.
+- **Stamp footprint in Aladin** — the current stamp's WCS corners are drawn as a graphic overlay on
+  the sky view (`applyStampFootprint`), replayed if the Aladin boot finishes after the stamp loads.
+- **Panel help + mobile scroll shield** — a shared `(?)` tooltip macro across 9 panels
+  (`_panel_help.html.jinja` + `panel_help.js`), and a coarse-pointer-only tap-to-interact shield
+  over touch-trapping plot areas so mobile swipes scroll the page instead of panning charts.
+- **Session-replay analytics** — rrweb → batched `sendBeacon` → `POST /api/ux_events` → gzipped
+  daily JSONL under `logs/analytics/`. Off unless `ANALYTICS_ENABLED`; honors DNT/GPC; anonymous
+  UUIDs and a salted IP hash only. See trap #17 and the `TODO(login)` seam.
+- **Test tiers** — the suite is now three tiers: pytest over services + route fragments, vitest +
+  jsdom over the client JS modules, and Playwright e2e driven against a replay-backed server
+  (`services/replay.py`), so the interaction features have automated coverage too.
+- **Name resolver** — done: `coords.js` calls the CDS Sesame resolver directly from the browser
+  (CORS-enabled, no server proxy) and fills the conesearch inputs from the search form.
+- **Edge-clipped stamp centring** — stamps now anchor the WCS reference pixel at the canvas
+  centre instead of the image's geometric centre, so a cutout truncated at a detector edge still
+  puts the alert under the crosshair (it was ~7″ off on `ZTF26abngxfo`). Fixes LSST for free — its
+  WCS already recorded the clipping — while ZTF, whose stamps carry no WCS at all, gets its CRPIX
+  reconstructed lazily via `GET /api/stamp_center`. Also re-anchors the synthesised ZTF WCS on the
+  selected detection's ra/dec rather than the object mean, which is what made the Aladin footprint
+  disagree with the pixels. See trap #18.
+- **Starlette ≥ 1.0 compatibility** — `routes/htmx.py` builds its own Jinja environment and passes
+  `Jinja2Templates(env=...)`; the old `autoescape=`/`auto_reload=` kwargs raise `TypeError` on
+  recent Starlette. `autoescape=True` is preserved deliberately (Starlette's `select_autoescape()`
+  default would leave `*.html.jinja` unescaped). `pyproject.toml` also disables the zarr pytest
+  plugin so `python3 -m pytest` collects. Both are covered in the Commands section above.
