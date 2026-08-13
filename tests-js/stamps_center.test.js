@@ -255,6 +255,18 @@ describe("augmentZTFStampWCS", () => {
     expect(header.CRPIX2).toBe(32);
   });
 
+  test("Dec decreases with row (CD2_2 < 0), matching ZTF astrometry", () => {
+    // Solved against Gaia DR3 on ZTF23aajoiiz candid 3143207742215010000:
+    // CD2_2 < 0 matches 8 stars at 0.47 px, CD2_2 > 0 matches 1. A positive
+    // sign mirrors the Aladin footprint vertically about the alert.
+    const header = {};
+    S.augmentZTFStampWCS(header, 63, 42, canvasWithUrl(ZTF_URL));
+    expect(header.CD2_2).toBeLessThan(0);
+    expect(header.CD1_1).toBeLessThan(0);   // RA decreases with column (E-left)
+    expect(header.CD1_2).toBe(0);
+    expect(header.CD2_1).toBe(0);
+  });
+
   test("is a no-op when the header already carries a WCS (LSST)", () => {
     const header = { CRVAL1: 1, CRVAL2: 2, CRPIX1: 5, CRPIX2: 6 };
     S.augmentZTFStampWCS(header, 63, 63, canvasWithUrl(ZTF_URL));
@@ -288,7 +300,7 @@ describe("footprint on a clipped cutout", () => {
     const P = 1 / 3600;
     const header = {
       CRPIX1: crpix1, CRPIX2: crpix2, CRVAL1: 80.2511448, CRVAL2: 6.5583817,
-      CD1_1: -P, CD1_2: 0, CD2_1: 0, CD2_2: P,
+      CD1_1: -P, CD1_2: 0, CD2_1: 0, CD2_2: -P,
     };
     const corners = S.computeStampFootprint(header, 48, 63);
     expect(corners).toHaveLength(4);
@@ -304,5 +316,24 @@ describe("footprint on a clipped cutout", () => {
     const offsetArcsec = Math.abs(midRa - header.CRVAL1) * 3600
                        * Math.cos(header.CRVAL2 * Math.PI / 180);
     expect(offsetArcsec).toBeGreaterThan(6);
+  });
+
+  // ZTF23aajoiiz candid 3143207742215010000 — the case that exposed the sign
+  // error. Clipped on the Y axis AND at the LOW detector edge (ypos 10.97, so
+  // the window clamps to [1..42]), leaving the alert 10.5 px from one edge and
+  // 31.5 from the other. With Dec decreasing along rows the long side of the
+  // footprint must fall SOUTH of the alert; the old CD2_2 > 0 put it north.
+  test("y-clipped at the low edge extends SOUTH, not north", () => {
+    const P = 1 / 3600;
+    const header = {
+      CRPIX1: 32.24, CRPIX2: 10.97, CRVAL1: 281.099412, CRVAL2: -10.811096,
+      CD1_1: -P, CD1_2: 0, CD2_1: 0, CD2_2: -P,
+    };
+    const decs = S.computeStampFootprint(header, 63, 42).map((c) => c[1]);
+    const northExtent = (Math.max(...decs) - header.CRVAL2) * 3600;
+    const southExtent = (header.CRVAL2 - Math.min(...decs)) * 3600;
+    expect(northExtent).toBeCloseTo(10.5, 0);
+    expect(southExtent).toBeCloseTo(31.5, 0);
+    expect(southExtent).toBeGreaterThan(northExtent);   // the inversion guard
   });
 });
