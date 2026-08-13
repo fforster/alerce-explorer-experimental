@@ -460,12 +460,25 @@
     if (header.CRPIX2 == null) header.CRPIX2 = (ny + 1) / 2;
     header.CRVAL1 = pos.ra;
     header.CRVAL2 = pos.dec;
-    // Standard astronomical convention: RA decreases with column (E-left),
-    // Dec increases with row (N-up, matching CD2_2 > 0 + the flipY path).
+    // Both axes DECREASE with pixel index in a ZTF cutout: RA with column
+    // (E-left) and Dec with row. The Dec sign is empirical, not conventional —
+    // solved by matching stars in a stamp against Gaia DR3 (ZTF23aajoiiz candid
+    // 3143207742215010000): CD2_2 < 0 gives 8 matches at 0.47 px, CD2_2 > 0
+    // gives 1. Getting it wrong mirrors the Aladin footprint vertically about
+    // the alert, which is invisible on an unclipped cutout — the rectangle is
+    // symmetric — but puts the padding on the wrong side of a y-clipped one.
+    //
+    // This does NOT touch the rendered pixels: `northAngle` and `flipY` are
+    // both derived from the RAW header (in loadAndRenderFitsStamp, before this
+    // runs) and cached, and a ZTF header carries no CD at all, so the display
+    // path never consults these values. If the synthesis is ever moved earlier,
+    // note that computeNorthAngle would then return π here — it reads the Dec
+    // direction in FITS pixel space without accounting for the canvas row flip,
+    // which happens to cancel only while CD2_2 > 0.
     header.CD1_1 = -PIX_DEG;
     header.CD1_2 = 0;
     header.CD2_1 = 0;
-    header.CD2_2 = PIX_DEG;
+    header.CD2_2 = -PIX_DEG;
   }
 
   // The four image corners (TL, TR, BR, BL) in sky coordinates. Walks
