@@ -30,7 +30,7 @@ def build_archive_links(*, ra: float | None, dec: float | None) -> list[ArchiveL
     return [
         {
             "name": "DESI Legacy Survey DR11",
-            "url": f"https://www.legacysurvey.org/viewer-dev/?ra={ra}&dec={dec}&layer=ls-dr11&zoom=15",
+            "url": f"https://www.legacysurvey.org/viewer/?ra={ra}&dec={dec}&layer=ls-dr11&zoom=15",
         },
         {
             "name": "NED",
