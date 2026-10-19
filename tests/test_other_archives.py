@@ -36,3 +36,18 @@ def test_ra_dec_propagated_to_link_urls():
     by_name = {link["name"]: link["url"] for link in links}
     assert "180.0%20-30.0" in by_name["SIMBAD"]
     assert "ra=180.0" in by_name["TNS"] and "decl=-30.0" in by_name["TNS"]
+
+
+def test_legacy_survey_dr11_url_format():
+    """Exact viewer-dev URL, pinned to the released `ls-dr11` layer.
+
+    It previously pointed at `ls-dr11-early-v2`, the pre-release layer. Nothing
+    asserted the layer, so the drift was invisible — hence the full-string
+    comparison rather than a substring check.
+    """
+    links = build_archive_links(ra=120.55252310424017, dec=-4.239017874612488)
+    url = {link["name"]: link["url"] for link in links}["DESI Legacy Survey DR11"]
+    assert url == (
+        "https://www.legacysurvey.org/viewer-dev/"
+        "?ra=120.55252310424017&dec=-4.239017874612488&layer=ls-dr11&zoom=15"
+    )
