@@ -1,7 +1,8 @@
 """Unit tests for the multi-band Gaussian-Process overlay fit.
 
-Runs offline — `fit_multiband_gp` is pure numpy/sklearn, no network. A fixed
-random_state keeps sklearn's n_restarts_optimizer deterministic.
+Runs offline — `fit_multiband_gp` is numpy + the compiled gpimg core, no
+network. The fit is a deterministic projected-BFGS run from a fixed multi-start
+design, so these are reproducible without seeding anything.
 """
 from __future__ import annotations
 
@@ -75,10 +76,12 @@ def test_hyperparameters_are_reported():
     out = fit_multiband_gp(_synthetic_two_band(), n_grid=60)
     hp = out["hyperparams"]
     assert hp["l_t_days"] > 0
-    assert hp["l_lambda_kA"] > 0
-    # σ_f / jitter are dimensionless now (per-band-standardized units).
+    # ℓ_λ is a natural-log wavelength scale, so it is dimensionless — not kÅ.
+    assert hp["l_lambda_lnlam"] > 0
+    # σ_f / jitter are dimensionless too (per-band-standardized units).
     assert hp["sigma_f"] > 0
     assert hp["jitter"] >= 0
+    assert hp["converged"] is True
 
 
 def test_too_few_points_is_unavailable():
@@ -113,7 +116,9 @@ def test_single_band_still_fits():
 
 
 def test_subsampling_caps_the_fit_size():
-    """A dense band is thinned below max_points before the O(N³) solve."""
+    """A dense band is thinned below max_points. The solve is O(n), so this is a
+    payload guard rather than a cost guard, and the default cap is two orders of
+    magnitude above what the dense fit could afford — but it must still bite."""
     rng = np.random.default_rng(2)
     t = np.sort(rng.uniform(0.0, 100.0, 500))
     flux = 1000.0 + rng.normal(0, 50, t.size)
@@ -234,9 +239,14 @@ def test_difference_mode_sparse_band_follows_others_to_zero():
 
     per_band = r_at_late_time(True)
     global_scale = r_at_late_time(False)
-    # Per-band: r reverts to its own ~thousands-nJy mean. Global: r tracks g → ~0.
-    assert per_band > 1000.0
-    assert abs(global_scale) < 500.0
+    # The claim is the *contrast*, not an absolute level: how far r has reverted
+    # toward its own mean by MJD 55 depends on the fitted ℓ_t, which is a
+    # property of the kernel rather than of the standardization. Per-band mode
+    # must pull r up toward its own (large, positive) mean and away from g;
+    # global mode must hold it with g at zero.
+    assert per_band > 300.0                       # heading to its own ~3600 nJy mean
+    assert abs(global_scale) < 500.0              # tracking g to zero
+    assert per_band > 2.0 * abs(global_scale)     # and the two regimes differ
 
 
 # ── Off-diagonal band covariances (color-evolution panel) ────────────────────
@@ -327,3 +337,101 @@ def test_folded_bundle_has_cov_offdiag_on_phase_grid():
     assert out["folded"] is True
     assert "g|r" in out["cov_offdiag"]
     assert len(out["cov_offdiag"]["g|r"]) == 60
+
+
+# ── gpimg-specific behaviour ─────────────────────────────────────────────────
+
+def test_jitter_absorbs_scatter_beyond_the_quoted_errors():
+    """The fitted jitter is what keeps ℓ_t honest when the errors are too small.
+
+    Without it the only way to explain extra scatter is to shorten ℓ_t until
+    neighbouring points decorrelate, which shreds the overlay.
+    """
+    rng = np.random.default_rng(11)
+    t = np.sort(rng.uniform(0.0, 80.0, 120))
+    clean = 4000.0 * np.exp(-0.5 * ((t - 40.0) / 12.0) ** 2)
+    quoted = np.full(t.size, 30.0)
+    extra = 400.0                       # scatter the error bars do not describe
+    series = [{
+        "survey": "lsst", "band": "g", "lambda_eff": 4827.0, "mjd": t.tolist(),
+        "flux": (clean + rng.normal(0, np.hypot(quoted, extra))).tolist(),
+        "eflux": quoted.tolist(),
+    }]
+    hp = fit_multiband_gp(series, n_grid=50)["hyperparams"]
+    # The fit runs in standardized units, so the jitter is a fraction of the
+    # band's own scatter; the injected scatter is a sizeable fraction of it.
+    assert hp["jitter"] > 0.05
+    # ...and the time scale stays physical instead of collapsing onto its bound.
+    assert hp["l_t_days"] > 2.0
+
+
+def test_more_bands_than_the_core_supports_are_capped_not_failed():
+    """gpimg carries at most six wavelengths. A seventh band must degrade the
+    overlay by one curve, never take the whole panel down."""
+    rng = np.random.default_rng(12)
+    lams = {"u": 3671.0, "g": 4827.0, "r": 6223.0, "i": 7546.0,
+            "z": 8691.0, "y": 9712.0, "w": 5200.0}
+    series = []
+    for k, (name, lam) in enumerate(lams.items()):
+        # 'w' is deliberately the sparsest, so it is the one dropped.
+        n = 6 if name == "w" else 40
+        t = np.sort(rng.uniform(0.0, 60.0, n))
+        series.append({
+            "survey": "lsst", "band": name, "lambda_eff": lam, "mjd": t.tolist(),
+            "flux": (3000.0 * np.exp(-0.5 * ((t - 30.0) / 8.0) ** 2)
+                     + rng.normal(0, 50, n)).tolist(),
+            "eflux": np.full(n, 50.0).tolist(),
+        })
+    out = fit_multiband_gp(series, n_grid=40)
+    assert out["available"] is True
+    assert out["n_bands"] == 6
+    bands = {g["band"] for g in out["grid"]}
+    assert "w" not in bands and bands == set(lams) - {"w"}
+    # the covariance block must match the bands that survived
+    assert len(out["cov_offdiag"]) == 6 * 5 // 2
+
+
+def test_a_full_size_light_curve_is_not_subsampled():
+    """The O(N³) point budget is gone: a few thousand points go in whole.
+
+    This is the quality half of the gpimg swap — the old 800-point cap and the
+    ±30 d forced-photometry window existed only to bound a dense Cholesky.
+    """
+    rng = np.random.default_rng(13)
+    series = []
+    for name, lam in (("g", 4827.0), ("r", 6223.0)):
+        t = np.sort(rng.uniform(0.0, 300.0, 1500))
+        series.append({
+            "survey": "lsst", "band": name, "lambda_eff": lam, "mjd": t.tolist(),
+            "flux": (2000.0 * np.exp(-0.5 * ((t - 90.0) / 20.0) ** 2)
+                     + rng.normal(0, 40, t.size)).tolist(),
+            "eflux": np.full(t.size, 40.0).tolist(),
+        })
+    out = fit_multiband_gp(series, n_grid=100)
+    assert out["available"] is True
+    assert out["n_points"] == 3000           # nothing thinned
+    assert all(np.all(np.isfinite(g["flux_mean"])) for g in out["grid"])
+
+
+def test_fit_is_deterministic_without_a_seed():
+    """No random restarts to seed: the multi-start design is fixed, so two runs
+    of the same data agree exactly. `random_state` is accepted and ignored."""
+    series = _synthetic_two_band()
+    a = fit_multiband_gp(series, n_grid=40)
+    b = fit_multiband_gp(series, n_grid=40, random_state=12345)
+    assert a["hyperparams"] == b["hyperparams"]
+    for ga, gb in zip(a["grid"], b["grid"]):
+        np.testing.assert_array_equal(ga["flux_mean"], gb["flux_mean"])
+        np.testing.assert_array_equal(ga["flux_std"], gb["flux_std"])
+
+
+def test_difference_mode_reverts_to_zero_far_from_any_data():
+    """gpimg's prior is zero-mean, and diff mode anchors every band at zero, so
+    the posterior must return to zero well outside the observed span rather than
+    to some fitted offset."""
+    series = _synthetic_two_band()
+    out = fit_multiband_gp(series, n_grid=200, per_band_scale=False)
+    g = next(x for x in out["grid"] if x["band"] == "g")
+    edge = g["flux_mean"][0]                      # padded edge of the grid
+    peak = max(abs(v) for v in g["flux_mean"])
+    assert abs(edge) < 0.25 * peak

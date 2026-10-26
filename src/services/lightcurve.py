@@ -546,7 +546,11 @@ async def get_lc_gp_bundle(
     # band — otherwise a band with no data near an epoch reverts to its own
     # mean instead of following the bands that have gone to zero. Science flux
     # (and the folded fit) keeps per-band standardization. See gp.fit_multiband_gp.
-    result = gp_service.fit_multiband_gp(
+    # The fit is CPU-bound and this route is served from the event loop, so run
+    # it in a worker thread: gpimg releases the GIL for the whole solve, so the
+    # loop keeps serving other requests instead of stalling behind it.
+    result = await asyncio.to_thread(
+        gp_service.fit_multiband_gp,
         _assemble_gp_series(sources, science=use_science),
         fold_period=fold_period,
         per_band_scale=use_science,

@@ -988,16 +988,18 @@
       }
       const fmt = (v, d) => (v != null && isFinite(v) ? Number(v).toPrecision(d) : "—");
       // When folded the fit is in phase space: the time length scale is in
-      // cycles, not days. σ_f / jitter are dimensionless (standardized units):
-      // a fraction of each band's own scatter in sci/folded mode (per-band
-      // standardization), or of the pooled global scale in diff mode (all bands
-      // zero-anchored and divided by one scale — see services/gp.py).
+      // cycles, not days. ℓ_λ is a natural-log wavelength scale — ln(λ_r/λ_b),
+      // so it is dimensionless rather than an interval in Å. σ_f / jitter are
+      // dimensionless too (standardized units): a fraction of each band's own
+      // scatter in sci/folded mode (per-band standardization), or of the pooled
+      // global scale in diff mode (all bands zero-anchored and divided by one
+      // scale — see services/gp.py).
       const lt = gp.folded
         ? `ℓ<sub>φ</sub>=<b>${fmt(hp.l_t_days, 3)}</b> cyc`
         : `ℓ<sub>t</sub>=<b>${fmt(hp.l_t_days, 3)}</b> d`;
       const parts = [
         lt,
-        `ℓ<sub>λ</sub>=<b>${fmt(hp.l_lambda_kA, 3)}</b> kÅ`,
+        `ℓ<sub>λ</sub>=<b>${fmt(hp.l_lambda_lnlam, 3)}</b> ln&thinsp;λ`,
         `σ<sub>f</sub>=<b>${fmt(hp.sigma_f, 2)}</b>`,
         `jitter=<b>${fmt(hp.jitter, 2)}</b>`,
       ];
