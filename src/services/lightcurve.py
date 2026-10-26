@@ -20,6 +20,7 @@ from typing import Any
 
 from . import alerce_client
 from . import gp as gp_service
+from . import lc_cache
 from .features import extract_parametric_fits, pick_default_version
 from .normalize import normalize_dets
 from .survey_config import SC
@@ -272,7 +273,7 @@ async def get_lightcurve(*, survey: str, oid: str) -> dict[str, Any]:
     return shape_lightcurve(raw, survey=survey)
 
 
-async def get_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
+async def _fetch_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
     """Deferred FP fetch — returns a fresh `shape_lightcurve` payload that
     *also* re-merges v2 mag_corr into v1 detections (ZTF sci-mode error
     bars need this; the synchronous render skips it). The client replaces
@@ -303,7 +304,7 @@ async def get_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
     return shape_lightcurve(raw, survey=survey, fp_raw=fp_raw)
 
 
-async def get_lc_xsurvey_bundle(
+async def _fetch_lc_xsurvey_bundle(
     *, survey: str, oid: str
 ) -> dict[str, Any] | None:
     """Cross-survey LC bundle: find the same source on the *other* survey via
@@ -501,6 +502,36 @@ def _assemble_gp_series(
         g["lambda_eff"] = sum(wl.values()) / len(wl)
         series.append(g)
     return series
+
+
+async def get_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
+    """Cached front door to `_fetch_lc_fp_bundle` — see `services/lc_cache.py`.
+
+    The detail view fetches this on load via `/htmx/lc_fp`; the GP overlay needs
+    the identical `(survey, oid)` bundle when the user picks it. Memoizing here
+    rather than at the call sites means every consumer shares one upstream fetch
+    without any route change.
+    """
+    return await lc_cache.get_or_fetch(
+        "lc_fp", survey, oid,
+        lambda: _fetch_lc_fp_bundle(survey=survey, oid=oid),
+    )
+
+
+async def get_lc_xsurvey_bundle(
+    *, survey: str, oid: str
+) -> dict[str, Any] | None:
+    """Cached front door to `_fetch_lc_xsurvey_bundle` — see `services/lc_cache.py`.
+
+    Worth caching even harder than the FP bundle: this is a three-call pipeline
+    (object_info → cone-search → LC + FP) and a `None` result (no counterpart) is
+    cached too, so the GP path doesn't redo the whole lookup to rediscover that
+    there is no cross-survey match.
+    """
+    return await lc_cache.get_or_fetch(
+        "lc_xsurvey", survey, oid,
+        lambda: _fetch_lc_xsurvey_bundle(survey=survey, oid=oid),
+    )
 
 
 async def get_lc_gp_bundle(
