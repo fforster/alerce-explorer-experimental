@@ -649,13 +649,14 @@ def test_get_lc_xsurvey_bundle_skips_empty_match(monkeypatch):
     assert out is None
 
 
-def test_assemble_gp_series_windows_forced_photometry():
-    """Detections are always kept; forced photometry only within
-    GP_FP_WINDOW_DAYS of the global detection span. Det + FP for the same band
-    merge into one group (the GP treats both as difference flux)."""
-    from src.services.lightcurve import _assemble_gp_series, GP_FP_WINDOW_DAYS
+def test_assemble_gp_series_keeps_every_forced_photometry_epoch():
+    """Forced photometry used to be clipped to ±30 d around the detection span
+    — a cost guard for the dense O(N³) solve. gpimg is O(n), so the clip only
+    made the overlay disagree with the plot: the chart drew FP epochs the fit
+    had never seen. Every FP point now goes in, however far from the
+    detections. Det + FP for the same band merge into one group."""
+    from src.services.lightcurve import _assemble_gp_series
 
-    assert GP_FP_WINDOW_DAYS == 30.0
     bundle = {
         "survey": "ztf",
         "bands": [{"name": "g", "points": [
@@ -663,18 +664,38 @@ def test_assemble_gp_series_windows_forced_photometry():
             {"mjd": 130.0, "flux": 900.0, "e_flux": 40.0},
         ]}],
         "forced_phot_bands": [{"name": "g", "points": [
-            {"mjd": 50.0, "flux": 5.0, "e_flux": 10.0},    # 50 d before first → out
-            {"mjd": 75.0, "flux": 8.0, "e_flux": 10.0},    # 25 d before → in
-            {"mjd": 115.0, "flux": 700.0, "e_flux": 30.0}, # between dets → in
-            {"mjd": 155.0, "flux": 50.0, "e_flux": 20.0},  # 25 d after last → in
-            {"mjd": 200.0, "flux": 2.0, "e_flux": 10.0},   # 70 d after → out
+            {"mjd": 50.0, "flux": 5.0, "e_flux": 10.0},    # 50 d before first
+            {"mjd": 75.0, "flux": 8.0, "e_flux": 10.0},
+            {"mjd": 115.0, "flux": 700.0, "e_flux": 30.0},
+            {"mjd": 155.0, "flux": 50.0, "e_flux": 20.0},
+            {"mjd": 200.0, "flux": 2.0, "e_flux": 10.0},   # 70 d after last
         ]}],
     }
     series = _assemble_gp_series([("ztf", bundle)])
     assert len(series) == 1
     g = series[0]
     assert g["band"] == "g" and g["surveys"] == ["ztf"]
-    assert sorted(g["mjd"]) == [75.0, 100.0, 115.0, 130.0, 155.0]
+    assert sorted(g["mjd"]) == [50.0, 75.0, 100.0, 115.0, 130.0, 155.0, 200.0]
+
+
+def test_assemble_gp_series_pools_dr_into_the_alert_bands():
+    """DR arrives as another ZTF source, so its g/r/i merge into the alert
+    bands of the same letter rather than opening new wavelength channels —
+    the kernel's wavelength axis only carries distinct filters."""
+    from src.services.lightcurve import _assemble_gp_series
+
+    alerts = {"survey": "ztf", "forced_phot_bands": [], "bands": [
+        {"name": "g", "points": [{"mjd": 100.0, "sci_flux": 500.0, "e_sci_flux": 40.0}]},
+    ]}
+    dr = {"bands": [
+        {"name": "g", "points": [{"mjd": 10.0, "sci_flux": 480.0, "e_sci_flux": 35.0}]},
+        {"name": "r", "points": [{"mjd": 11.0, "sci_flux": 700.0, "e_sci_flux": 35.0}]},
+    ]}
+    series = _assemble_gp_series([("ztf", alerts), ("ztf", dr)], science=True)
+    by_band = {g["band"]: g for g in series}
+    assert sorted(by_band) == ["g", "r"]
+    assert sorted(by_band["g"]["mjd"]) == [10.0, 100.0]
+    assert by_band["g"]["surveys"] == ["ztf"]
 
 
 def test_assemble_gp_series_skips_bands_without_wavelength():
@@ -741,3 +762,99 @@ def test_assemble_gp_series_uses_science_flux_when_requested():
     # Difference-flux assembly (default) keeps both epochs at their diff flux.
     diff = _assemble_gp_series([("ztf", bundle)])
     assert sorted(diff[0]["flux"]) == [480.0, 500.0]
+
+
+# ── GP bundle: ZTF DR in the fit ─────────────────────────────────────────────
+#
+# The GP fits what the chart plots. DR is the one overlay the server doesn't
+# already hold: the toolbar's DR button cone-searches it from the browser, so
+# when the fit needs it the server repeats that same cone (memoized, so in
+# practice it is the browser's own request being reused).
+
+import asyncio  # noqa: E402  (the file imports lazily per-test; the GP bundle
+                 # tests below all need it, so hoist it here once)
+
+
+def _gp_bundle_env(monkeypatch, dr_points=2, dr_raises=False):
+    """Stub the three upstream fetches get_lc_gp_bundle makes, and record the
+    cone the DR lookup was asked for. Returns that record."""
+    import src.services.lightcurve as lc_mod
+
+    seen: dict = {"dr_calls": []}
+
+    async def fake_fp(*, survey, oid):
+        return {"survey": survey, "oid": oid,
+                "bands": [{"name": "g", "points": [
+                    {"mjd": 100.0 + i, "flux": 500.0, "e_flux": 40.0,
+                     "sci_flux": 9000.0, "e_sci_flux": 50.0} for i in range(8)]}],
+                "forced_phot_bands": []}
+
+    async def fake_x(*, survey, oid):
+        return None
+
+    async def fake_dr(*, ra, dec, radius):
+        seen["dr_calls"].append((ra, dec, radius))
+        if dr_raises:
+            raise RuntimeError("DR upstream down")
+        return {"bands": [{"name": "g", "points": [
+            {"mjd": 10.0 + i, "sci_flux": 8800.0, "e_sci_flux": 60.0}
+            for i in range(dr_points)]}], "n_pts": dr_points}
+
+    monkeypatch.setattr(lc_mod, "get_lc_fp_bundle", fake_fp)
+    monkeypatch.setattr(lc_mod, "get_lc_xsurvey_bundle", fake_x)
+    monkeypatch.setattr(lc_mod.ztf_dr_service, "get_ztf_dr", fake_dr)
+    return seen
+
+
+def test_gp_bundle_includes_dr_in_science_mode(monkeypatch):
+    import src.services.lightcurve as lc_mod
+
+    seen = _gp_bundle_env(monkeypatch, dr_points=3)
+    out = asyncio.run(lc_mod.get_lc_gp_bundle(
+        survey="ztf", oid="ZTF1", science=True, dr=True, ra=10.5, dec=-3.25,
+    ))
+    assert out["dr"] is True
+    assert out["n_dr"] == 3
+    assert out["n_points"] == 11           # 8 detections + 3 DR epochs
+    assert seen["dr_calls"] == [(10.5, -3.25, 1.5)]
+
+
+def test_gp_bundle_ignores_dr_in_difference_mode(monkeypatch):
+    """DR has no difference flux — the chart hides it in Diff mode, so the fit
+    must not go looking for it either."""
+    import src.services.lightcurve as lc_mod
+
+    seen = _gp_bundle_env(monkeypatch)
+    out = asyncio.run(lc_mod.get_lc_gp_bundle(
+        survey="ztf", oid="ZTF1", science=False, dr=True, ra=10.5, dec=-3.25,
+    ))
+    assert out["dr"] is False
+    assert out["n_dr"] == 0
+    assert seen["dr_calls"] == []          # no cone-search at all
+
+
+def test_gp_bundle_dr_flag_survives_a_failed_cone_search(monkeypatch):
+    """The client keys its per-variant cache on the echoed `dr`, so the flag
+    reports what was *asked for*, not whether the archive answered. Echo
+    `false` here and the fit comes back under a key the chart isn't waiting
+    on — it would spin forever."""
+    import src.services.lightcurve as lc_mod
+
+    _gp_bundle_env(monkeypatch, dr_raises=True)
+    out = asyncio.run(lc_mod.get_lc_gp_bundle(
+        survey="ztf", oid="ZTF1", science=True, dr=True, ra=10.5, dec=-3.25,
+    ))
+    assert out["dr"] is True               # the variant the client asked for
+    assert out["n_dr"] == 0                # ...with nothing actually added
+    assert out["available"] is True        # the alert photometry still fits
+
+
+def test_gp_bundle_clamps_a_hand_edited_dr_radius(monkeypatch):
+    import src.services.lightcurve as lc_mod
+
+    seen = _gp_bundle_env(monkeypatch)
+    asyncio.run(lc_mod.get_lc_gp_bundle(
+        survey="ztf", oid="ZTF1", science=True, dr=True, ra=1.0, dec=2.0,
+        dr_radius=9999.0,
+    ))
+    assert seen["dr_calls"][0][2] == 60.0

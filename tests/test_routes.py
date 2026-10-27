@@ -1324,7 +1324,7 @@ def test_lc_xsurvey_endpoint_handles_no_match(client, monkeypatch):
 def test_lc_gp_endpoint_returns_inline_setGp(client, monkeypatch):
     """Deferred GP endpoint hands the per-band posterior grid to
     `window.lcSetGp` so the client can draw the multi-band overlay."""
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32"):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         return {
             "available": True,
             "grid": [{
@@ -1352,7 +1352,7 @@ def test_lc_gp_endpoint_serializes_cov_offdiag(client, monkeypatch):
     """The off-diagonal band covariances ride inside the GP bundle so the
     color-evolution panel can propagate color errors with the proper
     band-band correlation."""
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32"):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         return {
             "available": True,
             "grid": [
@@ -1381,7 +1381,7 @@ def test_lc_gp_endpoint_serializes_cov_offdiag(client, monkeypatch):
 def test_lc_gp_endpoint_handles_fit_failure(client, monkeypatch):
     """A raised error from the service still yields a 200 fragment carrying an
     `available:false` bundle so the client clears the spinner + reverts."""
-    async def boom(*, survey, oid, fold_period=None, science=False, kernel="matern32"):
+    async def boom(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         raise RuntimeError("sklearn blew up")
 
     monkeypatch.setattr(
@@ -1398,7 +1398,7 @@ def test_lc_gp_endpoint_forwards_fold_period(client, monkeypatch):
     on the folded (phase) light curve."""
     seen = {}
 
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32"):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         seen["fold_period"] = fold_period
         return {"available": True, "grid": [{
             "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
@@ -1421,7 +1421,7 @@ def test_lc_gp_endpoint_forwards_science_flag(client, monkeypatch):
     """science=1 selects a science-flux fit (unfolded Sci mode)."""
     seen = {}
 
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32"):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         seen["science"] = science
         return {"available": True, "grid": [{
             "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
@@ -1446,7 +1446,7 @@ def test_lc_gp_endpoint_forwards_kernel(client, monkeypatch):
     after the user switched back to 3/2 must be identifiable as 5/2."""
     seen = {}
 
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32"):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         seen["kernel"] = kernel
         return {"available": True, "grid": [{
             "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
@@ -1468,7 +1468,7 @@ def test_lc_gp_endpoint_defaults_to_matern32(client, monkeypatch):
     newest gpimg happens to default to."""
     seen = {}
 
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="x"):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="x", **kw):
         seen["kernel"] = kernel
         return {"available": False, "grid": [], "cov_offdiag": {},
                 "hyperparams": {}, "kernel": kernel, "message": "", "oid": oid}

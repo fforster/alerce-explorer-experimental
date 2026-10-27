@@ -562,6 +562,11 @@
   // so picking one is a single click, and the per-variant cache keys on the
   // kernel too — switching back and forth re-draws from cache without refitting.
   const GP_OVERLAY_KERNELS = { gp: "matern32", gp52: "matern52" };
+
+  // Cone radius of the ZTF DR overlay. The GP sends it along when DR is folded
+  // into the fit, so the fit searches the SAME cone the chart is drawing —
+  // a different radius would fit points the user can't see, or miss ones they can.
+  const DR_RADIUS_ARCSEC = 1.5;
   const GP_KERNEL_LABELS = { matern32: "Matérn-3/2", matern52: "Matérn-5/2" };
   const GP_DEFAULT_KERNEL = "matern32";
 
@@ -574,6 +579,24 @@
   // "none" is selected get a well-formed key rather than undefined.
   function gpKernelOf(chart) {
     return GP_OVERLAY_KERNELS[chart && chart.$lcOverlay] || GP_DEFAULT_KERNEL;
+  }
+
+  // Whether the archival DR points belong in the fit: they are on screen and
+  // the fit is in science flux. DR carries no difference flux, so in Diff mode
+  // it is neither plotted nor fitted and the variant key must not mention it —
+  // otherwise flipping DR on in Diff mode would refit for no visible change.
+  // ra/dec of the object, stamped on the canvas by lcSetCoords when the
+  // deferred /htmx/lc_info fragment lands — the same coords the DR button
+  // cone-searched with. Returns NaN/NaN before that, which the caller treats
+  // as "no DR in this fit" rather than sending a bad cone.
+  function drCoordsFromCanvas(chart) {
+    const cv = chart && chart.canvas;
+    return cv ? [parseFloat(cv.dataset.ra), parseFloat(cv.dataset.dec)] : [NaN, NaN];
+  }
+
+  function gpDrActive(chart) {
+    return !!(chart && chart.$lcDrShown && chart.$lcDrBands
+              && chart.$lcDrBands.length && chart.$lcSource === "sci");
   }
 
   // Convert a model magnitude into whatever the axis expects, applying the
@@ -1028,9 +1051,14 @@
       // Name the kernel: the two GP entries produce visibly different curves
       // from the same data, so the strip has to say which one is on screen.
       const kern = GP_KERNEL_LABELS[gp.kernel || GP_DEFAULT_KERNEL] || gp.kernel;
+      // n_points is every point the fit saw — detections, forced photometry
+      // and (in Sci mode, when the overlay is on) the archival DR epochs. Call
+      // out the DR share, since it can dwarf the alert photometry and is the
+      // reason the curve may follow the archive rather than the alerts.
+      const drTag = gp.dr && gp.n_dr ? ` · incl. ${gp.n_dr} DR` : "";
       const tag = gp.folded
-        ? `${kern} · folded P=${fmt(gp.period, 6)} d · ${flux} · ${gp.n_points} det`
-        : `${kern} · ${flux} · ${gp.n_points} det, ${gp.n_bands} bands`;
+        ? `${kern} · folded P=${fmt(gp.period, 6)} d · ${flux} · ${gp.n_points} pts${drTag}`
+        : `${kern} · ${flux} · ${gp.n_points} pts${drTag}, ${gp.n_bands} bands`;
       strip.innerHTML =
         `GP&nbsp;&nbsp;${parts.join("&nbsp;&nbsp;")}` +
         `&nbsp;&nbsp;<span style="color:#888">(${tag})</span>`;
@@ -2248,7 +2276,8 @@
 
   async function fetchDr(chart, ra, dec) {
     try {
-      const url = `/api/ztf_dr?ra=${encodeURIComponent(ra)}&dec=${encodeURIComponent(dec)}&radius=1.5`;
+      const url = `/api/ztf_dr?ra=${encodeURIComponent(ra)}`
+        + `&dec=${encodeURIComponent(dec)}&radius=${DR_RADIUS_ARCSEC}`;
       const resp = await fetch(url, { headers: { Accept: "application/json" } });
       if (!resp.ok) return false;
       const data = await resp.json();
@@ -2313,6 +2342,7 @@
         setDrButtonState(btn, chart);
         applyModes(chart);
         cacheAndPushLcState(chart);
+        if (isGpOverlay(chart.$lcOverlay)) ensureGpLoaded(chart);
       }
     });
   }
@@ -2339,6 +2369,11 @@
         setDrButtonState(btn, chart);
         applyModes(chart);
         cacheAndPushLcState(chart);
+        // DR points are part of the fit in Sci mode, so toggling it is a new
+        // GP variant. forceSourceSci sets $lcSource directly rather than going
+        // through the cycle-toggle handler, so this is the only hook that
+        // catches the Diff→Sci flip DR performs on its way on.
+        if (isGpOverlay(chart.$lcOverlay)) ensureGpLoaded(chart);
         return;
       }
       // Slow path: user beat the pre-fetch. Read coords from the button's
@@ -2361,6 +2396,7 @@
       setDrButtonState(btn, chart);
       applyModes(chart);
       cacheAndPushLcState(chart);
+      if (isGpOverlay(chart.$lcOverlay)) ensureGpLoaded(chart);
     });
   }
 
@@ -2927,37 +2963,45 @@
     }
   }
 
-  // Which GP variant the chart currently needs. A variant is "<kernel>|<what
-  // was fit>" — the fit follows both the chosen kernel and the display mode,
-  // so the right flux is always fit with the kernel the menu is showing:
+  // Which GP variant the chart currently needs. A variant is
+  // "<kernel>|<what was fit>[+dr]" — the fit follows the chosen kernel, the
+  // display mode and whether the DR overlay is on, so what is fitted is always
+  // what is plotted:
   //   "<k>|time"    — unfolded, Diff mode: time-domain fit of difference flux.
   //   "<k>|sci"     — unfolded, Sci mode: time-domain fit of science flux.
   //   "<k>|fold:P"  — folded (Sci only): phase-domain fit of the science flux
   //                   at period P (folding only makes sense on the science
   //                   light curve, so it's gated to Sci mode).
+  //   …+dr          — the ZTF DR archival points are on screen and in the fit
+  //                   (science mode only — DR has no difference flux).
   //   null          — folded but not in Sci mode: no valid GP to show.
   // ensureGpLoaded fetches/caches per key so switching kernels, Diff↔Sci,
-  // folding, or picking a new period swaps to the matching fit — and switching
-  // back is instant, since the earlier fit is still cached under its own key.
-  // Keys derive from the same chart.$lcPeriod Number on both request and
-  // response, so they round-trip-match exactly.
+  // folding, toggling DR or picking a new period swaps to the matching fit —
+  // and switching back is instant, since the earlier fit is still cached under
+  // its own key. Keys derive from the same chart.$lcPeriod Number on both
+  // request and response, so they round-trip-match exactly.
   function gpDesiredKey(chart) {
     const k = gpKernelOf(chart) + "|";
+    const dr = gpDrActive(chart) ? "+dr" : "";
     if (chart.$lcFold === "fold" && chart.$lcPeriod > 0) {
-      return chart.$lcSource === "sci" ? k + "fold:" + chart.$lcPeriod : null;
+      return chart.$lcSource === "sci" ? k + "fold:" + chart.$lcPeriod + dr : null;
     }
-    return k + (chart.$lcSource === "sci" ? "sci" : "time");
+    return k + (chart.$lcSource === "sci" ? "sci" : "time") + dr;
   }
 
   // The key a returned bundle represents — derived from its OWN kernel /
-  // folded / science / period fields (NOT a shared loading flag), so
-  // overlapping fetches can't be misattributed. The server echoes the kernel
+  // folded / science / period / dr fields (NOT a shared loading flag), so
+  // overlapping fetches can't be misattributed. The server echoes all of them
   // back for exactly this; a bundle from an older server without the field is
-  // read as the default kernel, which is what it would have fitted.
+  // read as the default kernel and no DR, which is what it would have fitted.
+  // The server decides `dr` from the request alone, never from whether the
+  // cone-search found anything, so a DR fit with zero archival points still
+  // comes back under the key the chart is waiting on.
   function gpBundleKey(bundle) {
     const k = ((bundle && bundle.kernel) || GP_DEFAULT_KERNEL) + "|";
-    if (bundle && bundle.folded) return k + "fold:" + bundle.period;
-    return k + (bundle && bundle.science ? "sci" : "time");
+    const dr = (bundle && bundle.dr) ? "+dr" : "";
+    if (bundle && bundle.folded) return k + "fold:" + bundle.period + dr;
+    return k + (bundle && bundle.science ? "sci" : "time") + dr;
   }
 
   // Spinner reflects "the desired variant isn't here yet and is being fetched".
@@ -2999,11 +3043,24 @@
     // The kernel is only sent when it isn't the default, so the 3/2 request is
     // byte-identical to the one this endpoint has always received.
     const sep = want.indexOf("|");
-    const kernel = want.slice(0, sep), mode = want.slice(sep + 1);
+    const kernel = want.slice(0, sep);
+    let mode = want.slice(sep + 1);
+    const withDr = mode.endsWith("+dr");
+    if (withDr) mode = mode.slice(0, -3);
     let url = base;
     if (kernel !== GP_DEFAULT_KERNEL) url += "&kernel=" + encodeURIComponent(kernel);
     if (mode.startsWith("fold:")) url += "&fold_period=" + encodeURIComponent(chart.$lcPeriod);
     else if (mode === "sci") url += "&science=1";
+    // DR is fetched server-side rather than posted up from here: the cone is
+    // small and memoized, so the fit reuses the very request the DR button
+    // already made instead of shipping thousands of archival points back up.
+    if (withDr) {
+      const [ra, dec] = drCoordsFromCanvas(chart);
+      if (isFinite(ra) && isFinite(dec)) {
+        url += "&dr=1&ra=" + encodeURIComponent(ra) + "&dec=" + encodeURIComponent(dec)
+            + "&dr_radius=" + DR_RADIUS_ARCSEC;
+      }
+    }
     inflight.add(want);
     refreshGpSpinner(chart);
     // Each fetch clears its OWN key on completion (the response identifies its
@@ -3152,6 +3209,6 @@
     chartHasScienceFlux,
     // GP overlay/kernel bookkeeping: which menu values are a GP, and the
     // variant keys that decide whether an arriving fit is the one on screen.
-    isGpOverlay, gpKernelOf, gpDesiredKey, gpBundleKey,
+    isGpOverlay, gpKernelOf, gpDrActive, gpDesiredKey, gpBundleKey,
   };
 })();

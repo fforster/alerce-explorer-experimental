@@ -787,6 +787,8 @@ async def lc_gp(
     request: Request, oid: str, survey_id: str,
     fold_period: float | None = None, science: bool = False,
     kernel: str = gp_service.DEFAULT_KERNEL,
+    dr: bool = False, ra: float | None = None, dec: float | None = None,
+    dr_radius: float | None = None,
 ) -> HTMLResponse:
     """Deferred multi-band Gaussian-Process overlay fetch — fired lazily when
     the user picks "GP" in the LC overlay <select> (not on load: a GP fit is
@@ -796,19 +798,23 @@ async def lc_gp(
     follows the client's display mode: `science` selects science vs difference
     flux, and `fold_period` (always science) fits the folded phase curve.
     `kernel` picks the time kernel — "matern32" (the default, and the overlay's
-    historical shape) or "matern52" where the installed gpimg provides it. On
+    historical shape) or "matern52" where the installed gpimg provides it.
+    `dr` (with the `ra`/`dec`/`dr_radius` of the cone the toolbar's DR button
+    searched) folds the ZTF Data Release archival photometry into the fit; it
+    only applies in science mode, since DR carries no difference flux. On
     any failure returns an `available=false` bundle so the client clears the
     spinner and reverts the picker."""
     _validate_survey(survey_id)
     try:
         bundle = await lightcurve_service.get_lc_gp_bundle(
             survey=survey_id, oid=oid, fold_period=fold_period, science=science,
-            kernel=kernel,
+            kernel=kernel, dr=dr, ra=ra, dec=dec,
+            **({} if dr_radius is None else {"dr_radius": dr_radius}),
         )
     except Exception:
         log.exception("lc_gp failed")
         bundle = {"available": False, "grid": [], "cov_offdiag": {},
-                  "hyperparams": {}, "kernel": kernel,
+                  "hyperparams": {}, "kernel": kernel, "dr": bool(dr), "n_dr": 0,
                   "message": "Gaussian process fit failed.", "oid": oid}
     return templates.TemplateResponse(
         request,

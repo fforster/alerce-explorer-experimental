@@ -293,3 +293,53 @@ describe("GP overlay — kernel selection", () => {
     expect(T.gpBundleKey({ kernel: "matern52", science: true })).not.toBe(a);
   });
 });
+
+/* ZTF DR in the GP fit.
+ *
+ * The GP fits what the chart plots, so the archival DR points join the fit
+ * exactly while they are on screen — which means Sci mode only, since DR
+ * carries no difference flux. That makes DR part of the variant key: toggling
+ * it is a different fit, and the two stay cached side by side.
+ */
+describe("GP overlay — ZTF DR in the fit", () => {
+  const chart = (extra = {}) => ({
+    $lcOverlay: "gp", $lcFold: "off", $lcSource: "sci", $lcPeriod: 0,
+    $lcDrShown: true, $lcDrBands: [{ name: "g", points: [{}] }], ...extra,
+  });
+
+  test("DR counts only when it is shown AND the fit is science flux", () => {
+    expect(T.gpDrActive(chart())).toBe(true);
+    expect(T.gpDrActive(chart({ $lcSource: "diff" }))).toBe(false);
+    expect(T.gpDrActive(chart({ $lcDrShown: false }))).toBe(false);
+    // Toggled on but the cone came back empty — nothing is plotted, so
+    // nothing is fitted and the key must not claim otherwise.
+    expect(T.gpDrActive(chart({ $lcDrBands: [] }))).toBe(false);
+  });
+
+  test("the variant key marks a DR fit apart from the same fit without it", () => {
+    expect(T.gpDesiredKey(chart())).toBe("matern32|sci+dr");
+    expect(T.gpDesiredKey(chart({ $lcDrShown: false }))).toBe("matern32|sci");
+    expect(T.gpDesiredKey(chart({ $lcOverlay: "gp52" }))).toBe("matern52|sci+dr");
+    expect(T.gpDesiredKey(chart({ $lcFold: "fold", $lcPeriod: 2.5 })))
+      .toBe("matern32|fold:2.5+dr");
+  });
+
+  test("Diff mode never asks for DR, however the button is set", () => {
+    expect(T.gpDesiredKey(chart({ $lcSource: "diff" }))).toBe("matern32|time");
+  });
+
+  test("a bundle is keyed by the dr flag it reports", () => {
+    expect(T.gpBundleKey({ kernel: "matern32", science: true, dr: true }))
+      .toBe("matern32|sci+dr");
+    expect(T.gpBundleKey({ kernel: "matern32", science: true, dr: false }))
+      .toBe("matern32|sci");
+    // A DR fit whose cone-search found nothing still answers the key the
+    // chart is waiting on — the server echoes the request, not the outcome.
+    expect(T.gpBundleKey({ kernel: "matern32", science: true, dr: true, n_dr: 0 }))
+      .toBe(T.gpDesiredKey(chart()));
+  });
+
+  test("a bundle from a server that knows nothing of DR reads as no DR", () => {
+    expect(T.gpBundleKey({ kernel: "matern32", science: true })).toBe("matern32|sci");
+  });
+});
