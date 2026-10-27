@@ -49,6 +49,17 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
+# gpimg's compiled core is built with OpenMP, so `gpimg._core` links against
+# libgomp at *run* time even though the toolchain that produced it stays in the
+# deps stage. The venv we copy below carries the .so but not its shared
+# libraries, so without this the image builds cleanly and then dies on boot
+# with `ImportError: libgomp.so.1: cannot open shared object file`. libgomp1 is
+# the runtime library alone (~150 KB) — do not "fix" this by dragging
+# build-essential into the runtime stage.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root user — the app never needs root, and this limits blast radius.
 RUN useradd --create-home --uid 10001 appuser
 WORKDIR /app
