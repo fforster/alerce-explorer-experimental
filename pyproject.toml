@@ -16,7 +16,10 @@ uvicorn = { extras = ["standard"], version = "^0.30.6" }
 # Multi-band GP overlay (services/gp.py). Compiled C core: the deps stage of the
 # Dockerfile needs a C toolchain to build the sdist (see build-essential there).
 # Replaces scikit-learn, which this project used for nothing else.
-gpimg = "^0.1.0"
+# 0.2.0 is the floor, not a preference: it is the first release carrying the
+# Matérn-5/2 time kernel, and `gp.KERNELS` reads the available kernels off
+# `build_info()` — against 0.1.x the Matérn-5/2 menu entry silently disappears.
+gpimg = "^0.2.0"
 numpy = "^1.23"
 # Bulk crossmatch (services/xmatch.py): astroquery.xmatch → CDS XMatch for
 # Simbad/SDSS/DESI + VizieR spec-z catalogs; pyvo → NED TAP. astropy comes

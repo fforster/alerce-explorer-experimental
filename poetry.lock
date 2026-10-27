@@ -514,13 +514,13 @@ standard = ["email-validator (>=2.0.0)", "fastapi-cli[standard] (>=0.0.5)", "htt
 
 [[package]]
 name = "gpimg"
-version = "0.1.0"
+version = "0.2.0"
 description = "Exact O(n) two-dimensional Gaussian-process fits and images of multi-band light curves"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "gpimg-0.1.0.tar.gz", hash = "sha256:cf83faa0b059dfb114e59986c1eb5b209bbee0373d6f1672de49a3ef8fd5ac9e"},
+    {file = "gpimg-0.2.0.tar.gz", hash = "sha256:fbd84ed00f32aa3ee794ef37a6b355f26735638aa00bf591493824b5275725ad"},
 ]
 
 [package.dependencies]
@@ -1904,4 +1904,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.11"
-content-hash = "d019e9bd6a8bcbe7aece9e854d31e2d6ec7a20bb8dc6468f11467ea51da55a1f"
+content-hash = "d1de5caaee83589e27c00d506ece9ff0d3fb9bfd56a40e4788fa294701ca8927"
