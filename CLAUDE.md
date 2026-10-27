@@ -157,7 +157,10 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
     - **Not** applied to the search form's `firstmjd_min/max` (`coords.js::smartDateToMJD`): the filter is calendar-day granularity, so the 37 s offset is below user-visible precision. Raw MJD displays (basic-info first/last MJD, LC X-axis ticks) stay unconverted on purpose — they're labeled "MJD", not "UTC".
     - The two TAI offset constants (Python + JS) must move together on the next leap second; grep for `TAI_MINUS_UTC_SECONDS`.
 14. **Multi-band Gaussian Process (`services/gp.py`)** — one joint GP over `(time, wavelength)`, solved exactly in **O(n)** by `gpimg` (state-space Kalman filter + smoother, no dense Cholesky, no approximation):
-    `k = A² · Matérn-3/2(|Δt|; ℓ_t) · exp(−(ln λ − ln λ')²/2ℓ_λ²)`. The wavelength factor is the coregionalization — bands close in wavelength are strongly correlated, one hyperparameter covers any band count. Traps:
+    `k = A² · Matérn-ν(|Δt|; ℓ_t) · exp(−(ln λ − ln λ')²/2ℓ_λ²)`. The wavelength factor is the coregionalization — bands close in wavelength are strongly correlated, one hyperparameter covers any band count. Traps:
+    - **The time kernel is selectable and the choice is plumbed end to end.** `gp.KERNELS` is read from `gpimg.build_info()["kernels"]`, *not* hard-coded: Matérn-5/2 landed in gpimg after the explorer adopted it, so a core without it advertises `("matern32",)` and `/htmx/lightcurve` simply doesn't render the `gp52` `<option>`. `fit_multiband_gp` passes the `kernel=` kwarg **only** for a non-default kernel, so the 3/2 path still runs against gpimg 0.1.0, which has no such parameter. Both kernels are exact — 5/2 carries three latent states per band instead of two (~2× per point, measured 40 ms → 73 ms on a 193-point 6-band fit) and fits a shorter ℓ_t on real data (21.0 d → 11.4 d on `ZTF26aaonmha`).
+    - **The two kernels are two overlay values, `"gp"` and `"gp52"`, not a second dropdown.** `"gp"` keeps its name so nothing that persisted it breaks. Every client check is `isGpOverlay(key)`, never `=== "gp"` — adding a third kernel means one entry in `GP_OVERLAY_KERNELS` plus one `<option>`. The dataset **labels stay `GP <band>`** for both, so the legend's `(survey, kind, label)` visibility memory survives a kernel switch.
+    - The GP fetch cache key is `"<kernel>|<time|sci|fold:P>"` and the bundle **echoes its kernel back** (`result["kernel"]`), so `lcSetGp` attributes a response to its own kernel as well as its own fold/science state. Drop the echo and a slow 5/2 fit landing after the user switched to 3/2 gets drawn as the 3/2 curve — the same class of bug as the folded-fit-on-a-time-axis one. Both fits stay cached, so switching back and forth never refits.
     - **ℓ_λ is in natural-log wavelength**, not kÅ: it is `ln(λ_red/λ_blue)`, dimensionless. The hyperparameter key is `l_lambda_lnlam` (it was `l_lambda_kA` under the old sklearn RBF-over-linear-λ fit) and `lightcurve.js` labels it `ln λ`.
     - **Two standardization regimes**, switched by `per_band_scale` (caller sets it to `use_science`): per-band mean/σ for science flux and folded fits; global zero-anchored (mean pinned at 0, pooled RMS about zero) for **difference** flux — diff flux has a physical zero and per-band centering would break "all bands → 0". This also matches gpimg's zero-mean prior, so diff mode reverts to **zero** across a sampling gap while per-band mode reverts to the band's own mean. That difference is visible on gappy persistent sources (e.g. ZTF23aajoiiz across ZTF's seasonal gaps) and is the regime working as designed, not a bug — the old dense fit only hid it by over-smoothing.
     - Reported `sigma_f`/`jitter` are dimensionless (fractions of the band scatter); `l_t_days` is days in time mode but **cycles** when folded.
@@ -552,6 +555,13 @@ tests-e2e/                   # Playwright specs (8) + upstream replay fixtures; 
   envelope re-projected through the live Flux/Mag × App/Abs × Obs/Der × Fold state. Fetched
   **lazily** and keyed per variant (`diff` / `sci` / `fold:<period>`) so a late-arriving folded fit
   can't land on a time axis. See domain trap #14.
+- **GP kernel choice (Matérn-3/2 / Matérn-5/2)** — the LC overlay menu carries one GP entry per time
+  kernel the installed gpimg can build: "GP Matérn-3/2" (the original, once-differentiable sample
+  paths) and "GP Matérn-5/2" (twice differentiable — smoother posterior mean, shorter fitted ℓ_t,
+  about 2× the cost per point). Both are exact state-space models, so this is a modelling choice
+  rather than an accuracy/speed trade-off. The two fits cache side by side, so switching between
+  them after the first fetch is instant. Matérn-5/2 needs a gpimg that carries it; on an older core
+  the option isn't rendered at all. See domain trap #14.
 - **GP engine: gpimg** — the overlay is solved exactly in O(n) by the compiled `gpimg` core
   (Matérn-3/2 in time × squared-exponential in ln λ, as a linear Gaussian state-space model) instead
   of a dense scikit-learn GP. Measured on real objects: **437–515× faster** (1.0 s → 2.4 ms on

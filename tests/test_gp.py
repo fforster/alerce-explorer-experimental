@@ -9,7 +9,9 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 
+from src.services import gp
 from src.services.gp import fit_multiband_gp
 
 
@@ -435,3 +437,89 @@ def test_difference_mode_reverts_to_zero_far_from_any_data():
     edge = g["flux_mean"][0]                      # padded edge of the grid
     peak = max(abs(v) for v in g["flux_mean"])
     assert abs(edge) < 0.25 * peak
+
+
+# ── Kernel selection ─────────────────────────────────────────────────────────
+#
+# gpimg gained a second exact time kernel (Matérn-5/2) after the explorer
+# adopted it, so which kernels can be fitted is a property of the installed
+# core, not an assumption. These tests pin the parts that must hold on *any*
+# build; the ones that need 5/2 skip where it isn't there.
+
+def test_default_kernel_is_matern32_and_is_reported():
+    """An unqualified fit must stay the overlay's historical shape, and say so
+    — the client keys its cache on the kernel the bundle reports."""
+    assert gp.DEFAULT_KERNEL == "matern32"
+    assert "matern32" in gp.KERNELS
+    out = fit_multiband_gp(_synthetic_two_band(), n_grid=40)
+    assert out["kernel"] == "matern32"
+
+
+def test_kernel_name_spellings_are_accepted():
+    assert gp.normalize_kernel("Matern-3/2") == "matern32"
+    assert gp.normalize_kernel("matern_32") == "matern32"
+    assert gp.normalize_kernel(None) == "matern32"
+
+
+def test_unknown_kernel_is_unavailable_not_an_exception():
+    """A typo'd query param must degrade to a message in the fragment, not a
+    500 — the route's own failure path would hide which kernel was asked for."""
+    out = fit_multiband_gp(_synthetic_two_band(), n_grid=40, kernel="rbf")
+    assert out["available"] is False
+    assert "rbf" in out["message"]
+
+
+def test_unavailable_bundles_still_carry_the_kernel():
+    """The client attributes a response to its own variant, so even a failed
+    fit has to say which kernel it was."""
+    out = fit_multiband_gp([], kernel="matern32")
+    assert out["available"] is False
+    assert out["kernel"] == "matern32"
+
+
+@pytest.mark.skipif("matern52" not in gp.KERNELS,
+                    reason="installed gpimg has no Matérn-5/2")
+def test_matern52_fits_and_reports_itself():
+    out = fit_multiband_gp(_synthetic_two_band(), n_grid=120, kernel="matern52")
+    assert out["available"] is True
+    assert out["kernel"] == "matern52"
+    assert out["n_bands"] == 2
+    for g in out["grid"]:
+        assert all(math.isfinite(v) for v in g["flux_mean"])
+        assert all(v > 0 for v in g["flux_std"])
+
+
+@pytest.mark.skipif("matern52" not in gp.KERNELS,
+                    reason="installed gpimg has no Matérn-5/2")
+def test_matern52_is_a_different_fit_from_matern32():
+    """The two kernels are different models, not aliases — if this ever passes
+    trivially, the kernel argument has stopped reaching gpimg."""
+    series = _synthetic_two_band()
+    a = fit_multiband_gp(series, n_grid=120, kernel="matern32")
+    b = fit_multiband_gp(series, n_grid=120, kernel="matern52")
+    assert a["hyperparams"] != b["hyperparams"]
+    ga = next(x for x in a["grid"] if x["band"] == "g")
+    gb = next(x for x in b["grid"] if x["band"] == "g")
+    assert ga["flux_mean"] != gb["flux_mean"]
+    # Both still recover the same bump: a different kernel, not a broken fit.
+    peak_a = ga["mjd"][int(np.argmax(ga["flux_mean"]))]
+    peak_b = gb["mjd"][int(np.argmax(gb["flux_mean"]))]
+    assert abs(peak_a - peak_b) < 5.0
+
+
+@pytest.mark.skipif("matern52" not in gp.KERNELS,
+                    reason="installed gpimg has no Matérn-5/2")
+def test_matern52_posterior_is_smoother_than_matern32():
+    """Matérn-5/2 has twice-differentiable sample paths, so its posterior mean
+    bends where 3/2's kinks. Measured as the total squared second difference of
+    the mean curve on a common grid — the reason to offer the kernel at all."""
+    series = _synthetic_two_band(seed=3)
+
+    def roughness(out):
+        g = next(x for x in out["grid"] if x["band"] == "g")
+        mu = np.asarray(g["flux_mean"]) / max(abs(v) for v in g["flux_mean"])
+        return float(np.sum(np.diff(mu, 2) ** 2))
+
+    r32 = roughness(fit_multiband_gp(series, n_grid=300, kernel="matern32"))
+    r52 = roughness(fit_multiband_gp(series, n_grid=300, kernel="matern52"))
+    assert r52 < r32

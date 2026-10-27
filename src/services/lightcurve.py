@@ -535,7 +535,8 @@ async def get_lc_xsurvey_bundle(
 
 
 async def get_lc_gp_bundle(
-    *, survey: str, oid: str, fold_period: float | None = None, science: bool = False
+    *, survey: str, oid: str, fold_period: float | None = None, science: bool = False,
+    kernel: str = gp_service.DEFAULT_KERNEL,
 ) -> dict[str, Any]:
     """Deferred multi-band Gaussian-Process overlay fetch.
 
@@ -548,6 +549,8 @@ async def get_lc_gp_bundle(
     when folded — folding only makes sense on the science light curve). When
     `fold_period` is given the fit is done in phase space. The cross-survey
     lookup is wrapped so a failure there still yields a single-survey fit.
+    `kernel` selects the time kernel ("matern32" / "matern52"); it is echoed
+    back in the bundle so the client can tell the two fits apart.
     Returns `{oid, available, grid, hyperparams, folded, period, science, ...}`;
     on any fatal error the caller renders an `available=false` fragment.
     """
@@ -585,6 +588,7 @@ async def get_lc_gp_bundle(
         _assemble_gp_series(sources, science=use_science),
         fold_period=fold_period,
         per_band_scale=use_science,
+        kernel=kernel,
     )
     result["oid"] = oid
     result["science"] = use_science

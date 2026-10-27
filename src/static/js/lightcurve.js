@@ -553,7 +553,28 @@
 
   // Per-band line style: each overlay gets a distinct dash pattern so three
   // overlays on the same chart would still read as distinct curves.
-  const OVERLAY_DASH = { spm: [6, 4], fleet: [2, 3], tde: [5, 2, 1, 2], gp: [] };
+  const OVERLAY_DASH = { spm: [6, 4], fleet: [2, 3], tde: [5, 2, 1, 2], gp: [], gp52: [] };
+
+  // Two overlay values drive the same GP machinery and differ only in the
+  // gpimg time kernel the server is asked to fit: "gp" is Matérn-3/2 (the
+  // overlay's original shape, so the value is unchanged) and "gp52" is
+  // Matérn-5/2. They are separate menu entries rather than a second dropdown
+  // so picking one is a single click, and the per-variant cache keys on the
+  // kernel too — switching back and forth re-draws from cache without refitting.
+  const GP_OVERLAY_KERNELS = { gp: "matern32", gp52: "matern52" };
+  const GP_KERNEL_LABELS = { matern32: "Matérn-3/2", matern52: "Matérn-5/2" };
+  const GP_DEFAULT_KERNEL = "matern32";
+
+  function isGpOverlay(key) {
+    return Object.prototype.hasOwnProperty.call(GP_OVERLAY_KERNELS, key);
+  }
+
+  // The kernel the chart's current overlay selection asks for. Falls back to
+  // the default when the overlay isn't a GP at all, so callers that ask while
+  // "none" is selected get a well-formed key rather than undefined.
+  function gpKernelOf(chart) {
+    return GP_OVERLAY_KERNELS[chart && chart.$lcOverlay] || GP_DEFAULT_KERNEL;
+  }
 
   // Convert a model magnitude into whatever the axis expects, applying the
   // same distMod + extinction + band-offset corrections `projectPoint`
@@ -921,7 +942,7 @@
     const fits = chart.$lcFits;
     const key = chart.$lcOverlay;
     if (!key || key === "none") return [];
-    if (key !== "gp" && !fits) return [];
+    if (!isGpOverlay(key) && !fits) return [];
     const bands = (chart.$lcRaw && chart.$lcRaw.bands) || [];
     const fpBands = (chart.$lcRaw && chart.$lcRaw.fpBands) || [];
     // Offset is keyed by band letter (a g overlay gets the same Δ as a g
@@ -933,7 +954,7 @@
     if (key === "spm") traces = computeSPMTraces(fits, bands, axisMode, distMod, extByBand, foldPeriod, offsetFor);
     else if (key === "fleet") traces = computeFleetTraces(fits, bands, fpBands, axisMode, distMod, extByBand, foldPeriod, offsetFor);
     else if (key === "tde") traces = computeTDETailTraces(fits, bands, axisMode, distMod, extByBand, foldPeriod, offsetFor);
-    else if (key === "gp") traces = computeGPTraces(chart, axisMode, distMod, extByBand, foldPeriod, offsetFor);
+    else if (isGpOverlay(key)) traces = computeGPTraces(chart, axisMode, distMod, extByBand, foldPeriod, offsetFor);
     // Stamp survey + kind so the legend grouper places overlays under the
     // right survey's header. The parametric overlays derive from the primary
     // survey's features; GP traces already carry their own $survey (cross-
@@ -970,7 +991,7 @@
     // GP info comes from the fitted hyperparameters, not a per-band param
     // table. Show the kernel's two length scales (time + wavelength), the
     // amplitude, and the learned jitter, plus the data size that fed the fit.
-    if (key === "gp") {
+    if (isGpOverlay(key)) {
       // Folded GP is only defined in Sci mode (it fits the science light
       // curve) — nudge the user there instead of showing a stale/empty strip.
       if (chart.$lcFold === "fold" && chart.$lcPeriod > 0 && chart.$lcSource !== "sci") {
@@ -1004,9 +1025,12 @@
         `jitter=<b>${fmt(hp.jitter, 2)}</b>`,
       ];
       const flux = gp.science ? "sci flux" : "diff flux";
+      // Name the kernel: the two GP entries produce visibly different curves
+      // from the same data, so the strip has to say which one is on screen.
+      const kern = GP_KERNEL_LABELS[gp.kernel || GP_DEFAULT_KERNEL] || gp.kernel;
       const tag = gp.folded
-        ? `folded P=${fmt(gp.period, 6)} d · ${flux} · ${gp.n_points} det`
-        : `${flux} · ${gp.n_points} det, ${gp.n_bands} bands`;
+        ? `${kern} · folded P=${fmt(gp.period, 6)} d · ${flux} · ${gp.n_points} det`
+        : `${kern} · ${flux} · ${gp.n_points} det, ${gp.n_bands} bands`;
       strip.innerHTML =
         `GP&nbsp;&nbsp;${parts.join("&nbsp;&nbsp;")}` +
         `&nbsp;&nbsp;<span style="color:#888">(${tag})</span>`;
@@ -1282,7 +1306,7 @@
   // whether the panel seizes the residuals cell, so the panel stays put during
   // a Diff↔Sci / fold variant swap instead of flickering back to residuals.
   function gpReadyFor(chart) {
-    return !!(chart && chart.$lcOverlay === "gp" && chart.$lcGp &&
+    return !!(chart && isGpOverlay(chart.$lcOverlay) && chart.$lcGp &&
               chart.$lcGpKey === gpDesiredKey(chart));
   }
 
@@ -1291,7 +1315,7 @@
     document.dispatchEvent(new CustomEvent("lc:gpChanged", {
       detail: {
         canvasId: id,
-        overlaySelected: !!(chart && chart.$lcOverlay === "gp"),
+        overlaySelected: !!(chart && isGpOverlay(chart.$lcOverlay)),
         gpReady: gpReadyFor(chart),
       },
     }));
@@ -1303,7 +1327,7 @@
   window.lcGpState = function (canvasOrId) {
     const chart = window.lcGetChart ? window.lcGetChart(canvasOrId) : null;
     if (!chart) return { overlaySelected: false, gpReady: false };
-    return { overlaySelected: chart.$lcOverlay === "gp", gpReady: gpReadyFor(chart) };
+    return { overlaySelected: isGpOverlay(chart.$lcOverlay), gpReady: gpReadyFor(chart) };
   };
   window.lcGpActive = function (canvasOrId) {
     return window.lcGpState(canvasOrId).overlaySelected;
@@ -2110,7 +2134,7 @@
       // is needed (folded GP fits the folded *science* light curve, allowed
       // only in Sci mode). Swap to the matching fit.
       if ((spec.chartProp === "$lcFold" || spec.chartProp === "$lcSource")
-          && c.$lcOverlay === "gp") ensureGpLoaded(c);
+          && isGpOverlay(c.$lcOverlay)) ensureGpLoaded(c);
     });
   }
 
@@ -2386,8 +2410,8 @@
       // raw LC — so it bypasses the $lcFits guard and instead lazily fetches
       // its posterior the first time it's picked (the spinner shows meanwhile;
       // lcSetGp re-renders when it lands).
-      if (next === "gp") {
-        c.$lcOverlay = "gp";
+      if (isGpOverlay(next)) {
+        c.$lcOverlay = next;
         ensureGpLoaded(c);
         applyModes(c);
         cacheAndPushLcState(c);
@@ -2869,9 +2893,9 @@
       const sel = overlayWrap.querySelector(".lc-overlay-select");
       if (sel) {
         for (const opt of sel.options) {
-          // "none" and "gp" are always selectable — GP fits the raw LC, so
+          // "none" and the GP entries are always selectable — GP fits the raw LC, so
           // it doesn't depend on the feature-extractor fits this loop gates.
-          if (opt.value === "none" || opt.value === "gp") continue;
+          if (opt.value === "none" || isGpOverlay(opt.value)) continue;
           opt.disabled = !fits[opt.value];
         }
         // Restore overlay choice from URL if the corresponding fit now
@@ -2903,31 +2927,37 @@
     }
   }
 
-  // Which GP variant the chart currently needs — the fit follows the display
-  // mode, so the right flux is always fit:
-  //   "time"        — unfolded, Diff mode: time-domain fit of difference flux.
-  //   "sci"         — unfolded, Sci mode: time-domain fit of science flux.
-  //   "fold:P"      — folded (Sci only): phase-domain fit of the science flux
+  // Which GP variant the chart currently needs. A variant is "<kernel>|<what
+  // was fit>" — the fit follows both the chosen kernel and the display mode,
+  // so the right flux is always fit with the kernel the menu is showing:
+  //   "<k>|time"    — unfolded, Diff mode: time-domain fit of difference flux.
+  //   "<k>|sci"     — unfolded, Sci mode: time-domain fit of science flux.
+  //   "<k>|fold:P"  — folded (Sci only): phase-domain fit of the science flux
   //                   at period P (folding only makes sense on the science
   //                   light curve, so it's gated to Sci mode).
   //   null          — folded but not in Sci mode: no valid GP to show.
-  // ensureGpLoaded fetches/caches per key so switching Diff↔Sci, folding, or
-  // picking a new period swaps to the matching fit. Keys derive from the same
-  // chart.$lcPeriod Number on both request and response, so they round-trip-
-  // match exactly.
+  // ensureGpLoaded fetches/caches per key so switching kernels, Diff↔Sci,
+  // folding, or picking a new period swaps to the matching fit — and switching
+  // back is instant, since the earlier fit is still cached under its own key.
+  // Keys derive from the same chart.$lcPeriod Number on both request and
+  // response, so they round-trip-match exactly.
   function gpDesiredKey(chart) {
+    const k = gpKernelOf(chart) + "|";
     if (chart.$lcFold === "fold" && chart.$lcPeriod > 0) {
-      return chart.$lcSource === "sci" ? "fold:" + chart.$lcPeriod : null;
+      return chart.$lcSource === "sci" ? k + "fold:" + chart.$lcPeriod : null;
     }
-    return chart.$lcSource === "sci" ? "sci" : "time";
+    return k + (chart.$lcSource === "sci" ? "sci" : "time");
   }
 
-  // The key a returned bundle represents — derived from its OWN folded / science
-  // / period flags (NOT a shared loading flag), so overlapping fetches can't be
-  // misattributed.
+  // The key a returned bundle represents — derived from its OWN kernel /
+  // folded / science / period fields (NOT a shared loading flag), so
+  // overlapping fetches can't be misattributed. The server echoes the kernel
+  // back for exactly this; a bundle from an older server without the field is
+  // read as the default kernel, which is what it would have fitted.
   function gpBundleKey(bundle) {
-    if (bundle && bundle.folded) return "fold:" + bundle.period;
-    return bundle && bundle.science ? "sci" : "time";
+    const k = ((bundle && bundle.kernel) || GP_DEFAULT_KERNEL) + "|";
+    if (bundle && bundle.folded) return k + "fold:" + bundle.period;
+    return k + (bundle && bundle.science ? "sci" : "time");
   }
 
   // Spinner reflects "the desired variant isn't here yet and is being fetched".
@@ -2936,7 +2966,7 @@
     const want = gpDesiredKey(chart);
     const have = chart.$lcGp && chart.$lcGpKey === want;
     const loading = want != null && chart.$lcGpInflight && chart.$lcGpInflight.has(want);
-    setGpStatus(oid, chart.$lcOverlay === "gp" && !have && !!loading);
+    setGpStatus(oid, isGpOverlay(chart.$lcOverlay) && !have && !!loading);
   }
 
   // Lazily fetch the GP posterior for the chart's current state. Cached per key
@@ -2966,9 +2996,14 @@
     if (!base || !(window.htmx && typeof window.htmx.ajax === "function")) return;
     // Variant → query params: folded carries the period (science implied
     // server-side); unfolded Sci asks for science flux; unfolded Diff is bare.
+    // The kernel is only sent when it isn't the default, so the 3/2 request is
+    // byte-identical to the one this endpoint has always received.
+    const sep = want.indexOf("|");
+    const kernel = want.slice(0, sep), mode = want.slice(sep + 1);
     let url = base;
-    if (want.startsWith("fold:")) url += "&fold_period=" + encodeURIComponent(chart.$lcPeriod);
-    else if (want === "sci") url += "&science=1";
+    if (kernel !== GP_DEFAULT_KERNEL) url += "&kernel=" + encodeURIComponent(kernel);
+    if (mode.startsWith("fold:")) url += "&fold_period=" + encodeURIComponent(chart.$lcPeriod);
+    else if (mode === "sci") url += "&science=1";
     inflight.add(want);
     refreshGpSpinner(chart);
     // Each fetch clears its OWN key on completion (the response identifies its
@@ -3097,7 +3132,7 @@
     }
     // A new fold period means a new phase-domain GP — swap to (or fetch) the
     // fit for this period.
-    if (chart.$lcOverlay === "gp") ensureGpLoaded(chart);
+    if (isGpOverlay(chart.$lcOverlay)) ensureGpLoaded(chart);
   };
 
   document.addEventListener("DOMContentLoaded", () => initAll(document));
@@ -3115,5 +3150,8 @@
     projectModel, projectFluxModel, spmFlux_mJy, fleetMag, mjdEnvelope,
     // Per-object science-flux availability (drives the Diff/Sci fallback).
     chartHasScienceFlux,
+    // GP overlay/kernel bookkeeping: which menu values are a GP, and the
+    // variant keys that decide whether an arriving fit is the one on screen.
+    isGpOverlay, gpKernelOf, gpDesiredKey, gpBundleKey,
   };
 })();

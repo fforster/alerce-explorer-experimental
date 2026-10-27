@@ -232,3 +232,64 @@ describe("mjdEnvelope", () => {
     expect(T.mjdEnvelope([])).toBeNull();
   });
 });
+
+/* GP overlay kernel selection.
+ *
+ * The overlay menu carries one entry per gpimg time kernel ("gp" = Matérn-3/2,
+ * "gp52" = Matérn-5/2). Both run the same machinery, so every GP code path
+ * tests membership rather than equality, and the per-variant cache key folds
+ * the kernel in beside the fold/science state — otherwise a 5/2 fit landing
+ * after the user switched back to 3/2 would be drawn as the 3/2 curve.
+ */
+describe("GP overlay — kernel selection", () => {
+  const chart = (overlay, extra = {}) => ({
+    $lcOverlay: overlay, $lcFold: "off", $lcSource: "diff", $lcPeriod: 0, ...extra,
+  });
+
+  test("both menu values count as the GP overlay, nothing else does", () => {
+    expect(T.isGpOverlay("gp")).toBe(true);
+    expect(T.isGpOverlay("gp52")).toBe(true);
+    for (const k of ["none", "spm", "fleet", "tde", undefined, null, ""]) {
+      expect(T.isGpOverlay(k)).toBe(false);
+    }
+  });
+
+  test("the menu value maps to the kernel the server is asked for", () => {
+    expect(T.gpKernelOf(chart("gp"))).toBe("matern32");
+    expect(T.gpKernelOf(chart("gp52"))).toBe("matern52");
+    // A non-GP selection still yields a well-formed key rather than undefined.
+    expect(T.gpKernelOf(chart("none"))).toBe("matern32");
+  });
+
+  test("the variant key carries the kernel alongside the display mode", () => {
+    expect(T.gpDesiredKey(chart("gp"))).toBe("matern32|time");
+    expect(T.gpDesiredKey(chart("gp52"))).toBe("matern52|time");
+    expect(T.gpDesiredKey(chart("gp52", { $lcSource: "sci" }))).toBe("matern52|sci");
+    expect(T.gpDesiredKey(chart("gp52", {
+      $lcSource: "sci", $lcFold: "fold", $lcPeriod: 2.5,
+    }))).toBe("matern52|fold:2.5");
+  });
+
+  test("folding outside Sci mode still has no valid variant", () => {
+    expect(T.gpDesiredKey(chart("gp52", { $lcFold: "fold", $lcPeriod: 2.5 }))).toBe(null);
+  });
+
+  test("a bundle is keyed by the kernel it reports, not the one now selected", () => {
+    expect(T.gpBundleKey({ kernel: "matern52", science: false })).toBe("matern52|time");
+    expect(T.gpBundleKey({ kernel: "matern52", science: true })).toBe("matern52|sci");
+    expect(T.gpBundleKey({ kernel: "matern52", folded: true, period: 2.5 }))
+      .toBe("matern52|fold:2.5");
+  });
+
+  test("a bundle with no kernel field reads as the default kernel", () => {
+    expect(T.gpBundleKey({ science: true })).toBe("matern32|sci");
+  });
+
+  test("the two kernels' fits never collide in the cache", () => {
+    const a = T.gpDesiredKey(chart("gp", { $lcSource: "sci" }));
+    const b = T.gpDesiredKey(chart("gp52", { $lcSource: "sci" }));
+    expect(a).not.toBe(b);
+    // ...and a 5/2 response can't be adopted while 3/2 is selected.
+    expect(T.gpBundleKey({ kernel: "matern52", science: true })).not.toBe(a);
+  });
+});

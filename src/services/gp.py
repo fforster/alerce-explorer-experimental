@@ -11,7 +11,15 @@ Method — one joint GP over (time, wavelength), evaluated exactly in O(n) by
 `gpimg`, which puts the model in state-space form and runs a Kalman filter and
 smoother instead of a dense Cholesky:
 
-    k((t,λ), (t',λ')) = A² · Matérn-3/2(|t−t'|; ℓ_t) · exp(−(ln λ − ln λ')²/2ℓ_λ²)
+    k((t,λ), (t',λ')) = A² · Matérn-ν(|t−t'|; ℓ_t) · exp(−(ln λ − ln λ')²/2ℓ_λ²)
+
+The time kernel is selectable: Matérn-3/2 (the default, once-differentiable
+sample paths — the shape the overlay has always had) or Matérn-5/2 (twice
+differentiable, so the posterior mean is visibly smoother and its curvature is
+defined). Both are *exact* state-space models; 5/2 simply carries three latent
+states per band instead of two, so it costs ~2× per point and nothing else
+about the method changes. Which kernels the installed gpimg can build is read
+off `build_info()`, so an older core transparently offers only 3/2.
 
 The wavelength factor is the coregionalization: bands close in wavelength are
 strongly correlated, ℓ_λ→0 recovers independent per-band GPs, and one extra
@@ -48,6 +56,16 @@ _MIN_POINTS = 5
 # guard rather than the O(N³) cost guard the dense fit needed — it sits two
 # orders of magnitude above the old 800. Thinning is uniform per band.
 _MAX_POINTS = 50_000
+
+# Time kernels the installed gpimg core can build a state space for. Matérn-5/2
+# arrived after the first release, so this is read from the build rather than
+# assumed: an older core advertises no "kernels" key and we offer 3/2 alone,
+# instead of raising a TypeError deep inside the fit.
+KERNELS: tuple[str, ...] = tuple(gpimg.build_info().get("kernels") or ("matern32",))
+
+#: The kernel used when a caller doesn't ask for one — the overlay's historical
+#: shape, so an unqualified fit is byte-for-byte what it always was.
+DEFAULT_KERNEL = "matern32"
 
 # gpimg carries up to six distinct wavelengths. Band letters are pooled across
 # surveys before the fit, so LSST ugrizy + ZTF gri is exactly six — no headroom.
@@ -157,9 +175,21 @@ def _subsample(groups: list[dict[str, Any]], max_points: int) -> list[dict[str, 
     return out
 
 
-def _unavailable(message: str) -> dict[str, Any]:
+def normalize_kernel(name: str | None) -> str:
+    """Canonical kernel name, accepting the spellings gpimg accepts ('matern52',
+    'Matern-5/2', 'matern_52', …). Unknown or unsupported names raise, so a
+    typo'd query param fails loudly here rather than silently fitting 3/2."""
+    if name is None:
+        return DEFAULT_KERNEL
+    key = "".join(ch for ch in str(name).lower() if ch not in "-_/ ")
+    if key not in KERNELS:
+        raise ValueError(f"kernel must be one of {list(KERNELS)}, got {name!r}")
+    return key
+
+
+def _unavailable(message: str, kernel: str = DEFAULT_KERNEL) -> dict[str, Any]:
     return {"available": False, "grid": [], "cov_offdiag": {}, "hyperparams": {},
-            "message": message}
+            "kernel": kernel, "message": message}
 
 
 def _standardize(
@@ -229,6 +259,7 @@ def fit_multiband_gp(
     random_state: int = 0,
     fold_period: float | None = None,
     per_band_scale: bool = True,
+    kernel: str = DEFAULT_KERNEL,
 ) -> dict[str, Any]:
     """Fit one joint GP over (time, wavelength) and return per-band flux grids.
 
@@ -237,6 +268,12 @@ def fit_multiband_gp(
     wraps around the 0/1 boundary, and the returned grid spans one phase cycle
     [0, 1] (the `mjd` field then carries phase, and `folded`/`period` are set).
     Otherwise it's the time-domain fit and the grid spans the MJD range.
+
+    `kernel` picks the time kernel — "matern32" (default) or "matern52" when
+    the installed gpimg carries it. Both are exact; 5/2 has twice-differentiable
+    sample paths, so its posterior mean is smoother (and, in practice, its
+    fitted ℓ_t shorter) than 3/2's. The returned bundle echoes the kernel back
+    so the client can key its per-variant cache on it.
 
     `random_state` is accepted and ignored: the fit is a deterministic
     projected-BFGS run from a fixed multi-start design, so there is no seed.
@@ -249,10 +286,14 @@ def fit_multiband_gp(
     serialise them straight into the deferred fragment.
     """
     del random_state  # deterministic fit; kept for call-site compatibility
+    try:
+        kernel = normalize_kernel(kernel)
+    except ValueError as e:
+        return _unavailable(str(e))
     folded = fold_period is not None and fold_period > 0
     groups = _clean_series(series)
     if not groups:
-        return _unavailable("No detections available for a GP fit.")
+        return _unavailable("No detections available for a GP fit.", kernel)
     groups = _cap_bands(groups, _MAX_BANDS)
 
     # Folded fits tile the data ×3 for periodic continuity, so spend a third of
@@ -262,7 +303,7 @@ def fit_multiband_gp(
     n_total = sum(len(g["mjd"]) for g in groups)
     if n_total < _MIN_POINTS:
         return _unavailable(
-            f"Too few detections for a GP fit ({n_total} < {_MIN_POINTS})."
+            f"Too few detections for a GP fit ({n_total} < {_MIN_POINTS}).", kernel
         )
 
     stats = _standardize(groups, per_band_scale)
@@ -289,7 +330,11 @@ def fit_multiband_gp(
         x_out = grid_t
 
     try:
-        gp = gpimg.GP(t_fit, band_fit, y_fit, e_fit, wavelengths=wavelengths)
+        # The kwarg is only passed for a non-default kernel: gpimg 0.1.0 has no
+        # `kernel` parameter at all, and the default path must keep working
+        # there (normalize_kernel already rejected matern52 on such a build).
+        kw = {} if kernel == DEFAULT_KERNEL else {"kernel": kernel}
+        gp = gpimg.GP(t_fit, band_fit, y_fit, e_fit, wavelengths=wavelengths, **kw)
         res = gp.fit(jitter=True, bounds=_bounds(folded), nstart=5)
         # The RTS smoother is the numerically stable backward pass: on a bright
         # light curve the posterior variance just before the first observation
@@ -298,7 +343,7 @@ def fit_multiband_gp(
         curves, covs = gp.predict_bands(grid_t, theta=res.theta, smoother="rts", cov=True)
     except Exception:  # pragma: no cover - defensive; the solve is non-iterative
         log.exception("GP fit failed")
-        return _unavailable("Gaussian process fit failed to converge.")
+        return _unavailable("Gaussian process fit failed to converge.", kernel)
 
     grid: list[dict[str, Any]] = []
     for g in groups:
@@ -334,6 +379,7 @@ def fit_multiband_gp(
         "available": True,
         "grid": grid,
         "cov_offdiag": cov_offdiag,
+        "kernel": kernel,
         "hyperparams": _hyperparams(res),
         "n_points": int(n_total),
         "n_bands": len(groups),

@@ -26,6 +26,7 @@ from ..services import classifiers as classifiers_service
 from ..services import coord_residuals as coord_residuals_service
 from ..services import crossmatch as crossmatch_service
 from ..services import features as features_service
+from ..services import gp as gp_service
 from ..services import lightcurve as lightcurve_service
 from ..services import magstats as magstats_service
 from ..services import object_info as object_info_service
@@ -682,6 +683,10 @@ async def lightcurve(request: Request, oid: str, survey_id: str) -> HTMLResponse
             "ra": None,
             "dec": None,
             "extinction_r": SC(survey_id).extinction_r,
+            # Which GP time kernels this build can fit. Matérn-5/2 needs a
+            # gpimg that carries it, so the option is rendered only when the
+            # server could actually honour it.
+            "gp_kernels": gp_service.KERNELS,
         },
     )
 
@@ -781,6 +786,7 @@ async def lc_xsurvey(request: Request, oid: str, survey_id: str) -> HTMLResponse
 async def lc_gp(
     request: Request, oid: str, survey_id: str,
     fold_period: float | None = None, science: bool = False,
+    kernel: str = gp_service.DEFAULT_KERNEL,
 ) -> HTMLResponse:
     """Deferred multi-band Gaussian-Process overlay fetch — fired lazily when
     the user picks "GP" in the LC overlay <select> (not on load: a GP fit is
@@ -788,18 +794,21 @@ async def lc_gp(
     cross-survey counterpart, fits one joint GP over (time, wavelength), and
     hands the per-band flux grid to `window.lcSetGp(canvasId, bundle)`. The fit
     follows the client's display mode: `science` selects science vs difference
-    flux, and `fold_period` (always science) fits the folded phase curve. On
+    flux, and `fold_period` (always science) fits the folded phase curve.
+    `kernel` picks the time kernel — "matern32" (the default, and the overlay's
+    historical shape) or "matern52" where the installed gpimg provides it. On
     any failure returns an `available=false` bundle so the client clears the
     spinner and reverts the picker."""
     _validate_survey(survey_id)
     try:
         bundle = await lightcurve_service.get_lc_gp_bundle(
             survey=survey_id, oid=oid, fold_period=fold_period, science=science,
+            kernel=kernel,
         )
     except Exception:
         log.exception("lc_gp failed")
         bundle = {"available": False, "grid": [], "cov_offdiag": {},
-                  "hyperparams": {},
+                  "hyperparams": {}, "kernel": kernel,
                   "message": "Gaussian process fit failed.", "oid": oid}
     return templates.TemplateResponse(
         request,
