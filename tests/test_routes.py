@@ -1324,7 +1324,7 @@ def test_lc_xsurvey_endpoint_handles_no_match(client, monkeypatch):
 def test_lc_gp_endpoint_returns_inline_setGp(client, monkeypatch):
     """Deferred GP endpoint hands the per-band posterior grid to
     `window.lcSetGp` so the client can draw the multi-band overlay."""
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         return {
             "available": True,
             "grid": [{
@@ -1352,7 +1352,7 @@ def test_lc_gp_endpoint_serializes_cov_offdiag(client, monkeypatch):
     """The off-diagonal band covariances ride inside the GP bundle so the
     color-evolution panel can propagate color errors with the proper
     band-band correlation."""
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         return {
             "available": True,
             "grid": [
@@ -1381,7 +1381,7 @@ def test_lc_gp_endpoint_serializes_cov_offdiag(client, monkeypatch):
 def test_lc_gp_endpoint_handles_fit_failure(client, monkeypatch):
     """A raised error from the service still yields a 200 fragment carrying an
     `available:false` bundle so the client clears the spinner + reverts."""
-    async def boom(*, survey, oid, fold_period=None, science=False):
+    async def boom(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         raise RuntimeError("sklearn blew up")
 
     monkeypatch.setattr(
@@ -1398,7 +1398,7 @@ def test_lc_gp_endpoint_forwards_fold_period(client, monkeypatch):
     on the folded (phase) light curve."""
     seen = {}
 
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         seen["fold_period"] = fold_period
         return {"available": True, "grid": [{
             "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
@@ -1421,7 +1421,7 @@ def test_lc_gp_endpoint_forwards_science_flag(client, monkeypatch):
     """science=1 selects a science-flux fit (unfolded Sci mode)."""
     seen = {}
 
-    async def fake_bundle(*, survey, oid, fold_period=None, science=False):
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
         seen["science"] = science
         return {"available": True, "grid": [{
             "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
@@ -1438,6 +1438,67 @@ def test_lc_gp_endpoint_forwards_science_flag(client, monkeypatch):
     assert r.status_code == 200
     assert seen["science"] is True
     assert '"science":true' in r.text
+
+
+def test_lc_gp_endpoint_forwards_kernel(client, monkeypatch):
+    """The kernel query param picks the time kernel and is echoed back in the
+    bundle — the client keys its per-variant cache on it, so a 5/2 fit landing
+    after the user switched back to 3/2 must be identifiable as 5/2."""
+    seen = {}
+
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="matern32", **kw):
+        seen["kernel"] = kernel
+        return {"available": True, "grid": [{
+            "survey": "ztf", "surveys": ["ztf"], "band": "g", "lambda_eff": 4746.0,
+            "mjd": [60000.0, 60001.0], "flux_mean": [1.0, 2.0], "flux_std": [1.0, 1.0],
+        }], "hyperparams": {}, "kernel": kernel, "n_points": 20, "n_bands": 1,
+            "folded": False, "period": None, "message": "", "oid": oid}
+
+    monkeypatch.setattr(
+        "src.routes.htmx.lightcurve_service.get_lc_gp_bundle", fake_bundle,
+    )
+    r = client.get("/htmx/lc_gp?oid=ZTF21abc&survey_id=ztf&kernel=matern52")
+    assert r.status_code == 200
+    assert seen["kernel"] == "matern52"
+    assert '"kernel":"matern52"' in r.text
+
+
+def test_lc_gp_endpoint_defaults_to_matern32(client, monkeypatch):
+    """No kernel param → the overlay's historical shape, not whatever the
+    newest gpimg happens to default to."""
+    seen = {}
+
+    async def fake_bundle(*, survey, oid, fold_period=None, science=False, kernel="x", **kw):
+        seen["kernel"] = kernel
+        return {"available": False, "grid": [], "cov_offdiag": {},
+                "hyperparams": {}, "kernel": kernel, "message": "", "oid": oid}
+
+    monkeypatch.setattr(
+        "src.routes.htmx.lightcurve_service.get_lc_gp_bundle", fake_bundle,
+    )
+    client.get("/htmx/lc_gp?oid=ZTF21abc&survey_id=ztf")
+    assert seen["kernel"] == "matern32"
+
+
+def test_lightcurve_offers_a_gp_option_per_available_kernel(client, monkeypatch):
+    """The overlay menu renders one GP entry per kernel the installed gpimg can
+    build — Matérn-5/2 is hidden on a core that can't fit it, rather than being
+    offered and failing."""
+    async def fake_lc(*, survey, oid):
+        return {"oid": oid, "survey": survey, "n_det": 3, "n_fp": 0,
+                "bands": [{"band": "g", "mjd": [1.0], "flux": [1.0], "eflux": [0.1],
+                           "candid": ["1"], "has_stamp": [False]}],
+                "forced_phot_bands": []}
+
+    monkeypatch.setattr("src.routes.htmx.lightcurve_service.get_lightcurve", fake_lc)
+    monkeypatch.setattr("src.routes.htmx.gp_service.KERNELS", ("matern32",))
+    assert 'value="gp52"' not in client.get(
+        "/htmx/lightcurve?oid=ZTF21abc&survey_id=ztf").text
+
+    monkeypatch.setattr("src.routes.htmx.gp_service.KERNELS", ("matern32", "matern52"))
+    body = client.get("/htmx/lightcurve?oid=ZTF21abc&survey_id=ztf").text
+    assert 'value="gp52"' in body
+    assert 'value="gp"' in body
 
 
 def test_lightcurve_empty_shows_message(client, monkeypatch):

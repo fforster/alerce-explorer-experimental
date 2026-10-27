@@ -20,6 +20,8 @@ from typing import Any
 
 from . import alerce_client
 from . import gp as gp_service
+from . import lc_cache
+from . import ztf_dr as ztf_dr_service
 from .features import extract_parametric_fits, pick_default_version
 from .normalize import normalize_dets
 from .survey_config import SC
@@ -272,7 +274,7 @@ async def get_lightcurve(*, survey: str, oid: str) -> dict[str, Any]:
     return shape_lightcurve(raw, survey=survey)
 
 
-async def get_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
+async def _fetch_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
     """Deferred FP fetch — returns a fresh `shape_lightcurve` payload that
     *also* re-merges v2 mag_corr into v1 detections (ZTF sci-mode error
     bars need this; the synchronous render skips it). The client replaces
@@ -303,7 +305,7 @@ async def get_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
     return shape_lightcurve(raw, survey=survey, fp_raw=fp_raw)
 
 
-async def get_lc_xsurvey_bundle(
+async def _fetch_lc_xsurvey_bundle(
     *, survey: str, oid: str
 ) -> dict[str, Any] | None:
     """Cross-survey LC bundle: find the same source on the *other* survey via
@@ -406,12 +408,22 @@ async def get_lc_features_bundle(
     return {"multiband_period": period, "parametric_fits": fits}
 
 
-# Forced photometry is included in the GP fit only within this many days
-# either side of the detection span. Detections pin where the source is real;
-# the FP margins give the GP pre-explosion baseline and post-peak decay
-# context, while the window keeps the O(N³) solve bounded (a transient's full
-# FP history can run to thousands of epochs that would swamp the fit).
-GP_FP_WINDOW_DAYS = 30.0
+# The DR cone radius comes from the client (it must match the cone the DR
+# button searched, or the fit and the plot would disagree). Clamp it to the
+# same envelope `/api/ztf_dr` enforces so a hand-edited request can't turn the
+# GP overlay into an unbounded archival query.
+_DR_RADIUS_LIMITS = (0.1, 60.0)
+
+
+def _clamp_dr_radius(radius: float | None) -> float:
+    lo, hi = _DR_RADIUS_LIMITS
+    try:
+        r = float(radius)
+    except (TypeError, ValueError):
+        return ztf_dr_service.DEFAULT_RADIUS_ARCSEC
+    if not (r == r) or r <= 0:  # NaN or non-positive
+        return ztf_dr_service.DEFAULT_RADIUS_ARCSEC
+    return min(max(r, lo), hi)
 
 
 def _iter_band_points(
@@ -453,22 +465,15 @@ def _assemble_gp_series(
     contributing surveys' central wavelengths, and `surveys` records which
     telescopes fed it so the client can keep the curve tied to the legend.
 
-    Detections are always kept; forced photometry only within
-    GP_FP_WINDOW_DAYS of the global detection span."""
+    **Every point the chart is showing goes in.** Forced photometry used to be
+    clipped to a ±30 d window around the detection span, because the dense
+    O(N³) solve could not afford a transient's full FP history. gpimg is O(n),
+    so that window only served to make the overlay disagree with the plot: the
+    user saw FP epochs the fit had never been given. Points far from the
+    detections carry large errors and are down-weighted on their own merits.
+    Archival DR photometry rides in the same way — the caller appends it as
+    another source, in science mode only (DR has no difference flux)."""
     flux_key, eflux_key = ("sci_flux", "e_sci_flux") if science else ("flux", "e_flux")
-
-    # Detection MJD envelope across every source, both surveys.
-    det_mjds = [
-        mjd
-        for survey, bundle in sources
-        for _n, _l, mjd, _f, _e in _iter_band_points(bundle, survey, "bands", flux_key, eflux_key)
-    ]
-    if det_mjds:
-        lo, hi = min(det_mjds) - GP_FP_WINDOW_DAYS, max(det_mjds) + GP_FP_WINDOW_DAYS
-    else:
-        # No detections to anchor the window — fall back to FP as-is (the GP's
-        # own guards will bail if there still aren't enough points).
-        lo, hi = float("-inf"), float("inf")
 
     groups: dict[str, dict[str, Any]] = {}
 
@@ -491,8 +496,7 @@ def _assemble_gp_series(
         for name, lam, mjd, flux, eflux in _iter_band_points(
             bundle, survey, "forced_phot_bands", flux_key, eflux_key
         ):
-            if lo <= mjd <= hi:
-                add(survey, name, lam, mjd, flux, eflux)
+            add(survey, name, lam, mjd, flux, eflux)
 
     series: list[dict[str, Any]] = []
     for g in groups.values():
@@ -503,22 +507,66 @@ def _assemble_gp_series(
     return series
 
 
+async def get_lc_fp_bundle(*, survey: str, oid: str) -> dict[str, Any] | None:
+    """Cached front door to `_fetch_lc_fp_bundle` — see `services/lc_cache.py`.
+
+    The detail view fetches this on load via `/htmx/lc_fp`; the GP overlay needs
+    the identical `(survey, oid)` bundle when the user picks it. Memoizing here
+    rather than at the call sites means every consumer shares one upstream fetch
+    without any route change.
+    """
+    return await lc_cache.get_or_fetch(
+        "lc_fp", survey, oid,
+        lambda: _fetch_lc_fp_bundle(survey=survey, oid=oid),
+    )
+
+
+async def get_lc_xsurvey_bundle(
+    *, survey: str, oid: str
+) -> dict[str, Any] | None:
+    """Cached front door to `_fetch_lc_xsurvey_bundle` — see `services/lc_cache.py`.
+
+    Worth caching even harder than the FP bundle: this is a three-call pipeline
+    (object_info → cone-search → LC + FP) and a `None` result (no counterpart) is
+    cached too, so the GP path doesn't redo the whole lookup to rediscover that
+    there is no cross-survey match.
+    """
+    return await lc_cache.get_or_fetch(
+        "lc_xsurvey", survey, oid,
+        lambda: _fetch_lc_xsurvey_bundle(survey=survey, oid=oid),
+    )
+
+
 async def get_lc_gp_bundle(
-    *, survey: str, oid: str, fold_period: float | None = None, science: bool = False
+    *, survey: str, oid: str, fold_period: float | None = None, science: bool = False,
+    kernel: str = gp_service.DEFAULT_KERNEL,
+    dr: bool = False, ra: float | None = None, dec: float | None = None,
+    dr_radius: float = ztf_dr_service.DEFAULT_RADIUS_ARCSEC,
 ) -> dict[str, Any]:
     """Deferred multi-band Gaussian-Process overlay fetch.
 
-    Assembles detections + forced photometry (the latter capped to
-    GP_FP_WINDOW_DAYS around the detection span) from this object *and*
-    (best-effort) its cross-survey counterpart, maps each band to its central
-    wavelength, and fits one joint GP over (time, wavelength) — see
-    `services/gp.py`. The flux fitted follows the client's display mode:
-    difference flux by default, science flux when `science` is set (and always
-    when folded — folding only makes sense on the science light curve). When
-    `fold_period` is given the fit is done in phase space. The cross-survey
-    lookup is wrapped so a failure there still yields a single-survey fit.
-    Returns `{oid, available, grid, hyperparams, folded, period, science, ...}`;
-    on any fatal error the caller renders an `available=false` fragment.
+    Assembles **every point the light curve is plotting** — detections and the
+    full forced-photometry series from this object *and* (best-effort) its
+    cross-survey counterpart — maps each band to its central wavelength, and
+    fits one joint GP over (time, wavelength); see `services/gp.py`. The flux
+    fitted follows the client's display mode: difference flux by default,
+    science flux when `science` is set (and always when folded — folding only
+    makes sense on the science light curve). When `fold_period` is given the
+    fit is done in phase space. The cross-survey lookup is wrapped so a failure
+    there still yields a single-survey fit.
+
+    `dr` folds the ZTF Data Release archival photometry into the fit, using the
+    same cone (`ra`/`dec`/`dr_radius`) the toolbar's DR button searched, so the
+    fit sees exactly the DR points on screen. It applies in **science mode
+    only**: DR epochs are archival science photometry and carry no difference
+    flux, which is also why the chart hides them in Diff mode. A DR failure is
+    swallowed — the fit still happens, on the alert photometry alone.
+
+    `kernel` selects the time kernel ("matern32" / "matern52"); it is echoed
+    back in the bundle so the client can tell the two fits apart.
+    Returns `{oid, available, grid, hyperparams, folded, period, science, dr,
+    n_dr, ...}`; on any fatal error the caller renders an `available=false`
+    fragment.
     """
     # get_lightcurve is detections-only; get_lc_fp_bundle returns the same
     # payload *with* forced_phot_bands populated (and the ZTF v2 mag_corr
@@ -541,16 +589,45 @@ async def get_lc_gp_bundle(
     # flux, the alert-native value.
     folding = fold_period is not None and fold_period > 0
     use_science = bool(science) or folding
+
+    # DR rides along only in science mode, for the same reason the chart hides
+    # it in Diff mode: archival photometry has no difference flux. `use_dr` is
+    # decided from the request alone — never from whether the cone-search
+    # succeeded — because the client keys its per-variant cache on the value we
+    # echo back, and a fit it can't identify is a fit it will never display.
+    use_dr = bool(dr) and use_science
+    n_dr = 0
+    if use_dr and ra is not None and dec is not None:
+        try:
+            dr_bundle = await ztf_dr_service.get_ztf_dr(
+                ra=float(ra), dec=float(dec),
+                radius=_clamp_dr_radius(dr_radius),
+            )
+            if dr_bundle.get("n_pts"):
+                # DR is ZTF archival photometry, so it enters as a ZTF source
+                # and its g/r/i pool with the alert bands of the same letter —
+                # the same pooling ZTF g + LSST g already get.
+                sources.append(("ztf", dr_bundle))
+                n_dr = int(dr_bundle["n_pts"])
+        except Exception as e:  # pragma: no cover - network tolerance
+            log.warning("lc_gp: DR lookup failed (%s/%s): %s", survey, oid, e)
     # Difference flux is anchored at zero (a faded transient → 0 flux in every
     # band), so we standardize all bands by one global scale rather than per
     # band — otherwise a band with no data near an epoch reverts to its own
     # mean instead of following the bands that have gone to zero. Science flux
     # (and the folded fit) keeps per-band standardization. See gp.fit_multiband_gp.
-    result = gp_service.fit_multiband_gp(
+    # The fit is CPU-bound and this route is served from the event loop, so run
+    # it in a worker thread: gpimg releases the GIL for the whole solve, so the
+    # loop keeps serving other requests instead of stalling behind it.
+    result = await asyncio.to_thread(
+        gp_service.fit_multiband_gp,
         _assemble_gp_series(sources, science=use_science),
         fold_period=fold_period,
         per_band_scale=use_science,
+        kernel=kernel,
     )
     result["oid"] = oid
     result["science"] = use_science
+    result["dr"] = use_dr
+    result["n_dr"] = n_dr
     return result

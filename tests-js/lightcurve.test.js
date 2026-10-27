@@ -232,3 +232,114 @@ describe("mjdEnvelope", () => {
     expect(T.mjdEnvelope([])).toBeNull();
   });
 });
+
+/* GP overlay kernel selection.
+ *
+ * The overlay menu carries one entry per gpimg time kernel ("gp" = Matérn-3/2,
+ * "gp52" = Matérn-5/2). Both run the same machinery, so every GP code path
+ * tests membership rather than equality, and the per-variant cache key folds
+ * the kernel in beside the fold/science state — otherwise a 5/2 fit landing
+ * after the user switched back to 3/2 would be drawn as the 3/2 curve.
+ */
+describe("GP overlay — kernel selection", () => {
+  const chart = (overlay, extra = {}) => ({
+    $lcOverlay: overlay, $lcFold: "off", $lcSource: "diff", $lcPeriod: 0, ...extra,
+  });
+
+  test("both menu values count as the GP overlay, nothing else does", () => {
+    expect(T.isGpOverlay("gp")).toBe(true);
+    expect(T.isGpOverlay("gp52")).toBe(true);
+    for (const k of ["none", "spm", "fleet", "tde", undefined, null, ""]) {
+      expect(T.isGpOverlay(k)).toBe(false);
+    }
+  });
+
+  test("the menu value maps to the kernel the server is asked for", () => {
+    expect(T.gpKernelOf(chart("gp"))).toBe("matern32");
+    expect(T.gpKernelOf(chart("gp52"))).toBe("matern52");
+    // A non-GP selection still yields a well-formed key rather than undefined.
+    expect(T.gpKernelOf(chart("none"))).toBe("matern32");
+  });
+
+  test("the variant key carries the kernel alongside the display mode", () => {
+    expect(T.gpDesiredKey(chart("gp"))).toBe("matern32|time");
+    expect(T.gpDesiredKey(chart("gp52"))).toBe("matern52|time");
+    expect(T.gpDesiredKey(chart("gp52", { $lcSource: "sci" }))).toBe("matern52|sci");
+    expect(T.gpDesiredKey(chart("gp52", {
+      $lcSource: "sci", $lcFold: "fold", $lcPeriod: 2.5,
+    }))).toBe("matern52|fold:2.5");
+  });
+
+  test("folding outside Sci mode still has no valid variant", () => {
+    expect(T.gpDesiredKey(chart("gp52", { $lcFold: "fold", $lcPeriod: 2.5 }))).toBe(null);
+  });
+
+  test("a bundle is keyed by the kernel it reports, not the one now selected", () => {
+    expect(T.gpBundleKey({ kernel: "matern52", science: false })).toBe("matern52|time");
+    expect(T.gpBundleKey({ kernel: "matern52", science: true })).toBe("matern52|sci");
+    expect(T.gpBundleKey({ kernel: "matern52", folded: true, period: 2.5 }))
+      .toBe("matern52|fold:2.5");
+  });
+
+  test("a bundle with no kernel field reads as the default kernel", () => {
+    expect(T.gpBundleKey({ science: true })).toBe("matern32|sci");
+  });
+
+  test("the two kernels' fits never collide in the cache", () => {
+    const a = T.gpDesiredKey(chart("gp", { $lcSource: "sci" }));
+    const b = T.gpDesiredKey(chart("gp52", { $lcSource: "sci" }));
+    expect(a).not.toBe(b);
+    // ...and a 5/2 response can't be adopted while 3/2 is selected.
+    expect(T.gpBundleKey({ kernel: "matern52", science: true })).not.toBe(a);
+  });
+});
+
+/* ZTF DR in the GP fit.
+ *
+ * The GP fits what the chart plots, so the archival DR points join the fit
+ * exactly while they are on screen — which means Sci mode only, since DR
+ * carries no difference flux. That makes DR part of the variant key: toggling
+ * it is a different fit, and the two stay cached side by side.
+ */
+describe("GP overlay — ZTF DR in the fit", () => {
+  const chart = (extra = {}) => ({
+    $lcOverlay: "gp", $lcFold: "off", $lcSource: "sci", $lcPeriod: 0,
+    $lcDrShown: true, $lcDrBands: [{ name: "g", points: [{}] }], ...extra,
+  });
+
+  test("DR counts only when it is shown AND the fit is science flux", () => {
+    expect(T.gpDrActive(chart())).toBe(true);
+    expect(T.gpDrActive(chart({ $lcSource: "diff" }))).toBe(false);
+    expect(T.gpDrActive(chart({ $lcDrShown: false }))).toBe(false);
+    // Toggled on but the cone came back empty — nothing is plotted, so
+    // nothing is fitted and the key must not claim otherwise.
+    expect(T.gpDrActive(chart({ $lcDrBands: [] }))).toBe(false);
+  });
+
+  test("the variant key marks a DR fit apart from the same fit without it", () => {
+    expect(T.gpDesiredKey(chart())).toBe("matern32|sci+dr");
+    expect(T.gpDesiredKey(chart({ $lcDrShown: false }))).toBe("matern32|sci");
+    expect(T.gpDesiredKey(chart({ $lcOverlay: "gp52" }))).toBe("matern52|sci+dr");
+    expect(T.gpDesiredKey(chart({ $lcFold: "fold", $lcPeriod: 2.5 })))
+      .toBe("matern32|fold:2.5+dr");
+  });
+
+  test("Diff mode never asks for DR, however the button is set", () => {
+    expect(T.gpDesiredKey(chart({ $lcSource: "diff" }))).toBe("matern32|time");
+  });
+
+  test("a bundle is keyed by the dr flag it reports", () => {
+    expect(T.gpBundleKey({ kernel: "matern32", science: true, dr: true }))
+      .toBe("matern32|sci+dr");
+    expect(T.gpBundleKey({ kernel: "matern32", science: true, dr: false }))
+      .toBe("matern32|sci");
+    // A DR fit whose cone-search found nothing still answers the key the
+    // chart is waiting on — the server echoes the request, not the outcome.
+    expect(T.gpBundleKey({ kernel: "matern32", science: true, dr: true, n_dr: 0 }))
+      .toBe(T.gpDesiredKey(chart()));
+  });
+
+  test("a bundle from a server that knows nothing of DR reads as no DR", () => {
+    expect(T.gpBundleKey({ kernel: "matern32", science: true })).toBe("matern32|sci");
+  });
+});

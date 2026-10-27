@@ -156,14 +156,23 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
     - `static/js/lightcurve.js::mjdToUtcString(mjd, survey)` — LC tooltip; picks the scale from `ctx.dataset.$survey`.
     - **Not** applied to the search form's `firstmjd_min/max` (`coords.js::smartDateToMJD`): the filter is calendar-day granularity, so the 37 s offset is below user-visible precision. Raw MJD displays (basic-info first/last MJD, LC X-axis ticks) stay unconverted on purpose — they're labeled "MJD", not "UTC".
     - The two TAI offset constants (Python + JS) must move together on the next leap second; grep for `TAI_MINUS_UTC_SECONDS`.
-14. **Multi-band Gaussian Process (`services/gp.py`)** — one joint GP over `(time, wavelength)`, not an ICM coregionalization matrix: `B[b,b'] = exp(-½(λ_b-λ_b')²/ℓ_λ²)` makes `k_t·k_λ` exactly one anisotropic 2-D RBF, so sklearn learns `(ℓ_t, ℓ_λ, σ_f)` and ugrizy+gr costs one extra hyperparameter. Traps:
-    - λ is carried in units of 1000 Å so ℓ_λ shares an optimiser scale with ℓ_t in days.
-    - **Two standardization regimes**, switched by `per_band_scale` (caller sets it to `use_science`): per-band mean/σ for science flux and folded fits; global zero-anchored (mean pinned at 0, pooled RMS about zero) for **difference** flux — diff flux has a physical zero and per-band centering would break "all bands → 0".
+14. **Multi-band Gaussian Process (`services/gp.py`)** — one joint GP over `(time, wavelength)`, solved exactly in **O(n)** by `gpimg` (state-space Kalman filter + smoother, no dense Cholesky, no approximation):
+    `k = A² · Matérn-ν(|Δt|; ℓ_t) · exp(−(ln λ − ln λ')²/2ℓ_λ²)`. The wavelength factor is the coregionalization — bands close in wavelength are strongly correlated, one hyperparameter covers any band count. Traps:
+    - **The time kernel is selectable and the choice is plumbed end to end.** `gp.KERNELS` is read from `gpimg.build_info()["kernels"]`, *not* hard-coded: Matérn-5/2 landed in gpimg after the explorer adopted it, so a core without it advertises `("matern32",)` and `/htmx/lightcurve` simply doesn't render the `gp52` `<option>`. `fit_multiband_gp` passes the `kernel=` kwarg **only** for a non-default kernel, so the 3/2 path still runs against gpimg 0.1.0, which has no such parameter. The lock is on **gpimg 0.2.0**, the first release carrying 5/2 — that is a floor, not a preference, and `^0.1.0` would not have admitted it. Both kernels are exact — 5/2 carries three latent states per band instead of two (~2× per point, measured 40 ms → 73 ms on a 193-point 6-band fit) and fits a shorter ℓ_t on real data (21.0 d → 11.4 d on `ZTF26aaonmha`).
+    - **The two kernels are two overlay values, `"gp"` and `"gp52"`, not a second dropdown.** `"gp"` keeps its name so nothing that persisted it breaks. Every client check is `isGpOverlay(key)`, never `=== "gp"` — adding a third kernel means one entry in `GP_OVERLAY_KERNELS` plus one `<option>`. The dataset **labels stay `GP <band>`** for both, so the legend's `(survey, kind, label)` visibility memory survives a kernel switch.
+    - The GP fetch cache key is `"<kernel>|<time|sci|fold:P>"` and the bundle **echoes its kernel back** (`result["kernel"]`), so `lcSetGp` attributes a response to its own kernel as well as its own fold/science state. Drop the echo and a slow 5/2 fit landing after the user switched to 3/2 gets drawn as the 3/2 curve — the same class of bug as the folded-fit-on-a-time-axis one. Both fits stay cached, so switching back and forth never refits.
+    - **ℓ_λ is in natural-log wavelength**, not kÅ: it is `ln(λ_red/λ_blue)`, dimensionless. The hyperparameter key is `l_lambda_lnlam` (it was `l_lambda_kA` under the old sklearn RBF-over-linear-λ fit) and `lightcurve.js` labels it `ln λ`.
+    - **Two standardization regimes**, switched by `per_band_scale` (caller sets it to `use_science`): per-band mean/σ for science flux and folded fits; global zero-anchored (mean pinned at 0, pooled RMS about zero) for **difference** flux — diff flux has a physical zero and per-band centering would break "all bands → 0". This also matches gpimg's zero-mean prior, so diff mode reverts to **zero** across a sampling gap while per-band mode reverts to the band's own mean. That difference is visible on gappy persistent sources (e.g. ZTF23aajoiiz across ZTF's seasonal gaps) and is the regime working as designed, not a bug — the old dense fit only hid it by over-smoothing.
     - Reported `sigma_f`/`jitter` are dimensionless (fractions of the band scatter); `l_t_days` is days in time mode but **cycles** when folded.
-    - Folded mode tiles the data ×3 (phase−1, phase, phase+1) so the RBF wraps the 0/1 boundary — which is why the point budget drops to `max_points//3` and the phase length-scale is capped at `(0.02, 0.3)`.
-    - Cost guards: `_MAX_POINTS=800` with uniform per-band thinning (Cholesky is O(N³) per likelihood eval), `_EFLUX_FLOOR=1e-3` nJy so a zero error can't blow up `alpha`.
+    - The **jitter is a fitted hyperparameter** (`gp.fit(jitter=True)`), white variance added in quadrature to every flux error. It is load-bearing: without it the only way to absorb scatter the quoted errors don't describe is to shorten ℓ_t until neighbouring points decorrelate, which shreds the overlay.
+    - Folded mode tiles the data ×3 (phase−1, phase, phase+1) so the kernel wraps the 0/1 boundary — which is why the point budget drops to `max_points//3` and the phase length-scale is capped at `(0.02, 0.3)`.
+    - **`_MAX_BANDS` is a hard ceiling, not a trade-off**: the state space carries at most 6 wavelengths (`gpimg.build_info()["max_bands"]`). Pooled band letters give LSST ugrizy + ZTF gri = exactly 6, i.e. **zero headroom** — a third survey with a new filter letter needs `_cap_bands`, which drops the sparsest band rather than failing the panel.
+    - `_MAX_POINTS=50_000` is a payload guard, not a cost guard (the solve is O(n)); `_EFLUX_FLOOR=1e-3` nJy so a zero error can't dominate the weighting.
+    - `/htmx/lc_gp` runs the fit through `asyncio.to_thread` — it is CPU-bound on an async route, and gpimg releases the GIL for the whole solve.
     - `cov_offdiag` (same-time band-band covariances, keys `"<band>|<band>"` **sorted lexicographically**) is best-effort — a failure yields `{}` and the mean curves still ship. `color_evolution.js` needs it for honest colour errors.
-    - Caller side (`lightcurve.py`): ZTF g and LSST g are **pooled into one band before the fit** (the wavelength axis only carries distinct filters), and FP is windowed to `GP_FP_WINDOW_DAYS = 30.0` around the detection span.
+    - Caller side (`lightcurve.py`): ZTF g and LSST g are **pooled into one band before the fit** (the wavelength axis only carries distinct filters). **The fit takes every point the chart is plotting** — all detections and the *whole* forced-photometry series. The old `GP_FP_WINDOW_DAYS = 30.0` clip was a cost guard for the dense O(N³) solve; under gpimg it only let the overlay disagree with the plot, so it is gone. (On current ALeRCE data it was clipping nothing anyway — both FP endpoints already return only near-detection epochs — so deleting it changed no fit, it removed a latent disagreement.)
+    - **ZTF DR rides into the fit when, and only when, it is on screen.** The DR button's archival cone-search is fetched *by the browser* (`/api/ztf_dr`), so `/htmx/lc_gp` takes `dr=1&ra&dec&dr_radius` and repeats the identical cone server-side rather than having the client POST thousands of points back up. `ztf_dr.get_ztf_dr` is memoized through `lc_cache` on the rounded position, so that repeat is served from the browser's own request (measured 0.79 s → 0.12 s for the GP+DR call). DR is **science-mode only** — archival photometry has no difference flux, which is the same reason the chart hides it in Diff mode — and `_clamp_dr_radius` bounds a client-supplied radius to the envelope `/api/ztf_dr` enforces.
+    - **`result["dr"]` echoes the request, never the outcome.** The client keys its per-variant cache on it, so a DR fit whose cone-search failed or found nothing must still come back under the key the chart is waiting on; otherwise the spinner never clears. `n_dr` carries what actually went in. Same rule as the kernel echo above.
     - Client side, the fetch is keyed per *variant* (`gpDesiredKey`: `"diff"` / `"sci"` / `"fold:<period>"`) and `lcSetGp` attributes a response to **its own** key rather than a shared loading flag — otherwise a folded fit landing after the user unfolds gets plotted on the time axis.
 15. **LSST neighbours query ordering (`services/lsst_neighbors.py`)** — upstream `list_objects` defaults to `probability DESC`, which full-scans (blows the 30 s httpx ceiling on dense fields) **and silently ignores the `lastmjd: [lo,hi]` filter**. Passing `order_by=lastmjd, order_mode=DESC` fixes both; `_PAGE_SIZE=100` (200 times out). Upstream also returns the same oid once per classifier, so `filter_neighbors` dedupes — otherwise the overlay double-marks. The query always hits the **LSST** endpoint regardless of the detail view's survey.
 16. **Deterministic offline e2e via `services/replay.py`** — Playwright runs need no network: `maybe_install()` monkey-patches `httpx.AsyncClient.__init__` with `kwargs.setdefault("transport", …)`, which works only because every upstream call goes through `AsyncClient` and none passes its own transport (so the FastAPI TestClient stays untouched). `EXPLORER_REPLAY_DIR` alone = replay; `+ EXPLORER_RECORD=1` = record. A replay miss returns a loud **HTTP 599** naming the URL to record rather than an empty body. Only `content-type` and `location` headers are stored — `location` specifically so ZTF's 308 bare-path redirect stays replayable.
@@ -203,7 +212,7 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
 poetry install              # Python
 npm install                 # Tailwind CLI only
 
-# Tier 1 — pytest (421 tests: services + route fragments; upstream calls monkeypatched)
+# Tier 1 — pytest (427 tests: services + route fragments; upstream calls monkeypatched)
 python3 -m pytest           # full suite
 python3 -m pytest tests/test_object_info.py -v   # single file
 python3 -m pytest -k "detail"                     # by keyword
@@ -310,7 +319,9 @@ src/
                              # (pools ZTF g with LSST g, windows FP to ±30 d, calls gp.fit_multiband_gp)
     gp.py                    # multi-band Gaussian Process over (time, wavelength) → per-band
                              # posterior flux mean ±1σ on a common grid + band-band cross-covariances
-                             # for the colour panel's error propagation. See domain trap #14
+                             # for the colour panel's error propagation. Exact O(n) via the compiled
+                             # gpimg core (Matérn-3/2 × SE in ln λ, state-space Kalman/RTS), with a
+                             # fitted white jitter. See domain trap #14
     avro.py                  # ZTF AVRO alert metadata (avro.alerce.online/get_avro_info) flattened
                              # into a sorted (name, value) table; ZTF-only — LSST short-circuits with
                              # available=False before any HTTP call. Every failure mode returns a
@@ -546,6 +557,21 @@ tests-e2e/                   # Playwright specs (8) + upstream replay fixtures; 
   envelope re-projected through the live Flux/Mag × App/Abs × Obs/Der × Fold state. Fetched
   **lazily** and keyed per variant (`diff` / `sci` / `fold:<period>`) so a late-arriving folded fit
   can't land on a time axis. See domain trap #14.
+- **GP kernel choice (Matérn-3/2 / Matérn-5/2)** — the LC overlay menu carries one GP entry per time
+  kernel the installed gpimg can build: "GP Matérn-3/2" (the original, once-differentiable sample
+  paths) and "GP Matérn-5/2" (twice differentiable — smoother posterior mean, shorter fitted ℓ_t,
+  about 2× the cost per point). Both are exact state-space models, so this is a modelling choice
+  rather than an accuracy/speed trade-off. The two fits cache side by side, so switching between
+  them after the first fetch is instant. Matérn-5/2 needs a gpimg that carries it; on an older core
+  the option isn't rendered at all. See domain trap #14.
+- **GP engine: gpimg** — the overlay is solved exactly in O(n) by the compiled `gpimg` core
+  (Matérn-3/2 in time × squared-exponential in ln λ, as a linear Gaussian state-space model) instead
+  of a dense scikit-learn GP. Measured on real objects: **437–515× faster** (1.0 s → 2.4 ms on
+  ZTF20aaseogg, 4.0 s → 7.8 ms on ZTF23aajoiiz), which also takes a multi-second CPU block off the
+  event loop, retires the 800-point cap the O(N³) solve needed, supplies the band-band covariances
+  the colour panel needs in one call instead of one dense `predict(return_cov=True)` per pair, adds
+  a fitted white jitter, and drops scikit-learn from the dependency set entirely. The kernel change
+  is visible: curves track real variability the dense fit over-smoothed away.
 - **Colour-evolution panel** — colour-vs-time with ±1σ bands and a colour-colour scatter with 1σ
   error *ellipses* over a viridis time colourbar, both derived from the GP posterior; errors use the
   full band-band covariance (`gp.cov_offdiag`), so ellipses tilt correctly when two colours share a
