@@ -19,6 +19,7 @@ import logging
 from typing import Any
 
 from . import alerce_client
+from . import executors
 from . import gp as gp_service
 from . import lc_cache
 from . import ztf_dr as ztf_dr_service
@@ -619,7 +620,10 @@ async def get_lc_gp_bundle(
     # The fit is CPU-bound and this route is served from the event loop, so run
     # it in a worker thread: gpimg releases the GIL for the whole solve, so the
     # loop keeps serving other requests instead of stalling behind it.
-    result = await asyncio.to_thread(
+    # It goes on the *CPU* pool, not the default `to_thread` one, which the
+    # ~20-call crossmatch batch saturates on a 2-vCPU box — that is what made a
+    # 1.3 s fit take a minute on a freshly opened object. See services/executors.py.
+    result = await executors.run_cpu(
         gp_service.fit_multiband_gp,
         _assemble_gp_series(sources, science=use_science),
         fold_period=fold_period,

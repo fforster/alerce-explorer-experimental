@@ -188,6 +188,10 @@ These are the traps — read the referenced sections in `../ALeRCE_explorer/CLAU
     - **Both synthesised ZTF CD terms are negative**: RA decreases with column (E-left, conventional) and **Dec decreases with row** (empirical — solved by matching stamp stars against Gaia DR3 on `ZTF23aajoiiz` candid `3143207742215010000`: `CD2_2 < 0` gives 8 matches at 0.47 px, `CD2_2 > 0` gives 1). A wrong Dec sign mirrors the Aladin footprint vertically about the alert — invisible on an unclipped cutout, since the rectangle is symmetric, but it puts the padding on the wrong side of a y-clipped one.
     - The synthesis runs *after* `buildStretchedSrcCanvas`, and `northAngle`/`flipY` are derived from the RAW header (empty for ZTF) and cached, so the synthesised WCS never reaches the display path — it only drives the footprint and scale bar. **If you move the synthesis earlier**, `computeNorthAngle` will return π for ZTF and rotate every stamp 180°: it reads the Dec direction in FITS pixel space without accounting for the canvas row flip, and the two errors only cancel while `CD2_2 > 0`. Fix that function before moving the call.
     - Reference case: `ZTF26abngxfo` candid `3510493201915015030` → 48×63 cutout, source at FITS (31.63, 32.21), geometric centre (24.50, 32.00) — a 7.1 px ≈ 7.1″ error. Its sibling candid `3509496196315015007` is 63×63 and unclipped: the regression control.
+19. **Blocking work goes on a *named* pool, never `asyncio.to_thread` (`services/executors.py`)** — the default executor is `min(32, cpu_count + 4)` threads, i.e. **6** on the production t3.micro. Two workloads shared it: `xmatch.bulk_all`'s ~20 blocking astroquery/pyvo catalog calls (behind a `Semaphore(8)` — larger than the pool itself, so it saturated it) and `gp.fit_multiband_gp`'s short CPU-bound solve. A GP fit submitted while a cold crossmatch batch was in flight queued behind the batch: **1.3 s warm vs 64.6 s measured on production**, which read as "the GP is slow on a new object and fast the second time" — a *new* object is what starts the batch, on detail-view load, and the retry finds it finished. It was never the fit.
+    - `executors.run_cpu` (sized to the cores) and `executors.run_io` (sized to `xmatch._CONCURRENCY`, so the semaphore stays the real limit) are the two pools. Neither can starve the other, and the default pool is deliberately left empty for whatever reaches for `to_thread` next. **Adding a third blocking call site means picking a pool, not calling `to_thread`.**
+    - The stall outlasts `_CATALOG_DEADLINE` because `asyncio.wait_for` abandons only the *wait*: the timed-out thread keeps its pool slot until its own HTTP request unwinds. That is why 30 s deadlines produced a 64 s stall.
+    - `tests/test_executors.py` locks the isolation property directly — saturate one pool, assert the other still answers. The old bug passed every test in all three tiers, because it needs real concurrent load to show up.
 
 ## External services the port depends on
 
@@ -333,6 +337,10 @@ src/
                              # ANALYTICS_ENABLED, salted-hash IP only. Trap #17
     replay.py                # record/replay httpx transport for deterministic offline Playwright
                              # runs (EXPLORER_REPLAY_DIR / EXPLORER_RECORD). Trap #16
+    executors.py             # the two named thread pools: run_cpu (the GP fit) and run_io
+                             # (xmatch's blocking catalog fan-out). Nothing here uses
+                             # asyncio.to_thread's default executor any more — sharing it is
+                             # what let a crossmatch batch stall the GP for a minute. Trap #19
   templates/
     base.html.jinja                           # DOCTYPE shell + CSS/JS imports; the analytics
                                               # scripts are only emitted when ANALYTICS_ENABLED
