@@ -33,6 +33,7 @@ from astropy import coordinates
 from astropy.table import Table
 from astroquery.xmatch import XMatch
 
+from . import executors
 from . import xmatch_progress
 
 log = logging.getLogger(__name__)
@@ -992,8 +993,11 @@ async def bulk_all(
                 # per-request TAP/XMatch timeouts should fire first; this is the
                 # backstop for anything they miss. On timeout the orphaned thread
                 # still unwinds on its own request timeout — we just stop waiting.
+                # Dedicated catalog-I/O pool: this fan-out used to run on the
+                # default `to_thread` executor (6 threads on the production
+                # box), where it starved the GP fit for a minute at a time.
                 res = await asyncio.wait_for(
-                    asyncio.to_thread(fn, *args), timeout=_CATALOG_DEADLINE,
+                    executors.run_io(fn, *args), timeout=_CATALOG_DEADLINE,
                 )
             except (Exception, asyncio.TimeoutError) as exc:  # noqa: BLE001 — one catalog never sinks the batch
                 log.warning("xmatch catalog failed (%s via %s): %s", label, source, exc)
