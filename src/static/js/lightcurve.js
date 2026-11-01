@@ -1031,16 +1031,26 @@
         return;
       }
       const fmt = (v, d) => (v != null && isFinite(v) ? Number(v).toPrecision(d) : "—");
-      // When folded the fit is in phase space: the time length scale is in
-      // cycles, not days. ℓ_λ is a natural-log wavelength scale — ln(λ_r/λ_b),
-      // so it is dimensionless rather than an interval in Å. σ_f / jitter are
+      // The time length scale is always reported in DAYS, including a folded
+      // fit. A folded fit genuinely runs in phase space, so gpimg returns
+      // `l_t_days` in cycles there — but "cycles" reads as a claim that the
+      // object is periodic, which the Matérn kernel never assumes (it is a
+      // stationary, aperiodic correlation function; folding is a *display*
+      // choice the user made). Days are also the only unit comparable across
+      // the folded and unfolded views of the same object. The phase-space
+      // value stays available on hover for anyone reading the fit itself.
+      // ℓ_λ is a natural-log wavelength scale — ln(λ_r/λ_b), so it is
+      // dimensionless rather than an interval in Å. σ_f / jitter are
       // dimensionless too (standardized units): a fraction of each band's own
       // scatter in sci/folded mode (per-band standardization), or of the pooled
       // global scale in diff mode (all bands zero-anchored and divided by one
       // scale — see services/gp.py).
+      const ltDays = gpLengthScaleDays(gp);
       const lt = gp.folded
-        ? `ℓ<sub>φ</sub>=<b>${fmt(hp.l_t_days, 3)}</b> cyc`
-        : `ℓ<sub>t</sub>=<b>${fmt(hp.l_t_days, 3)}</b> d`;
+        ? `<span title="${fmt(hp.l_t_days, 3)} cycles of the ${
+             fmt(gp.period, 6)} d fold period">ℓ<sub>t</sub>=<b>${
+             fmt(ltDays, 3)}</b> d</span>`
+        : `ℓ<sub>t</sub>=<b>${fmt(ltDays, 3)}</b> d`;
       const parts = [
         lt,
         `ℓ<sub>λ</sub>=<b>${fmt(hp.l_lambda_lnlam, 3)}</b> ln&thinsp;λ`,
@@ -3004,6 +3014,33 @@
     return k + (bundle && bundle.science ? "sci" : "time") + dr;
   }
 
+  // The GP's time length scale in DAYS, whatever space the fit ran in.
+  //
+  // A folded fit runs in phase space, so gpimg reports `l_t_days` as a
+  // fraction of a cycle; multiplying by the fold period puts it back in days.
+  // We always display days: "cycles" invites the reading that the GP assumes
+  // the object is periodic, and it does not — the Matérn kernel is a
+  // stationary, aperiodic correlation function, and folding is a display
+  // choice applied to the data before fitting. Days are also the only unit
+  // that compares across the folded and unfolded views of one object.
+  //
+  // Returns null (rendered "—") rather than a wrong number if either factor
+  // is missing or non-finite.
+  function gpLengthScaleDays(bundle) {
+    const hp = bundle && bundle.hyperparams;
+    const raw = hp == null ? null : hp.l_t_days;
+    // Check before coercing: Number(null) is 0, which is finite, so coercing
+    // first would turn a missing hyperparameter into a confident "0 d".
+    if (raw == null || raw === "") return null;
+    const lt = Number(raw);
+    // A zero or negative correlation length isn't physical either.
+    if (!isFinite(lt) || lt <= 0) return null;
+    if (!bundle.folded) return lt;
+    const p = Number(bundle.period);
+    if (!isFinite(p) || p <= 0) return null;
+    return lt * p;
+  }
+
   // Spinner reflects "the desired variant isn't here yet and is being fetched".
   function refreshGpSpinner(chart) {
     const oid = chart.canvas.id.replace(/^lc-canvas-/, "");
@@ -3210,5 +3247,6 @@
     // GP overlay/kernel bookkeeping: which menu values are a GP, and the
     // variant keys that decide whether an arriving fit is the one on screen.
     isGpOverlay, gpKernelOf, gpDrActive, gpDesiredKey, gpBundleKey,
+    gpLengthScaleDays,
   };
 })();
