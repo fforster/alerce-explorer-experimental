@@ -343,3 +343,56 @@ describe("GP overlay — ZTF DR in the fit", () => {
     expect(T.gpBundleKey({ kernel: "matern32", science: true })).toBe("matern32|sci");
   });
 });
+
+/* The GP time length scale is reported in days in every view.
+ *
+ * A folded fit runs in phase space, so gpimg's `l_t_days` is a fraction of a
+ * cycle there. The strip used to print it as "cyc", which reads as a claim
+ * that the object is periodic — wrong for an AGN or blazar folded on a
+ * meaningless pipeline period, and the Matérn kernel assumes no periodicity
+ * at any time. gpLengthScaleDays converts back to days so the number means
+ * the same thing in both views.
+ */
+describe("GP length scale is always in days", () => {
+  test("an unfolded fit reports l_t_days unchanged", () => {
+    expect(T.gpLengthScaleDays({ hyperparams: { l_t_days: 21.0 } })).toBeCloseTo(21.0, 9);
+    expect(T.gpLengthScaleDays({ hyperparams: { l_t_days: 11.42 }, science: true }))
+      .toBeCloseTo(11.42, 9);
+  });
+
+  test("a folded fit converts cycles back to days via the fold period", () => {
+    // 0.25 cycles of a 4 d period is a 1 d correlation length.
+    expect(T.gpLengthScaleDays(
+      { folded: true, period: 4.0, hyperparams: { l_t_days: 0.25 } },
+    )).toBeCloseTo(1.0, 9);
+    expect(T.gpLengthScaleDays(
+      { folded: true, period: 0.5423, hyperparams: { l_t_days: 0.08 } },
+    )).toBeCloseTo(0.043384, 9);
+  });
+
+  test("the same physical scale reads the same folded or not", () => {
+    const unfolded = T.gpLengthScaleDays({ hyperparams: { l_t_days: 2.0 } });
+    const folded = T.gpLengthScaleDays(
+      { folded: true, period: 8.0, hyperparams: { l_t_days: 0.25 } },
+    );
+    expect(folded).toBeCloseTo(unfolded, 9);
+  });
+
+  test("a missing or unusable period yields null rather than a wrong number", () => {
+    // Null, not the raw cycle count: printing 0.25 as "0.25 d" would be a
+    // silently wrong figure, which is worse than the strip showing "—".
+    for (const period of [undefined, null, 0, -3, NaN, "abc"]) {
+      expect(T.gpLengthScaleDays(
+        { folded: true, period, hyperparams: { l_t_days: 0.25 } },
+      )).toBeNull();
+    }
+  });
+
+  test("a missing or non-finite length scale yields null", () => {
+    expect(T.gpLengthScaleDays({ hyperparams: {} })).toBeNull();
+    expect(T.gpLengthScaleDays({ hyperparams: { l_t_days: null } })).toBeNull();
+    expect(T.gpLengthScaleDays({ hyperparams: { l_t_days: NaN } })).toBeNull();
+    expect(T.gpLengthScaleDays({})).toBeNull();
+    expect(T.gpLengthScaleDays(null)).toBeNull();
+  });
+});
