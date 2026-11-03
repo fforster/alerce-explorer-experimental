@@ -309,6 +309,13 @@
         try {
           const resp = await fetch(`${s.id}/properties`, {
             signal: AbortSignal.timeout(6000),
+            // A reachability probe must never be answered from the HTTP
+            // cache. Caught in production: Chrome served a cached 200 for the
+            // CDS `properties` file in 6 ms while the host was answering
+            // nothing at all, so the page concluded CDS was up, kept the CDS
+            // survey, and showed a blank sky view — the exact failure the
+            // fallback exists to prevent, reintroduced by the cache.
+            cache: "no-store",
           });
           if (isCds) cdsHipsReachable = resp.ok;
           if (resp.ok) {
