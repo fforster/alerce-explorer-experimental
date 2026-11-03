@@ -33,6 +33,7 @@ from astropy import coordinates
 from astropy.table import Table
 from astroquery.xmatch import XMatch
 
+from . import cds_mirrors
 from . import executors
 from . import xmatch_progress
 
@@ -609,19 +610,31 @@ def _bulk_ned_tap_sync(positions: list[tuple[str, float, float]],
 # as the NED path above. We query v2, the current release. HRV is the
 # heliocentric radial velocity (km/s); z = HRV / c (non-relativistic, matching
 # the old czConvert=True behaviour).
+#: Default VizieR TAP endpoint. No longer used directly — `cds_mirrors` picks
+#: the live one — but kept as the documented primary and as the value tests and
+#: callers fall back to when no resolution was supplied.
 VIZIER_TAP_URL = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap"
 HECATE_TAP_TABLE = "J/MNRAS/548/G522/hecatev2"
 RADIUS_HECATE = RADIUS_EXTRA_Z
-_vizier_tap = None
+
+#: One cached pyvo TAPService per base URL. Keyed by URL rather than a single
+#: global so a failover to a mirror doesn't keep reusing the dead primary's
+#: service object (and so a recovery back to CDS is likewise picked up).
+_tap_services: dict[str, Any] = {}
 
 
-def _get_vizier_tap():
-    global _vizier_tap
-    if _vizier_tap is None:
+def _get_tap(base_url: str):
+    svc = _tap_services.get(base_url)
+    if svc is None:
         import pyvo
-        _vizier_tap = pyvo.dal.TAPService(VIZIER_TAP_URL)
-        _apply_session_timeout(_vizier_tap)
-    return _vizier_tap
+        svc = pyvo.dal.TAPService(base_url)
+        _apply_session_timeout(svc)
+        _tap_services[base_url] = svc
+    return svc
+
+
+def _get_vizier_tap(base_url: str | None = None):
+    return _get_tap(base_url or VIZIER_TAP_URL)
 
 
 def _norm_hecate(raw: dict, ra: float, dec: float, sep: float) -> dict | None:
@@ -644,6 +657,7 @@ def _norm_hecate(raw: dict, ra: float, dec: float, sep: float) -> dict | None:
 
 
 def _bulk_hecate_tap_sync(positions: list[tuple[str, float, float]],
+                          tap_base: str | None = None,
                           batch_size: int = 100, maxrec: int = 100000) -> dict[str, list[dict]]:
     if not positions:
         return {}
@@ -661,7 +675,7 @@ def _bulk_hecate_tap_sync(positions: list[tuple[str, float, float]],
         table = None
         for attempt in range(_RETRIES):
             try:
-                table = _get_vizier_tap().search(adql, maxrec=maxrec).to_table()
+                table = _get_vizier_tap(tap_base).search(adql, maxrec=maxrec).to_table()
                 break
             except Exception as exc:       # noqa: BLE001
                 last_exc = exc
@@ -682,6 +696,104 @@ def _bulk_hecate_tap_sync(positions: list[tuple[str, float, float]],
                     if raw is None:
                         raw = _row_to_dict(table, i)
                     norm = _norm_hecate(raw, float(rra), float(rdec), sep)
+                    if norm is not None:
+                        grouped.setdefault(str(oid), []).append(norm)
+    return grouped
+
+
+# --- SIMBAD via TAP (mirror fallback for the CDS XMatch simbad table) -------
+#
+# Normally Simbad is reached through CDS XMatch (`_XMATCH_CAT2["Simbad"]`),
+# which exists only at Strasbourg and has no mirror. SIMBAD's own TAP service
+# *is* mirrored (CfA Harvard, IDIA South Africa — see `cds_mirrors`), so when
+# XMatch is unreachable we cone-search SIMBAD directly over TAP instead.
+#
+# This is the single most valuable crossmatch to keep alive: Simbad supplies the
+# object-type classification that drives the stellar/AGN/host hint, so losing it
+# turns the whole panel from "classified" into "a list of nearby things".
+#
+# The row shape matches `_norm_simbad` exactly, so everything downstream — the
+# category routing, the hint, the overlay colours, the panel table — is unaware
+# which path produced it.
+SIMBAD_TAP_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap"
+
+
+def _norm_simbad_tap(raw: dict, sep: float) -> dict | None:
+    """One `basic` row → the same dict `_norm_simbad` returns.
+
+    `otype_txt` is SIMBAD's short code ("G", "AGN", "SN*", "Mira"), which is
+    what `_simbad_category` already routes on, so no translation is needed.
+
+    The redshift error needs care: `rvz_err` is declared **in km/s** and applies
+    to whatever `rvz_type` names, so it is only an error on *z* after dividing
+    by c, and only when the row is velocity-typed. For a `z`-typed row the
+    column's unit contradicts the value's meaning, so we report no error rather
+    than a figure that could be wrong by a factor of 3e5.
+    """
+    z = _num(raw.get("rvz_redshift"))
+    rvz_type = str(raw.get("rvz_type") or "").strip().lower()
+    err = _num(raw.get("rvz_err"))
+    z_err = (err / _C_KMS) if (err is not None and rvz_type in ("v", "c")) else None
+    return {
+        "cat_name": "Simbad",
+        "ra": _num(raw.get("ra")), "dec": _num(raw.get("dec")),
+        "z": z, "z_err": z_err,
+        "photoz": None,
+        "type": raw.get("otype_txt"),
+        "name": raw.get("main_id"),
+        "sep": sep,
+    }
+
+
+def _bulk_simbad_tap_sync(positions: list[tuple[str, float, float]],
+                          tap_base: str | None = None,
+                          batch_size: int = 100,
+                          maxrec: int = 100000) -> dict[str, list[dict]]:
+    """Cone-search SIMBAD's `basic` table over TAP, batched by position.
+
+    Same batching/pairing structure as `_bulk_hecate_tap_sync`: one ADQL per
+    batch with an OR of CONTAINS clauses, then pair returned rows back to the
+    input positions by angular separation (TAP gives us no input echo, unlike
+    XMatch's `angDist`).
+    """
+    if not positions:
+        return {}
+    radius_deg = RADIUS_SIMBAD / 3600.0
+    grouped: dict[str, list[dict]] = {}
+    for start in range(0, len(positions), batch_size):
+        batch = positions[start:start + batch_size]
+        clauses = " OR ".join(
+            f"CONTAINS(POINT('ICRS', ra, dec), "
+            f"CIRCLE('ICRS', {ra}, {dec}, {radius_deg}))=1"
+            for _, ra, dec in batch)
+        adql = ("SELECT main_id, ra, dec, otype_txt, rvz_type, rvz_redshift, rvz_err "
+                f"FROM basic WHERE {clauses}")
+        last_exc: Exception | None = None
+        table = None
+        for attempt in range(_RETRIES):
+            try:
+                table = _get_tap(tap_base or SIMBAD_TAP_URL).search(
+                    adql, maxrec=maxrec).to_table()
+                break
+            except Exception as exc:       # noqa: BLE001
+                last_exc = exc
+                log.warning("Simbad TAP attempt %d failed: %s", attempt + 1, exc)
+                if attempt < _RETRIES - 1:
+                    time.sleep(3)
+        else:
+            raise CatalogQueryError(f"Simbad TAP unreachable: {last_exc}")
+
+        for i in range(len(table)):
+            rra, rdec = _cell(table["ra"][i]), _cell(table["dec"][i])
+            if rra is None or rdec is None:
+                continue
+            raw = None
+            for oid, cra, cdec in batch:
+                sep = _angsep_arcsec(cra, cdec, float(rra), float(rdec))
+                if sep <= RADIUS_SIMBAD:
+                    if raw is None:
+                        raw = _row_to_dict(table, i)
+                    norm = _norm_simbad_tap(raw, sep)
                     if norm is not None:
                         grouped.setdefault(str(oid), []).append(norm)
     return grouped
@@ -946,6 +1058,10 @@ def build_partial_record(by_catalog: dict[str, list[dict]]) -> dict:
 SOURCE_CDS = "CDS XMatch"
 SOURCE_NED = "NED TAP"
 SOURCE_VIZIER_TAP = "VizieR TAP"
+#: Simbad reached directly over SIMBAD's own (mirrored) TAP service instead of
+#: through CDS XMatch — the outage fallback. Named distinctly so a failure, or
+#: a success, says which route produced it.
+SOURCE_SIMBAD_TAP = "SIMBAD TAP"
 
 
 def _fail_cause(exc: BaseException) -> str:
@@ -1016,16 +1132,71 @@ async def bulk_all(
                 xmatch_progress.mark_done(progress_key, label, len(rows))
             return res
 
+    def skip(label: str, source: str, reason: str) -> None:
+        """Mark a catalog unavailable without querying it.
+
+        The point of the whole mirror layer: when a service is known down, 14
+        catalogs resolve to "unavailable" in one step instead of each waiting
+        out `_CATALOG_DEADLINE`. The panel says the same thing either way — it
+        just says it in milliseconds.
+        """
+        log.warning("xmatch catalog skipped (%s via %s): %s", label, source, reason)
+        if progress_key is not None:
+            xmatch_progress.mark_failed(progress_key, label, f"{source} · {reason}")
+
+    # Which CDS services are actually reachable right now? Resolved ONCE per
+    # batch (not per catalog) and the chosen base URLs are injected into the
+    # sync workers, so the thread pool never reaches back into the event loop.
+    # The two *_web services aren't queried here; they ride along so the
+    # "Other archives" links (built synchronously, via
+    # cds_mirrors.cached_endpoint) have a warm verdict to read.
+    mirrors = await cds_mirrors.resolve_many(
+        ["xmatch", "vizier_tap", "simbad_tap", "simbad_web", "vizier_web"])
+    xmatch_ep, vizier_ep, simbad_ep = (
+        mirrors["xmatch"], mirrors["vizier_tap"], mirrors["simbad_tap"])
+    for name, ep in mirrors.items():
+        if ep is not None and ep.label != "CDS Strasbourg":
+            log.info("xmatch: %s served from mirror %s (%s)", name, ep.label, ep.base)
+
     # NED first: it's the most reliable of the slow (TAP) catalogs and the
     # richest source of host redshifts, and the CDS XMatch / VizieR endpoints
     # sometimes stall in a batch — so kick NED off ahead of them (it lands in
-    # the first Semaphore wave) to get a useful table on screen early.
+    # the first Semaphore wave) to get a useful table on screen early. NED is
+    # at IPAC, so a CDS outage doesn't touch it.
     tasks = [run("NED", SOURCE_NED, _bulk_ned_tap_sync, positions)]
-    tasks += [run(cat, SOURCE_CDS, _bulk_xmatch_sync, cat, positions) for cat in XMATCH_CAT2]
-    tasks += [run(cfg["name"], SOURCE_CDS, _bulk_xmatch_vizier_sync, cid, positions)
-              for cid, cfg in VIZIER_Z_CATALOGS.items()]
-    tasks += [run(k, SOURCE_CDS, _bulk_generic_sync, k, positions) for k in USECASE_CATALOGS]
-    tasks.append(run("HECATE", SOURCE_VIZIER_TAP, _bulk_hecate_tap_sync, positions))
+
+    # Everything CDS XMatch serves: Simbad/SDSS/DESI, the VizieR spec-z tables
+    # and the use-case catalogs. XMatch exists only at Strasbourg — there is no
+    # mirror to fail over to — so when it is down this whole group is skipped.
+    xmatch_labels = (
+        [(cat, _bulk_xmatch_sync, (cat,)) for cat in XMATCH_CAT2]
+        + [(cfg["name"], _bulk_xmatch_vizier_sync, (cid,))
+           for cid, cfg in VIZIER_Z_CATALOGS.items()]
+        + [(k, _bulk_generic_sync, (k,)) for k in USECASE_CATALOGS]
+    )
+    if xmatch_ep is not None:
+        tasks += [run(label, SOURCE_CDS, fn, *args, positions)
+                  for label, fn, args in xmatch_labels]
+    else:
+        # Simbad is recoverable on its own: SIMBAD's TAP service is mirrored
+        # even though XMatch is not, so substitute the direct TAP cone-search
+        # and keep the classification hint alive through the outage.
+        for label, _fn, _args in xmatch_labels:
+            if label == "Simbad" and simbad_ep is not None:
+                continue
+            skip(label, SOURCE_CDS, "offline (no mirror available)")
+        if simbad_ep is not None:
+            tasks.append(run("Simbad", SOURCE_SIMBAD_TAP,
+                             _bulk_simbad_tap_sync, positions, simbad_ep.base))
+        else:
+            skip("Simbad", SOURCE_CDS, "offline (no mirror available)")
+
+    if vizier_ep is not None:
+        tasks.append(run("HECATE", SOURCE_VIZIER_TAP,
+                         _bulk_hecate_tap_sync, positions, vizier_ep.base))
+    else:
+        skip("HECATE", SOURCE_VIZIER_TAP, "offline (no mirror available)")
+
     per_catalog_results = await asyncio.gather(*tasks)
 
     merged: dict[str, dict[str, list[dict]]] = {}

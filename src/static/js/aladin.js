@@ -26,29 +26,65 @@
     { id: "CDS/P/DESI-Legacy-Surveys/DR10/color", label: "DESI DR10" },
     { id: "CDS/P/Skymapper/DR4/color",            label: "SkyMapper DR4" },
   ];
-  const HIPS_FALLBACK = { id: "https://alaskybis.cds.unistra.fr/DSS/DSSColor", label: "DSS Color" };
+  // DSS fallbacks, tried in order. The first is CDS; the other two are
+  // independent HiPS providers, which is the whole point — during the November
+  // 2026 CDS Strasbourg incident every `alasky*` host stopped answering at the
+  // TCP level, so a CDS-only fallback list left the sky view permanently blank.
+  //
+  // These are DIRECT base URLs, not `CDS/P/...` registry ids. The short ids in
+  // HIPS_SURVEYS are resolved through the CDS MOCServer, so they cannot work
+  // while CDS is down however many of them we list — only a full base URL to a
+  // non-CDS host can. Verified serving tiles: ESA `skies.esac.esa.int/DSSColor`
+  // and IRSA `.../data/hips/CDS/DSS2/color`.
+  const HIPS_FALLBACKS = [
+    { id: "https://alaskybis.cds.unistra.fr/DSS/DSSColor",                  label: "DSS Color" },
+    { id: "https://skies.esac.esa.int/DSSColor",                            label: "DSS Color (ESA)" },
+    { id: "https://irsa.ipac.caltech.edu/data/hips/CDS/DSS2/color",         label: "DSS2 Color (IRSA)" },
+  ];
+  // Kept as a named export-ish alias: decideBestHiPS returns a single survey,
+  // and callers/tests still expect "the fallback" to be one object.
+  const HIPS_FALLBACK = HIPS_FALLBACKS[0];
 
-  const ALADIN_PRIMARY  = "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js";
-  const ALADIN_FALLBACK = "https://aladin.u-strasbg.fr/AladinLite/api/v3/latest/aladin.js";
+  // Aladin Lite v3, tried in order. The first two are CDS (same datacentre —
+  // they fail together, which is exactly what happened); the npm CDNs are the
+  // ones that kept the viewer alive. Versions are pinned: `latest` from CDS is
+  // a moving target we can't pin, but a CDN URL must never be.
+  const ALADIN_SOURCES = [
+    "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js",
+    "https://aladin.u-strasbg.fr/AladinLite/api/v3/latest/aladin.js",
+    "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js",
+    "https://unpkg.com/aladin-lite@3.8.2/dist/aladin.js",
+  ];
+  const ALADIN_PRIMARY  = ALADIN_SOURCES[0];
+  const ALADIN_FALLBACK = ALADIN_SOURCES[1];
 
   let aladinLoadPromise = null;
 
+  // Walk ALADIN_SOURCES until one loads. `onerror` fires for a 404 or a dead
+  // host, but a cross-origin script that parses and throws does NOT reject —
+  // hence the `window.A` check after each load, so a source that "loaded" but
+  // produced no global is treated as a failure and we move on.
+  function loadAladinFrom(sources, i = 0) {
+    if (i >= sources.length) {
+      return Promise.reject(new Error("All Aladin sources unreachable"));
+    }
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = sources[i];
+      script.onload = () => (typeof window.A !== "undefined"
+        ? resolve()
+        : reject(new Error("loaded but no global")));
+      script.onerror = () => reject(new Error("load error"));
+      document.head.appendChild(script);
+    }).catch((err) => {
+      console.warn(`Aladin source failed (${sources[i]}): ${err.message}`);
+      return loadAladinFrom(sources, i + 1);
+    });
+  }
+
   function loadAladinLib() {
     if (aladinLoadPromise) return aladinLoadPromise;
-    aladinLoadPromise = new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = ALADIN_PRIMARY;
-      script.onload = () => resolve();
-      script.onerror = () => {
-        console.warn("Aladin primary CDN failed; trying fallback");
-        const fb = document.createElement("script");
-        fb.src = ALADIN_FALLBACK;
-        fb.onload = () => resolve();
-        fb.onerror = () => reject(new Error("All Aladin CDNs unreachable"));
-        document.head.appendChild(fb);
-      };
-      document.head.appendChild(script);
-    });
+    aladinLoadPromise = loadAladinFrom(ALADIN_SOURCES);
     return aladinLoadPromise;
   }
 
@@ -167,15 +203,62 @@
     const initialDefinitivelyEmpty =
       initialIdx >= 0 && results[initialIdx] === false;
     if (initial && !initialDefinitivelyEmpty) return initial;
-    return HIPS_FALLBACK;
+    return activeFallback();
   }
   // Exposed for unit testing (tests-js/aladin.test.js) — same rationale as
   // __aladinPickInitialSurvey: the network probe needs a live service, but the
   // decision logic it feeds is pure and worth pinning down.
   window.__aladinDecideBestHiPS = decideBestHiPS;
 
+  // Which DSS fallback is actually serving? Probes each base URL's `properties`
+  // file — a plain static file on the HiPS host, so unlike probeHiPS it does
+  // NOT depend on CDS's hips2fits service (which has no mirror and was down
+  // with the rest of Strasbourg). Resolved once per page and remembered, so
+  // decideBestHiPS can stay pure and synchronous.
+  let resolvedFallback = null;
+  let fallbackProbe = null;
+
+  function activeFallback() {
+    return resolvedFallback || HIPS_FALLBACKS[0];
+  }
+
+  async function reachableFallback(sources = HIPS_FALLBACKS) {
+    if (resolvedFallback) return resolvedFallback;
+    if (fallbackProbe) return fallbackProbe;
+    fallbackProbe = (async () => {
+      for (const s of sources) {
+        try {
+          const resp = await fetch(`${s.id}/properties`, {
+            signal: AbortSignal.timeout(6000),
+          });
+          if (resp.ok) {
+            resolvedFallback = s;
+            if (s !== sources[0]) console.warn(`HiPS fallback via ${s.label}`);
+            return s;
+          }
+        } catch (e) {
+          console.warn(`HiPS fallback unreachable (${s.label})`);
+        }
+      }
+      // Nothing answered: keep the documented primary so the caller still has
+      // a survey object, and let Aladin surface its own load failure.
+      resolvedFallback = sources[0];
+      return resolvedFallback;
+    })();
+    return fallbackProbe;
+  }
+  window.__aladinReachableFallback = reachableFallback;
+  window.__aladinHipsFallbacks = () => HIPS_FALLBACKS.slice();
+  window.__aladinSources = () => ALADIN_SOURCES.slice();
+  window.__aladinResetFallback = () => { resolvedFallback = null; fallbackProbe = null; };
+
   async function chooseBestHiPS(ra, dec, initial) {
-    const results = await Promise.all(HIPS_SURVEYS.map((s) => probeHiPS(s.id, ra, dec)));
+    // Resolve the fallback alongside the coverage probes, so a CDS-down page
+    // doesn't pay the two latencies in series.
+    const [results] = await Promise.all([
+      Promise.all(HIPS_SURVEYS.map((s) => probeHiPS(s.id, ra, dec))),
+      reachableFallback(),
+    ]);
     console.log(
       "HiPS probes — " +
         HIPS_SURVEYS.map((s, i) => `${s.label}:${results[i]}`).join(", "),

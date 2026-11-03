@@ -9,7 +9,7 @@
  *   2. else |galactic b| <= 18°   → SkyMapper DR4
  *   3. else                       → DESI DR10
  */
-import { beforeAll, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, describe, expect, test } from "vitest";
 import { loadScript } from "./helpers/load.js";
 
 beforeAll(() => {
@@ -93,5 +93,127 @@ describe("aladin.decideBestHiPS", () => {
 
   test("a definitively-covered survey wins even if the provisional is empty", () => {
     expect(decide([false, true, null], PAN())).toBe("DESI DR10");
+  });
+});
+
+/* CDS mirror failover (November 2026 Strasbourg outage).
+ *
+ * Every CDS host stopped answering at the TCP level, which left the sky view
+ * blank: the Aladin Lite library is served from CDS, and the DSS fallback was a
+ * CDS base URL too, so the "fallback" died with the primary. These tests pin
+ * the two failover chains.
+ */
+describe("aladin CDS failover", () => {
+  const realFetch = global.fetch;
+  // Assert on the HOST, not the label: the CDS entry deliberately keeps its
+  // historical "DSS Color" label so the normal path looks unchanged to users.
+  const cds = (s) => /unistra|u-strasbg/.test(new URL(s.id).host);
+
+  afterEach(() => {
+    global.fetch = realFetch;
+    window.__aladinResetFallback();
+  });
+
+  test("the HiPS fallback chain reaches beyond CDS", () => {
+    // The point of the fix: at least one candidate must be on a host that a
+    // CDS outage cannot take down. Short `CDS/P/...` registry ids can't serve
+    // here — they resolve through the CDS MOCServer — so every candidate has
+    // to be a full base URL.
+    const chain = window.__aladinHipsFallbacks();
+    expect(chain.length).toBeGreaterThan(1);
+    expect(chain.every((s) => /^https?:\/\//.test(s.id))).toBe(true);
+    const hosts = chain.map((s) => new URL(s.id).host);
+    expect(hosts.some((h) => !/unistra|u-strasbg/.test(h))).toBe(true);
+  });
+
+  test("reachableFallback keeps the CDS primary when it answers", async () => {
+    global.fetch = async () => ({ ok: true });
+    const chosen = await window.__aladinReachableFallback();
+    expect(cds(chosen)).toBe(true);
+  });
+
+  test("reachableFallback skips a dead CDS and picks the next provider", async () => {
+    const tried = [];
+    global.fetch = async (url) => {
+      tried.push(url);
+      // Simulate the outage: the CDS host refuses the connection outright.
+      if (/unistra|u-strasbg/.test(url)) throw new Error("ECONNREFUSED");
+      return { ok: true };
+    };
+    const chosen = await window.__aladinReachableFallback();
+    expect(cds(chosen)).toBe(false);
+    expect(tried[0]).toMatch(/unistra|u-strasbg/);   // primary still tried first
+    expect(tried.length).toBeGreaterThan(1);
+  });
+
+  test("reachableFallback treats a non-ok status as unreachable", async () => {
+    global.fetch = async (url) =>
+      (/unistra|u-strasbg/.test(url) ? { ok: false, status: 502 } : { ok: true });
+    const chosen = await window.__aladinReachableFallback();
+    expect(cds(chosen)).toBe(false);
+  });
+
+  test("probes the base URL's own properties file, not CDS hips2fits", async () => {
+    // hips2fits is a CDS service with no mirror — probing through it would
+    // report every provider dead during exactly the outage this is for.
+    const tried = [];
+    global.fetch = async (url) => { tried.push(url); return { ok: true }; };
+    await window.__aladinReachableFallback();
+    expect(tried[0]).toMatch(/\/properties$/);
+    expect(tried.join(" ")).not.toMatch(/hips2fits/);
+  });
+
+  test("the result is cached, so one page view probes once", async () => {
+    let calls = 0;
+    global.fetch = async () => { calls += 1; return { ok: true }; };
+    await window.__aladinReachableFallback();
+    await window.__aladinReachableFallback();
+    expect(calls).toBe(1);
+  });
+
+  test("concurrent callers share a single probe", async () => {
+    let calls = 0;
+    global.fetch = async () => { calls += 1; return { ok: true }; };
+    const all = await Promise.all([
+      window.__aladinReachableFallback(),
+      window.__aladinReachableFallback(),
+      window.__aladinReachableFallback(),
+    ]);
+    expect(calls).toBe(1);
+    expect(new Set(all).size).toBe(1);
+  });
+
+  test("with every provider down it still yields a survey object", async () => {
+    // Better to hand Aladin a base layer and let it surface its own load
+    // error than to return null and crash the boot path.
+    global.fetch = async () => { throw new Error("all down"); };
+    const chosen = await window.__aladinReachableFallback();
+    expect(chosen).toBeTruthy();
+    expect(typeof chosen.id).toBe("string");
+  });
+
+  test("decideBestHiPS returns the resolved fallback, not the dead primary", async () => {
+    global.fetch = async (url) =>
+      (/unistra|u-strasbg/.test(url) ? { ok: false, status: 502 } : { ok: true });
+    const live = await window.__aladinReachableFallback();
+    // No survey definitively covered and no provisional → fall back.
+    const chosen = window.__aladinDecideBestHiPS([null, null, null], null);
+    expect(chosen).toBe(live);
+    expect(cds(chosen)).toBe(false);
+  });
+
+  test("the Aladin library source list reaches beyond CDS", () => {
+    const sources = window.__aladinSources();
+    const hosts = sources.map((u) => new URL(u).host);
+    expect(hosts.slice(0, 2).every((h) => /unistra|u-strasbg/.test(h))).toBe(true);
+    expect(hosts.some((h) => !/unistra|u-strasbg/.test(h))).toBe(true);
+  });
+
+  test("every non-CDS library source pins an exact version", () => {
+    // A CDN URL must never float: `latest` from CDS is unpinnable, a CDN is not.
+    for (const url of window.__aladinSources()) {
+      if (/unistra|u-strasbg/.test(new URL(url).host)) continue;
+      expect(url).toMatch(/@\d+\.\d+\.\d+\//);
+    }
   });
 });
