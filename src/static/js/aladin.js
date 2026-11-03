@@ -49,37 +49,96 @@
   // they fail together, which is exactly what happened); the npm CDNs are the
   // ones that kept the viewer alive. Versions are pinned: `latest` from CDS is
   // a moving target we can't pin, but a CDN URL must never be.
+  //
+  // The two builds are NOT interchangeable, which is the trap here: CDS ships
+  // a classic script that assigns `window.A` as a side effect, while the npm
+  // package ships an **ES module** whose default export *is* that same `A`
+  // object. Loading the npm build in a <script> tag "succeeds" — 200, 2.4 MB,
+  // `onload` fires — and leaves `window.A` undefined. Hence the explicit
+  // `kind`, and hence the `window.A` check after every load.
   const ALADIN_SOURCES = [
-    "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js",
-    "https://aladin.u-strasbg.fr/AladinLite/api/v3/latest/aladin.js",
-    "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js",
-    "https://unpkg.com/aladin-lite@3.8.2/dist/aladin.js",
+    { url: "https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js", kind: "script" },
+    { url: "https://aladin.u-strasbg.fr/AladinLite/api/v3/latest/aladin.js",   kind: "script" },
+    { url: "https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js",    kind: "module" },
+    { url: "https://unpkg.com/aladin-lite@3.8.2/dist/aladin.js",               kind: "module" },
   ];
-  const ALADIN_PRIMARY  = ALADIN_SOURCES[0];
-  const ALADIN_FALLBACK = ALADIN_SOURCES[1];
+  const ALADIN_PRIMARY  = ALADIN_SOURCES[0].url;
+  const ALADIN_FALLBACK = ALADIN_SOURCES[1].url;
 
   let aladinLoadPromise = null;
 
-  // Walk ALADIN_SOURCES until one loads. `onerror` fires for a 404 or a dead
-  // host, but a cross-origin script that parses and throws does NOT reject —
-  // hence the `window.A` check after each load, so a source that "loaded" but
-  // produced no global is treated as a failure and we move on.
+  //: A script tag that is *hanging* must be abandoned on a clock, because
+  //: `onerror` never fires for it. This is not a theoretical case: during the
+  //: CDS outage the Strasbourg host accepted nothing and sent nothing, so the
+  //: tag sat pending for the browser's own connect timeout (minutes) and the
+  //: fallback chain below never advanced — the sky view just said "loading…"
+  //: forever. Measured healthy load of the 2.4 MB bundle is ~1-2 s on a warm
+  //: CDN, so 8 s is generous while still bounded.
+  let ALADIN_LOAD_TIMEOUT_MS = 8000;
+
+  // Walk ALADIN_SOURCES until one loads.
+  //
+  // Three distinct failures, and each needs its own detection:
+  //   * 404 / refused connection  → `onerror` fires.
+  //   * dead host, nothing comes back → NOTHING fires; only the timeout saves us.
+  //   * script parses but defines no global → `onload` fires "successfully",
+  //     so we check `window.A` before believing it.
+  function withTimeout(promise, label) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_r, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${ALADIN_LOAD_TIMEOUT_MS}ms`)),
+          ALADIN_LOAD_TIMEOUT_MS,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  function loadClassicScript(url) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = url;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("load error"));
+      document.head.appendChild(script);
+    });
+  }
+
+  // The npm build's default export IS the `A` object the rest of this file
+  // expects on `window`, so publishing it there keeps every call site —
+  // and Aladin's own internals — unaware of which build is in play.
+  async function loadEsModule(url) {
+    const mod = await import(url);
+    if (mod && mod.default) window.A = mod.default;
+  }
+
+  function loadOne(source) {
+    return source.kind === "module"
+      ? withTimeout(loadEsModule(source.url), "import")
+      : withTimeout(loadClassicScript(source.url), "script");
+  }
+
   function loadAladinFrom(sources, i = 0) {
     if (i >= sources.length) {
       return Promise.reject(new Error("All Aladin sources unreachable"));
     }
-    return new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = sources[i];
-      script.onload = () => (typeof window.A !== "undefined"
-        ? resolve()
-        : reject(new Error("loaded but no global")));
-      script.onerror = () => reject(new Error("load error"));
-      document.head.appendChild(script);
-    }).catch((err) => {
-      console.warn(`Aladin source failed (${sources[i]}): ${err.message}`);
-      return loadAladinFrom(sources, i + 1);
-    });
+    return loadOne(sources[i])
+      .then(() => {
+        // "Loaded" is not "usable": the npm bundle in a <script> tag fires
+        // onload and defines nothing. Only the global proves it worked.
+        if (typeof window.A === "undefined") {
+          throw new Error("loaded but no global");
+        }
+      })
+      .catch((err) => {
+        console.warn(`Aladin source failed (${sources[i].url}): ${err.message}`);
+        // A timed-out tag is left in the DOM on purpose: removing it doesn't
+        // cancel the request, and if it does eventually arrive it simply
+        // defines the same global we already have.
+        return loadAladinFrom(sources, i + 1);
+      });
   }
 
   function loadAladinLib() {
@@ -202,8 +261,23 @@
       : -1;
     const initialDefinitivelyEmpty =
       initialIdx >= 0 && results[initialIdx] === false;
-    if (initial && !initialDefinitivelyEmpty) return initial;
+    // ...unless the provisional is a CDS survey and CDS is unreachable. The
+    // "never downgrade on an inconclusive probe" rule above was written for a
+    // transient hips2fits hiccup, where keeping the provisional is right. In a
+    // CDS *outage* it is exactly wrong: every probe comes back inconclusive
+    // (hips2fits is CDS too), so the rule pins the panel to a survey that
+    // cannot load a single tile, and the sky view stays permanently blank —
+    // which is what it did. Short `CDS/P/...` ids resolve through the CDS
+    // MOCServer, so they are just as dead as a CDS base URL.
+    if (initial && !initialDefinitivelyEmpty && !(cdsHipsReachable === false && isCdsSurvey(initial))) {
+      return initial;
+    }
     return activeFallback();
+  }
+
+  function isCdsSurvey(survey) {
+    const id = (survey && survey.id) || "";
+    return /^CDS\//.test(id) || /unistra|u-strasbg/.test(id);
   }
   // Exposed for unit testing (tests-js/aladin.test.js) — same rationale as
   // __aladinPickInitialSurvey: the network probe needs a live service, but the
@@ -217,6 +291,10 @@
   // decideBestHiPS can stay pure and synchronous.
   let resolvedFallback = null;
   let fallbackProbe = null;
+  //: Did the CDS HiPS host answer? Set as a side effect of probing the
+  //: fallback chain (whose first entry is CDS), and used to decide whether a
+  //: CDS-registry survey can render at all. `null` = not yet known.
+  let cdsHipsReachable = null;
 
   function activeFallback() {
     return resolvedFallback || HIPS_FALLBACKS[0];
@@ -227,16 +305,19 @@
     if (fallbackProbe) return fallbackProbe;
     fallbackProbe = (async () => {
       for (const s of sources) {
+        const isCds = /unistra|u-strasbg/.test(s.id);
         try {
           const resp = await fetch(`${s.id}/properties`, {
             signal: AbortSignal.timeout(6000),
           });
+          if (isCds) cdsHipsReachable = resp.ok;
           if (resp.ok) {
             resolvedFallback = s;
             if (s !== sources[0]) console.warn(`HiPS fallback via ${s.label}`);
             return s;
           }
         } catch (e) {
+          if (isCds) cdsHipsReachable = false;
           console.warn(`HiPS fallback unreachable (${s.label})`);
         }
       }
@@ -249,8 +330,17 @@
   }
   window.__aladinReachableFallback = reachableFallback;
   window.__aladinHipsFallbacks = () => HIPS_FALLBACKS.slice();
-  window.__aladinSources = () => ALADIN_SOURCES.slice();
-  window.__aladinResetFallback = () => { resolvedFallback = null; fallbackProbe = null; };
+  window.__aladinSources = () => ALADIN_SOURCES.map((s) => s.url);
+  window.__aladinSourceSpecs = () => ALADIN_SOURCES.slice();
+  window.__aladinLoadFrom = loadAladinFrom;
+  window.__aladinLoadTimeoutMs = () => ALADIN_LOAD_TIMEOUT_MS;
+  // Tests need the timeout to fire in milliseconds, not 8 s.
+  window.__aladinSetLoadTimeout = (ms) => { ALADIN_LOAD_TIMEOUT_MS = ms; };
+  window.__aladinResetFallback = () => {
+    resolvedFallback = null; fallbackProbe = null; cdsHipsReachable = null;
+  };
+  window.__aladinCdsHipsReachable = () => cdsHipsReachable;
+  window.__aladinIsCdsSurvey = isCdsSurvey;
 
   async function chooseBestHiPS(ra, dec, initial) {
     // Resolve the fallback alongside the coverage probes, so a CDS-down page

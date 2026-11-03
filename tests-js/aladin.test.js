@@ -217,3 +217,137 @@ describe("aladin CDS failover", () => {
     }
   });
 });
+
+/* Loading the library when CDS is down.
+ *
+ * Three distinct failures, each found the hard way in a browser against the
+ * live outage, and each needing its own detection:
+ *
+ *   1. The CDS host accepted nothing and sent nothing, so the <script> tag
+ *      sat PENDING. `onerror` never fires for that, so the fallback chain
+ *      never advanced and the sky view said "loading…" forever.
+ *   2. The npm build is an ES MODULE. In a <script> tag it 200s, fires
+ *      `onload`, and defines no `window.A` — a silent success that yields a
+ *      useless page.
+ *   3. Even with the library loaded, the provisional survey is a CDS registry
+ *      id, which can't resolve while CDS is down.
+ */
+describe("aladin library loading", () => {
+  const realFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = realFetch;
+    window.__aladinSetLoadTimeout(8000);
+    window.__aladinResetFallback();
+    delete window.A;
+  });
+
+  test("a hanging source is abandoned on a timeout, not waited on forever", async () => {
+    window.__aladinSetLoadTimeout(30);
+    // jsdom never fires load/error for a remote src, which is exactly the
+    // pending-forever behaviour the real CDS host showed.
+    const sources = [
+      { url: "https://dead.example/aladin.js", kind: "script" },
+      { url: "https://alive.example/aladin.js", kind: "script" },
+    ];
+    const t0 = Date.now();
+    await expect(window.__aladinLoadFrom(sources)).rejects.toThrow(/unreachable/);
+    // Both were attempted and each was bounded by the timeout, rather than
+    // the first one blocking indefinitely.
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(document.querySelectorAll('script[src*="dead.example"]').length).toBe(1);
+    expect(document.querySelectorAll('script[src*="alive.example"]').length).toBe(1);
+  });
+
+  test("a source that loads but defines no global is treated as a failure", async () => {
+    window.__aladinSetLoadTimeout(30);
+    // kind:"module" lets us resolve without jsdom script plumbing; the import
+    // fails in jsdom, so this exercises the same reject-and-advance path.
+    const sources = [{ url: "https://nope.example/a.js", kind: "module" }];
+    await expect(window.__aladinLoadFrom(sources)).rejects.toThrow(/unreachable/);
+    expect(typeof window.A).toBe("undefined");
+  });
+
+  test("the CDN entries are declared as ES modules, the CDS ones as scripts", () => {
+    // The whole point of the `kind` field: the two builds are NOT
+    // interchangeable, and loading the npm one as a classic script silently
+    // produces nothing.
+    const specs = window.__aladinSourceSpecs();
+    for (const s of specs) {
+      const cdsHost = /unistra|u-strasbg/.test(new URL(s.url).host);
+      expect(s.kind).toBe(cdsHost ? "script" : "module");
+    }
+    expect(specs.some((s) => s.kind === "module")).toBe(true);
+  });
+
+  test("every source declares a kind the loader understands", () => {
+    for (const s of window.__aladinSourceSpecs()) {
+      expect(["script", "module"]).toContain(s.kind);
+    }
+  });
+});
+
+describe("aladin survey choice when CDS is unreachable", () => {
+  const realFetch = global.fetch;
+  afterEach(() => { global.fetch = realFetch; window.__aladinResetFallback(); });
+
+  const PAN = () => ({ id: "CDS/P/PanSTARRS/DR1/color-i-r-g", label: "PanSTARRS DR1" });
+
+  test("isCdsSurvey catches both registry ids and CDS base URLs", () => {
+    expect(window.__aladinIsCdsSurvey(PAN())).toBe(true);
+    expect(window.__aladinIsCdsSurvey({ id: "https://alaskybis.cds.unistra.fr/DSS/DSSColor" }))
+      .toBe(true);
+    expect(window.__aladinIsCdsSurvey({ id: "https://skies.esac.esa.int/DSSColor" }))
+      .toBe(false);
+    expect(window.__aladinIsCdsSurvey(null)).toBe(false);
+  });
+
+  test("the fallback probe records whether CDS answered", async () => {
+    global.fetch = async (url) =>
+      (/unistra|u-strasbg/.test(url) ? { ok: false, status: 502 } : { ok: true });
+    await window.__aladinReachableFallback();
+    expect(window.__aladinCdsHipsReachable()).toBe(false);
+
+    window.__aladinResetFallback();
+    expect(window.__aladinCdsHipsReachable()).toBeNull();
+
+    global.fetch = async () => ({ ok: true });
+    await window.__aladinReachableFallback();
+    expect(window.__aladinCdsHipsReachable()).toBe(true);
+  });
+
+  test("an inconclusive probe no longer pins the view to a dead CDS survey", async () => {
+    // The regression this fixes: hips2fits is itself CDS, so during the
+    // outage EVERY coverage probe returns null (inconclusive). The old
+    // "never downgrade on inconclusive" rule then kept the CDS provisional,
+    // which cannot load a single tile — a permanently blank sky view.
+    global.fetch = async (url) => {
+      if (/unistra|u-strasbg/.test(url)) throw new Error("ECONNREFUSED");
+      return { ok: true };
+    };
+    await window.__aladinReachableFallback();
+
+    const chosen = window.__aladinDecideBestHiPS([null, null, null], PAN());
+    expect(window.__aladinIsCdsSurvey(chosen)).toBe(false);
+  });
+
+  test("an inconclusive probe still keeps the provisional while CDS is up", async () => {
+    // The original behaviour must survive: a transient hips2fits hiccup is
+    // not a reason to downgrade a good PanSTARRS view to DSS.
+    global.fetch = async () => ({ ok: true });
+    await window.__aladinReachableFallback();
+
+    const initial = PAN();
+    expect(window.__aladinDecideBestHiPS([null, null, null], initial)).toBe(initial);
+  });
+
+  test("a definitively covered survey still wins, outage or not", async () => {
+    global.fetch = async (url) => {
+      if (/unistra|u-strasbg/.test(url)) throw new Error("ECONNREFUSED");
+      return { ok: true };
+    };
+    await window.__aladinReachableFallback();
+    const chosen = window.__aladinDecideBestHiPS([true, null, null], PAN());
+    expect(chosen.label).toBe("PanSTARRS DR1");
+  });
+});
