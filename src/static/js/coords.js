@@ -174,20 +174,71 @@
   // — the form falls back to manual RA/Dec entry.
 
   const SESAME_URL = "https://cdsweb.u-strasbg.fr/cgi-bin/nph-sesame/-oxp/SNVA?";
+  //: Sesame has no mirror, so when CDS is down this request fails by *connect
+  //: timeout* rather than refusal. Without an explicit deadline the button
+  //: would sit in its "Resolving…" state for the OS connect timeout (minutes),
+  //: which is indistinguishable from a hang. 10 s is well past a healthy
+  //: response (~1 s) and short enough to tell the user something useful.
+  const RESOLVE_TIMEOUT_MS = 10000;
 
-  async function resolveName(name) {
-    if (!name || !name.trim()) return null;
+  //: Outcomes, which the UI maps to distinct messages. "Not found" and
+  //: "service unreachable" are completely different situations for the user —
+  //: one means fix your spelling, the other means the service is down and no
+  //: spelling will help — and collapsing both into `null` is what made the old
+  //: silent failure so confusing.
+  const RESOLVE_OK = "ok";
+  const RESOLVE_EMPTY = "empty";
+  const RESOLVE_NOT_FOUND = "not_found";
+  const RESOLVE_UNAVAILABLE = "unavailable";
+
+  async function resolveNameDetailed(name) {
+    const trimmed = (name || "").trim();
+    if (!trimmed) return { status: RESOLVE_EMPTY, name: trimmed };
+    let text;
     try {
-      const resp = await fetch(SESAME_URL + encodeURIComponent(name.trim()));
-      if (!resp.ok) return null;
-      const text = await resp.text();
-      const xml = new DOMParser().parseFromString(text, "text/xml");
-      const ra = parseFloat(xml.querySelector("jradeg")?.textContent ?? "");
-      const dec = parseFloat(xml.querySelector("jdedeg")?.textContent ?? "");
-      if (!isFinite(ra) || !isFinite(dec)) return null;
-      return { ra, dec };
+      const resp = await fetch(SESAME_URL + encodeURIComponent(trimmed), {
+        signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS),
+      });
+      // An HTTP error is the service failing, not the name being wrong.
+      if (!resp.ok) return { status: RESOLVE_UNAVAILABLE, name: trimmed };
+      text = await resp.text();
     } catch (_e) {
-      return null;
+      // Thrown = network error, CORS failure, DNS failure or our own timeout.
+      // All of them mean "we never got an answer", never "no such object".
+      return { status: RESOLVE_UNAVAILABLE, name: trimmed };
+    }
+    const xml = new DOMParser().parseFromString(text, "text/xml");
+    const ra = parseFloat(xml.querySelector("jradeg")?.textContent ?? "");
+    const dec = parseFloat(xml.querySelector("jdedeg")?.textContent ?? "");
+    // Sesame answers 200 with a document carrying no <jradeg> for a name it
+    // doesn't know — so reaching here with unusable coords is a genuine miss.
+    if (!isFinite(ra) || !isFinite(dec)) {
+      return { status: RESOLVE_NOT_FOUND, name: trimmed };
+    }
+    return { status: RESOLVE_OK, name: trimmed, ra, dec };
+  }
+
+  // Original contract, kept for existing callers: coords or null.
+  async function resolveName(name) {
+    const r = await resolveNameDetailed(name);
+    return r.status === RESOLVE_OK ? { ra: r.ra, dec: r.dec } : null;
+  }
+
+  //: User-facing text per outcome. Phrased to say what to do next, since the
+  //: whole point is that a silent failure left people with no idea whether to
+  //: retype the name or give up and enter coordinates.
+  function resolveMessage(result) {
+    switch (result.status) {
+      case RESOLVE_OK:
+        return `Resolved to ${result.ra.toFixed(6)} ${result.dec.toFixed(6)}`;
+      case RESOLVE_EMPTY:
+        return "Type a name to resolve.";
+      case RESOLVE_NOT_FOUND:
+        return `No match for “${result.name}”. Check the spelling, or enter RA/Dec below.`;
+      case RESOLVE_UNAVAILABLE:
+        return "Name resolver unreachable (CDS Sesame). Enter RA/Dec below manually.";
+      default:
+        return "Name resolution failed.";
     }
   }
 
@@ -198,6 +249,12 @@
   window.smartDateToMJD = smartDateToMJD;
   window.mjdToCalendarStr = mjdToCalendarStr;
   window.resolveName = resolveName;
+  window.resolveNameDetailed = resolveNameDetailed;
+  window.resolveMessage = resolveMessage;
+  window.RESOLVE_STATUS = {
+    OK: RESOLVE_OK, EMPTY: RESOLVE_EMPTY,
+    NOT_FOUND: RESOLVE_NOT_FOUND, UNAVAILABLE: RESOLVE_UNAVAILABLE,
+  };
 
   // Convenience for the form: parses the coords field, rewrites it with the
   // canonical "ra dec" degrees form so users can see what was understood.
@@ -279,5 +336,72 @@
     if (!c) return false;
     coordsEl.value = `${c.ra.toFixed(6)} ${c.dec.toFixed(6)}`;
     return true;
+  };
+
+  // The whole interaction: waiting signal → result → visible message.
+  //
+  // Lives here rather than inline in the template so it can be unit-tested;
+  // the template only supplies element ids. Before this, the sole feedback was
+  // the button's `title` attribute, which is invisible unless you happen to
+  // hover it — so a failed resolve looked identical to nothing happening.
+  window.resolveNameInteractive = async function (
+    { nameId, coordsId, btnId, statusId } = {},
+  ) {
+    const nameEl = document.getElementById(nameId);
+    const coordsEl = document.getElementById(coordsId);
+    const btn = btnId ? document.getElementById(btnId) : null;
+    const status = statusId ? document.getElementById(statusId) : null;
+    if (!nameEl || !coordsEl) return null;
+
+    const setStatus = (text, kind) => {
+      if (!status) return;
+      status.textContent = text;
+      status.hidden = !text;
+      // Colour by outcome; `dataset.kind` is what the tests assert on, so the
+      // meaning doesn't depend on which Tailwind classes are in fashion.
+      status.dataset.kind = kind || "";
+      status.classList.remove("tw-text-red-400", "tw-text-text-muted", "tw-text-accent");
+      status.classList.add(
+        kind === "error" ? "tw-text-red-400"
+          : kind === "ok" ? "tw-text-accent"
+            : "tw-text-text-muted",
+      );
+    };
+
+    const label = nameEl.value.trim();
+    // --- waiting signal -----------------------------------------------------
+    if (btn) {
+      btn.disabled = true;
+      btn.dataset.busy = "1";
+      if (btn.dataset.idleLabel == null) btn.dataset.idleLabel = btn.textContent;
+      btn.textContent = "Resolving…";
+      btn.setAttribute("aria-busy", "true");
+    }
+    setStatus(label ? `Resolving “${label}”…` : "Resolving…", "busy");
+
+    let result;
+    try {
+      result = await resolveNameDetailed(nameEl.value);
+    } finally {
+      // Always restore the button, including if resolveNameDetailed throws:
+      // a stuck "Resolving…" with a dead button is the worst outcome here.
+      if (btn) {
+        btn.disabled = false;
+        delete btn.dataset.busy;
+        btn.textContent = btn.dataset.idleLabel || "Resolve";
+        btn.removeAttribute("aria-busy");
+      }
+    }
+
+    if (result.status === RESOLVE_OK) {
+      coordsEl.value = `${result.ra.toFixed(6)} ${result.dec.toFixed(6)}`;
+    }
+    setStatus(
+      resolveMessage(result),
+      result.status === RESOLVE_OK ? "ok"
+        : result.status === RESOLVE_EMPTY ? "hint" : "error",
+    );
+    if (btn) btn.title = resolveMessage(result);
+    return result;
   };
 })();

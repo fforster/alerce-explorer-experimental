@@ -423,7 +423,7 @@
     <summary class="tw-text-xs tw-text-text-secondary tw-mb-1 tw-cursor-pointer tw-flex tw-items-center tw-gap-1 marker:tw-hidden tw-list-none">
       <span class="tw-text-text-muted tw-transition-transform group-open:tw-rotate-90">▸</span>
       Conesearch
-      {{ tip("Find objects within a circular region of sky. Enter RA/Dec (decimal degrees or sexagesimal), or type a name and press Resolve to look it up via CDS Sesame. Set the search radius in arcseconds (default 30).") }}
+      {{ tip("Find objects within a circular region of sky. Enter RA/Dec (decimal degrees or sexagesimal), or type a name and press Resolve to look it up via CDS Sesame — which has no mirror, so it is unavailable while CDS is offline; the message under the field says which happened. Set the search radius in arcseconds (default 30).") }}
     </summary>
     <div class="tw-flex tw-gap-1">
       <input
@@ -435,18 +435,28 @@
       <button
         type="button"
         id="filter-name-btn"
-        class="tw-flex-none tw-px-2 tw-py-0.5 tw-text-[11px] tw-text-accent hover:tw-text-text-primary tw-border tw-border-border tw-rounded"
+        class="tw-flex-none tw-px-2 tw-py-0.5 tw-text-[11px] tw-text-accent hover:tw-text-text-primary tw-border tw-border-border tw-rounded disabled:tw-opacity-60 disabled:tw-cursor-wait"
         title="Resolve name via CDS Sesame and fill the RA/Dec field below."
-        onclick="
-          (async () => {
-            this.disabled = true;
-            const ok = await window.resolveNameInto('filter-name', 'filter-coords');
-            this.disabled = false;
-            this.title = ok ? 'Resolved.' : 'Could not resolve. Try entering RA/Dec manually.';
-          })();
-        "
+        onclick="window.resolveNameInteractive({
+          nameId: 'filter-name', coordsId: 'filter-coords',
+          btnId: 'filter-name-btn', statusId: 'filter-name-status',
+        })"
       >Resolve</button>
     </div>
+    {#
+      Visible resolver feedback. Previously the only signal was the button's
+      `title` attribute, invisible unless hovered, so a failure looked exactly
+      like nothing happening — and with CDS Sesame offline (trap #20) that is
+      the common case. `role="status"` + aria-live announces it to screen
+      readers; `data-kind` carries the outcome for the unit tests.
+    #}
+    <div
+      id="filter-name-status"
+      role="status"
+      aria-live="polite"
+      hidden
+      class="tw-text-[11px] tw-mt-1 tw-text-text-muted"
+    ></div>
     <input
       id="filter-coords"
       type="text"

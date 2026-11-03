@@ -10,6 +10,8 @@ from __future__ import annotations
 from typing import TypedDict
 from urllib.parse import quote
 
+from . import cds_mirrors
+
 from .coordinates import dec_to_dms, ra_to_hms
 
 
@@ -49,8 +51,12 @@ def build_archive_links(*, ra: float | None, dec: float | None) -> list[ArchiveL
             "url": f"https://skyserver.sdss.org/dr19/VisualTools/navi2?ra={ra}&dec={dec}",
         },
         {
+            # Host comes from cds_mirrors so the link follows a live mirror
+            # during a CDS outage. `cached_endpoint` never probes, so building
+            # these links stays free on the render path.
             "name": "SIMBAD",
-            "url": f"https://simbad.u-strasbg.fr/simbad/sim-coo?Coord={ra_dec_space}&Radius.unit=arcsec&Radius=10",
+            "url": (f"{cds_mirrors.cached_endpoint('simbad_web').base}"
+                    f"/sim-coo?Coord={ra_dec_space}&Radius.unit=arcsec&Radius=10"),
         },
         {
             "name": "TNS",
@@ -58,7 +64,8 @@ def build_archive_links(*, ra: float | None, dec: float | None) -> list[ArchiveL
         },
         {
             "name": "VizieR",
-            "url": f"https://vizier.cds.unistra.fr/viz-bin/VizieR-4?-c={ra_dec}&-c.rs=10&-out.add=_r&-sort=_r&-out.max=4",
+            "url": (f"{cds_mirrors.cached_endpoint('vizier_web').base}"
+                    f"/VizieR-4?-c={ra_dec}&-c.rs=10&-out.add=_r&-sort=_r&-out.max=4"),
         },
         {
             "name": "VSX",

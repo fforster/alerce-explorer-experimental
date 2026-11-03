@@ -225,7 +225,7 @@ def test_bulk_all_regroups_and_tolerates_failure(monkeypatch):
     # Stub the remaining cores so bulk_all stays fully offline (the USECASE
     # catalogs + HECATE TAP would otherwise hit the live network here).
     monkeypatch.setattr(xmatch, "_bulk_generic_sync", lambda k, positions: {})
-    monkeypatch.setattr(xmatch, "_bulk_hecate_tap_sync", lambda positions: {})
+    monkeypatch.setattr(xmatch, "_bulk_hecate_tap_sync", lambda positions, tap_base=None: {})
 
     out = run(xmatch.bulk_all([("A", 1.0, 2.0)]))
     assert set(out) == {"A"}                      # NED failure didn't sink the batch
@@ -252,7 +252,7 @@ def test_bulk_all_failure_reason_names_the_source(monkeypatch):
     monkeypatch.setattr(xmatch, "_bulk_ned_tap_sync", boom_ned)
     monkeypatch.setattr(xmatch, "_bulk_xmatch_vizier_sync", lambda cid, positions: {})
     monkeypatch.setattr(xmatch, "_bulk_generic_sync", lambda k, positions: {})
-    monkeypatch.setattr(xmatch, "_bulk_hecate_tap_sync", lambda positions: {})
+    monkeypatch.setattr(xmatch, "_bulk_hecate_tap_sync", lambda positions, tap_base=None: {})
 
     xmatch_progress.start("K", xmatch.catalog_labels())
     run(xmatch.bulk_all([("K", 1.0, 2.0)], progress_key="K"))
@@ -512,3 +512,260 @@ def test_crossmatch_progress_keeps_catshtm_markers_in_button(client, monkeypatch
     assert "Show all in sky view (2)" in html
     assert 'id="xmatch-progress-CAT"' in html       # still polling
     xmatch_progress.clear()
+
+
+# --- CDS outage behaviour (mirror failover) ---------------------------------
+#
+# During the November 2026 Strasbourg incident every CDS host stopped answering
+# at the TCP level. These tests pin what the crossmatch does about it: skip the
+# unmirrored services *fast* rather than time each one out, and keep Simbad
+# alive through SIMBAD's own mirrored TAP service.
+
+def _mirrors(monkeypatch, up: set[str]):
+    """Patch `_probe` so only endpoints whose label is in `up` answer."""
+    from src.services import cds_mirrors
+
+    async def fake(ep):
+        return ep.label in up
+
+    cds_mirrors.clear()
+    monkeypatch.setattr(cds_mirrors, "_probe", fake)
+
+
+def _stub_all_cores(monkeypatch, calls: list[str]):
+    """Record any catalog core that gets invoked, and return nothing."""
+    monkeypatch.setattr(xmatch, "_bulk_ned_tap_sync",
+                        lambda positions: calls.append("NED") or {})
+    monkeypatch.setattr(xmatch, "_bulk_xmatch_sync",
+                        lambda cat, positions: calls.append(f"xmatch:{cat}") or {})
+    monkeypatch.setattr(xmatch, "_bulk_xmatch_vizier_sync",
+                        lambda cid, positions: calls.append(f"vizier:{cid}") or {})
+    monkeypatch.setattr(xmatch, "_bulk_generic_sync",
+                        lambda k, positions: calls.append(f"generic:{k}") or {})
+    monkeypatch.setattr(xmatch, "_bulk_hecate_tap_sync",
+                        lambda positions, tap_base=None: calls.append("HECATE") or {})
+    monkeypatch.setattr(xmatch, "_bulk_simbad_tap_sync",
+                        lambda positions, tap_base=None, **kw:
+                            calls.append(f"simbad_tap:{tap_base}") or {})
+
+
+def test_xmatch_offline_skips_every_xmatch_catalog_without_querying(monkeypatch):
+    """No mirror exists for CDS XMatch, so its catalogs must not be attempted.
+
+    The assertion that matters is `calls`: a skipped catalog costs no request,
+    which is what turns a minute of timeouts into an immediate answer.
+    """
+    calls: list[str] = []
+    _mirrors(monkeypatch, set())            # everything down
+    _stub_all_cores(monkeypatch, calls)
+
+    out = run(xmatch.bulk_all([("A", 1.0, 2.0)]))
+
+    assert out == {}
+    assert not [c for c in calls if c.startswith(("xmatch:", "vizier:", "generic:"))]
+    assert "HECATE" not in calls            # VizieR TAP has no live mirror either
+    assert calls == ["NED"]                 # NED is at IPAC — unaffected by CDS
+
+
+def test_simbad_survives_the_outage_via_its_own_tap_mirror(monkeypatch):
+    """SIMBAD TAP is mirrored even though CDS XMatch is not, so the Simbad
+    match — the one that drives the stellar/AGN/host hint — stays alive."""
+    calls: list[str] = []
+    _mirrors(monkeypatch, {"CfA Harvard"})
+    _stub_all_cores(monkeypatch, calls)
+    monkeypatch.setattr(
+        xmatch, "_bulk_simbad_tap_sync",
+        lambda positions, tap_base=None, **kw: {
+            "A": [{"cat_name": "Simbad", "ra": 1.0, "dec": 2.0, "z": 0.05,
+                   "z_err": None, "photoz": None, "type": "G", "name": "NGC 1",
+                   "sep": 1.0}]})
+
+    out = run(xmatch.bulk_all([("A", 1.0, 2.0)]))
+
+    assert set(out) == {"A"}
+    assert out["A"]["counts"] == {"Simbad": 1}
+    # Routed through the resolved mirror, not the dead primary.
+    assert "xmatch:Simbad" not in calls
+
+
+def test_simbad_tap_is_handed_the_resolved_mirror_base(monkeypatch):
+    calls: list[str] = []
+    _mirrors(monkeypatch, {"IDIA South Africa"})
+    _stub_all_cores(monkeypatch, calls)
+
+    run(xmatch.bulk_all([("A", 1.0, 2.0)]))
+
+    assert "simbad_tap:https://simbad.idia.ac.za/simbad/sim-tap" in calls
+
+
+def test_simbad_is_reported_failed_when_even_its_mirrors_are_down(monkeypatch):
+    """No live SIMBAD anywhere → an honest failure, not a silent empty panel."""
+    from src.services import xmatch_progress
+    calls: list[str] = []
+    _mirrors(monkeypatch, set())
+    _stub_all_cores(monkeypatch, calls)
+
+    xmatch_progress.start("K", xmatch.catalog_labels())
+    run(xmatch.bulk_all([("K", 1.0, 2.0)], progress_key="K"))
+    failed = {f["name"]: f["reason"] for f in xmatch_progress.get("K")["failed"]}
+
+    assert failed["Simbad"] == "CDS XMatch · offline (no mirror available)"
+    assert failed["HECATE"] == "VizieR TAP · offline (no mirror available)"
+    assert not [c for c in calls if c.startswith("simbad_tap")]
+    xmatch_progress.clear()
+
+
+def test_skipped_catalogs_name_the_outage_in_the_progress_panel(monkeypatch):
+    """Every unmirrored catalog reports the same honest reason, so a sparse
+    panel reads as an outage rather than as 'no matches found'."""
+    from src.services import xmatch_progress
+    _mirrors(monkeypatch, set())
+    _stub_all_cores(monkeypatch, [])
+
+    xmatch_progress.start("K", xmatch.catalog_labels())
+    run(xmatch.bulk_all([("K", 1.0, 2.0)], progress_key="K"))
+    reasons = {f["name"]: f["reason"] for f in xmatch_progress.get("K")["failed"]}
+
+    for label in ("Gaia DR3", "VSX", "HyperLEDA", "Milliquas", "6dFGS"):
+        assert reasons[label] == "CDS XMatch · offline (no mirror available)"
+    xmatch_progress.clear()
+
+
+def test_everything_up_still_uses_cds_xmatch_not_the_fallback(monkeypatch):
+    """The fallback must not steal the normal path once CDS is back."""
+    calls: list[str] = []
+    _mirrors(monkeypatch, {"CDS Strasbourg"})
+    _stub_all_cores(monkeypatch, calls)
+
+    run(xmatch.bulk_all([("A", 1.0, 2.0)]))
+
+    assert "xmatch:Simbad" in calls
+    assert not [c for c in calls if c.startswith("simbad_tap")]
+    assert "HECATE" in calls
+
+
+def test_hecate_is_handed_the_resolved_vizier_tap_base(monkeypatch):
+    seen: dict[str, object] = {}
+    _mirrors(monkeypatch, {"CDS Strasbourg"})
+    _stub_all_cores(monkeypatch, [])
+    monkeypatch.setattr(
+        xmatch, "_bulk_hecate_tap_sync",
+        lambda positions, tap_base=None: seen.setdefault("base", tap_base) and {} or {})
+
+    run(xmatch.bulk_all([("A", 1.0, 2.0)]))
+    assert seen["base"] == xmatch.VIZIER_TAP_URL
+
+
+# --- the SIMBAD TAP normalizer ---------------------------------------------
+
+def test_norm_simbad_tap_matches_the_xmatch_row_shape():
+    """Downstream (category routing, hint, overlay, table) must not be able to
+    tell which route produced a row, so the keys have to agree exactly."""
+    tap = xmatch._norm_simbad_tap(
+        {"main_id": "NGC 1", "ra": 1.0, "dec": 2.0, "otype_txt": "G",
+         "rvz_type": "z", "rvz_redshift": 0.05, "rvz_err": None}, 1.5)
+    xm = xmatch._norm_simbad(
+        {"main_id": "NGC 1", "ra2": 1.0, "dec2": 2.0, "main_type": "G",
+         "redshift": 0.05, "redshift_err": None, "angDist": 1.5})
+    assert set(tap) == set(xm)
+    assert tap["cat_name"] == "Simbad"
+    assert (tap["ra"], tap["dec"], tap["z"], tap["sep"]) == (1.0, 2.0, 0.05, 1.5)
+
+
+def test_norm_simbad_tap_converts_a_velocity_error_to_a_redshift_error():
+    """`rvz_err` is declared in km/s, so on a velocity-typed row it becomes a
+    z error only after dividing by c."""
+    row = xmatch._norm_simbad_tap(
+        {"main_id": "M 100", "ra": 185.7, "dec": 15.8, "otype_txt": "AGN",
+         "rvz_type": "v", "rvz_redshift": 0.00524, "rvz_err": 3.0}, 1.0)
+    assert row["z_err"] == pytest.approx(3.0 / 299792.458)
+
+
+def test_norm_simbad_tap_withholds_an_ambiguous_redshift_error():
+    """On a z-typed row the km/s unit contradicts the value's meaning, so we
+    report no error rather than one that could be wrong by a factor of 3e5."""
+    row = xmatch._norm_simbad_tap(
+        {"main_id": "G", "ra": 1.0, "dec": 2.0, "otype_txt": "G",
+         "rvz_type": "z", "rvz_redshift": 0.3, "rvz_err": 0.001}, 1.0)
+    assert row["z"] == 0.3
+    assert row["z_err"] is None
+
+
+def test_norm_simbad_tap_short_codes_route_to_the_right_category():
+    """`otype_txt` gives SIMBAD short codes where XMatch gave long names;
+    `_simbad_category` already handles both, which is why no translation
+    layer is needed."""
+    assert xmatch._simbad_category("G") == "host"
+    assert xmatch._simbad_category("AGN") == "agn"
+    assert xmatch._simbad_category("SN*") == "stellar"
+    assert xmatch._simbad_category("Mira") == "stellar"
+
+
+def test_simbad_tap_sync_pairs_rows_to_positions_within_the_radius(monkeypatch):
+    """TAP returns no input echo (unlike XMatch's angDist), so rows are paired
+    back by angular separation — and anything outside the cone is dropped."""
+    from astropy.table import Table
+
+    # One row essentially on top of A, one ~2 degrees away (far outside 36").
+    table = Table({
+        "main_id": ["ON TARGET", "FAR AWAY"],
+        "ra": [10.0, 12.0], "dec": [20.0, 20.0],
+        "otype_txt": ["G", "G"], "rvz_type": ["z", "z"],
+        "rvz_redshift": [0.1, 0.2], "rvz_err": [None, None],
+    })
+
+    class FakeSvc:
+        def search(self, adql, maxrec=None):
+            class R:
+                def to_table(self_inner): return table
+            return R()
+
+    monkeypatch.setattr(xmatch, "_get_tap", lambda base: FakeSvc())
+    out = xmatch._bulk_simbad_tap_sync([("A", 10.0, 20.0)], tap_base="http://x")
+
+    assert list(out) == ["A"]
+    assert [m["name"] for m in out["A"]] == ["ON TARGET"]
+    assert out["A"][0]["sep"] < 1.0
+
+
+def test_simbad_tap_sync_empty_positions_short_circuits():
+    assert xmatch._bulk_simbad_tap_sync([]) == {}
+
+
+def test_simbad_tap_sync_raises_after_retries(monkeypatch):
+    """A dead TAP endpoint surfaces as CatalogQueryError, which `_fail_cause`
+    renders as 'unreachable' in the progress panel."""
+    monkeypatch.setattr(xmatch, "time", type("T", (), {"sleep": staticmethod(lambda s: None)}))
+
+    class Boom:
+        def search(self, adql, maxrec=None):
+            raise RuntimeError("no route to host")
+
+    monkeypatch.setattr(xmatch, "_get_tap", lambda base: Boom())
+    with pytest.raises(xmatch.CatalogQueryError, match="Simbad TAP unreachable"):
+        xmatch._bulk_simbad_tap_sync([("A", 1.0, 2.0)], tap_base="http://x")
+
+
+# --- TAP service caching ----------------------------------------------------
+
+def test_tap_services_are_cached_per_base_url(monkeypatch):
+    """Keyed by URL, so a failover doesn't keep reusing the dead primary's
+    service object — and a recovery back to CDS is likewise picked up."""
+    made: list[str] = []
+
+    class FakeTAP:
+        def __init__(self, url): made.append(url)
+
+    monkeypatch.setitem(xmatch._tap_services, "sentinel", None)
+    xmatch._tap_services.clear()
+    monkeypatch.setattr(xmatch, "_apply_session_timeout", lambda svc: None)
+    import sys, types
+    fake_pyvo = types.ModuleType("pyvo")
+    fake_pyvo.dal = types.SimpleNamespace(TAPService=FakeTAP)
+    monkeypatch.setitem(sys.modules, "pyvo", fake_pyvo)
+
+    xmatch._get_tap("http://a")
+    xmatch._get_tap("http://a")
+    xmatch._get_tap("http://b")
+    assert made == ["http://a", "http://b"]
+    xmatch._tap_services.clear()
