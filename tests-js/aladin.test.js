@@ -153,6 +153,17 @@ describe("aladin CDS failover", () => {
     expect(cds(chosen)).toBe(false);
   });
 
+  test("the probe bypasses the HTTP cache", async () => {
+    // Regression lock for a production failure: Chrome answered the CDS
+    // `properties` probe from its disk cache in 6 ms while the host was
+    // serving nothing, so the page believed CDS was up and the sky view
+    // stayed blank. A reachability check read from cache is not a check.
+    let opts;
+    global.fetch = async (_url, o) => { opts = o; return { ok: true }; };
+    await window.__aladinReachableFallback();
+    expect(opts.cache).toBe("no-store");
+  });
+
   test("probes the base URL's own properties file, not CDS hips2fits", async () => {
     // hips2fits is a CDS service with no mirror — probing through it would
     // report every provider dead during exactly the outage this is for.
